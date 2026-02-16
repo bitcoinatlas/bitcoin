@@ -7,15 +7,13 @@ export type Trait<Self = any> = {
 	[key: string]: (self: Self, ...args: any) => any;
 };
 
-export type Impl<Self = any, Traits extends Trait<Self> = {}> = {
+export type Impl<Self, Traits extends Trait<Self> = {}> = {
 	[key: string]:
 		| ((...args: any) => Promise<Self> | Self)
 		| ((self: Self, ...args: any) => any);
 } & Traits;
 
-export type ExtractTrait<T, Self> = {
-	[K in keyof T as T[K] extends (self: Self, ...args: any) => any ? K : never]: T[K];
-};
+export type DefaultImpl<T extends Trait> = Partial<T>;
 
 export type Dyn<T extends Trait> = {
 	[K in keyof T]: T[K] extends (self: any, ...args: infer A) => infer R ? (...args: A) => R : T[K];
@@ -33,6 +31,10 @@ export function dyn<T extends Impl<Self>, Self>(
 		},
 	}) as never;
 }
+
+type ExtractTrait<T, Self> = {
+	[K in keyof T as T[K] extends (self: Self, ...args: any) => any ? K : never]: T[K];
+};
 ```
 
 ## Structs
@@ -89,11 +91,12 @@ export type Fancy<Self = any> = Drawable<Self> & {
 A trait can have a companion helper (often a `XDefaults<Self>()` factory) that returns a default implementation.
 
 ```typescript
-export const DrawableDefaults = <Self>(): Drawable<Self> => ({
-	draw(self) {
-		console.log(`Drawing ${JSON.stringify(self)}`);
-	},
-});
+export const DrawableDefaults = <Self>() =>
+	({
+		draw(self) {
+			console.log(`Drawing ${JSON.stringify(self)}`);
+		},
+	}) satisfies DefaultImpl<Drawable<Self>>;
 ```
 
 ## Impls

@@ -1,15 +1,16 @@
 import type { Impl } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { Stride } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 
 // ── U24 ──
 // 3-byte unsigned integer, little-endian.
 
-export type U24 = { stride: Stride };
+export type U24 = { stride: number };
 
 export const U24 = {
+	...CodecDefaults<U24>(),
 	create(): U24 {
-		return { stride: Stride.fixed(3) };
+		return { stride: 3 };
 	},
 	encode(_self, value: number) {
 		if (value < 0 || value > 0xffffff || !Number.isInteger(value)) {
@@ -32,11 +33,12 @@ export const U24 = {
 
 const MAX_U48 = 2 ** 48 - 1;
 
-export type U48 = { stride: Stride };
+export type U48 = { stride: number };
 
 export const U48 = {
+	...CodecDefaults<U48>(),
 	create(): U48 {
-		return { stride: Stride.fixed(6) };
+		return { stride: 6 };
 	},
 	encode(_self, value: number) {
 		if (value < 0 || value > MAX_U48 || !Number.isInteger(value)) {
@@ -63,11 +65,12 @@ export const U48 = {
 // ── U56 ──
 // 7-byte unsigned bigint, little-endian. Used for StoredTxOutput header.
 
-export type U56 = { stride: Stride };
+export type U56 = { stride: number };
 
 export const U56 = {
+	...CodecDefaults<U56>(),
 	create(): U56 {
-		return { stride: Stride.fixed(7) };
+		return { stride: 7 };
 	},
 	encode(_self, value: bigint) {
 		if (value < 0n || value > 0x00ffffffffffffffn) {
@@ -93,11 +96,12 @@ export const U56 = {
 // Fixed 32-byte array. Used for block hashes, txids, merkle roots.
 // Convenience wrapper around Bytes.fixed(32).
 
-export type Bytes32 = { stride: Stride };
+export type Bytes32 = { stride: number };
 
 export const Bytes32 = {
+	...CodecDefaults<Bytes32>(),
 	create(): Bytes32 {
-		return { stride: Stride.fixed(32) };
+		return { stride: 32 };
 	},
 	zero(): Uint8Array {
 		return new Uint8Array(32);

@@ -1,14 +1,15 @@
 import type { Impl } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { Stride } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 
 // ── U8 ──
 
-export type U8 = { stride: Stride };
+export type U8 = { stride: number };
 
 export const U8 = {
+	...CodecDefaults<U8>(),
 	create(): U8 {
-		return { stride: Stride.fixed(1) };
+		return { stride: 1 };
 	},
 	encode(_self, value: number) {
 		return new Uint8Array([value & 0xff]);
@@ -20,11 +21,12 @@ export const U8 = {
 
 // ── I8 ──
 
-export type I8 = { stride: Stride };
+export type I8 = { stride: number };
 
 export const I8 = {
+	...CodecDefaults<I8>(),
 	create(): I8 {
-		return { stride: Stride.fixed(1) };
+		return { stride: 1 };
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(1);
@@ -39,11 +41,12 @@ export const I8 = {
 
 // ── U16 ──
 
-export type U16 = { stride: Stride };
+export type U16 = { stride: number };
 
 export const U16 = {
+	...CodecDefaults<U16>(),
 	create(): U16 {
-		return { stride: Stride.fixed(2) };
+		return { stride: 2 };
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(2);
@@ -58,11 +61,12 @@ export const U16 = {
 
 // ── I16 ──
 
-export type I16 = { stride: Stride };
+export type I16 = { stride: number };
 
 export const I16 = {
+	...CodecDefaults<I16>(),
 	create(): I16 {
-		return { stride: Stride.fixed(2) };
+		return { stride: 2 };
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(2);
@@ -77,11 +81,12 @@ export const I16 = {
 
 // ── U32 ──
 
-export type U32 = { stride: Stride };
+export type U32 = { stride: number };
 
 export const U32 = {
+	...CodecDefaults<U32>(),
 	create(): U32 {
-		return { stride: Stride.fixed(4) };
+		return { stride: 4 };
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(4);
@@ -96,11 +101,12 @@ export const U32 = {
 
 // ── I32 ──
 
-export type I32 = { stride: Stride };
+export type I32 = { stride: number };
 
 export const I32 = {
+	...CodecDefaults<I32>(),
 	create(): I32 {
-		return { stride: Stride.fixed(4) };
+		return { stride: 4 };
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(4);
@@ -115,11 +121,12 @@ export const I32 = {
 
 // ── U64 ──
 
-export type U64 = { stride: Stride };
+export type U64 = { stride: number };
 
 export const U64 = {
+	...CodecDefaults<U64>(),
 	create(): U64 {
-		return { stride: Stride.fixed(8) };
+		return { stride: 8 };
 	},
 	encode(_self, value: bigint) {
 		const arr = new Uint8Array(8);
@@ -134,11 +141,12 @@ export const U64 = {
 
 // ── I64 ──
 
-export type I64 = { stride: Stride };
+export type I64 = { stride: number };
 
 export const I64 = {
+	...CodecDefaults<I64>(),
 	create(): I64 {
-		return { stride: Stride.fixed(8) };
+		return { stride: 8 };
 	},
 	encode(_self, value: bigint) {
 		const arr = new Uint8Array(8);
@@ -153,11 +161,12 @@ export const I64 = {
 
 // ── Bool ──
 
-export type Bool = { stride: Stride };
+export type Bool = { stride: number };
 
 export const Bool = {
+	...CodecDefaults<Bool>(),
 	create(): Bool {
-		return { stride: Stride.fixed(1) };
+		return { stride: 1 };
 	},
 	encode(_self, value: boolean) {
 		return new Uint8Array([value ? 1 : 0]);
@@ -166,3 +175,43 @@ export const Bool = {
 		return [data[0] !== 0, 1];
 	},
 } satisfies Impl<Bool, Codec<Bool, boolean>>;
+
+// ── F32 ──
+
+export type F32 = { stride: number };
+
+export const F32 = {
+	...CodecDefaults<F32>(),
+	create(): F32 {
+		return { stride: 4 };
+	},
+	encode(_self, value: number) {
+		const arr = new Uint8Array(4);
+		new DataView(arr.buffer).setFloat32(0, value, true);
+		return arr;
+	},
+	decode(_self, data) {
+		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+		return [view.getFloat32(0, true), 4];
+	},
+} satisfies Impl<F32, Codec<F32, number>>;
+
+// ── F64 ──
+
+export type F64 = { stride: number };
+
+export const F64 = {
+	...CodecDefaults<F64>(),
+	create(): F64 {
+		return { stride: 8 };
+	},
+	encode(_self, value: number) {
+		const arr = new Uint8Array(8);
+		new DataView(arr.buffer).setFloat64(0, value, true);
+		return arr;
+	},
+	decode(_self, data) {
+		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+		return [view.getFloat64(0, true), 8];
+	},
+} satisfies Impl<F64, Codec<F64, number>>;

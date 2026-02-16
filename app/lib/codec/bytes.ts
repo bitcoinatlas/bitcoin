@@ -1,26 +1,27 @@
 import type { Impl } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { Stride } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { decodeVarInt, encodeVarInt } from "~/lib/codec/varint.ts";
 
 // ── Bytes ──
 // Raw byte array codec. Can be fixed-size or variable-size.
-// Fixed: no length prefix, size known from stride.
-// Variable: varint length prefix.
+// Fixed (stride >= 0): no length prefix, size known from stride.
+// Variable (stride < 0): varint length prefix.
 
-export type Bytes = { stride: Stride };
+export type Bytes = { stride: number };
 
 export const Bytes = {
+	...CodecDefaults<Bytes>(),
 	fixed(size: number): Bytes {
-		return { stride: Stride.fixed(size) };
+		return { stride: size };
 	},
 	variable(): Bytes {
-		return { stride: Stride.variable() };
+		return { stride: -1 };
 	},
 	encode(self, value: Uint8Array) {
-		if (Stride.isFixed(self.stride)) {
-			if (value.length !== self.stride.value) {
-				throw new RangeError(`Expected ${self.stride.value} bytes, got ${value.length}`);
+		if (self.stride >= 0) {
+			if (value.length !== self.stride) {
+				throw new RangeError(`Expected ${self.stride} bytes, got ${value.length}`);
 			}
 			return value;
 		}
@@ -31,8 +32,8 @@ export const Bytes = {
 		return out;
 	},
 	decode(self, data) {
-		if (Stride.isFixed(self.stride)) {
-			return [data.subarray(0, self.stride.value), self.stride.value];
+		if (self.stride >= 0) {
+			return [data.subarray(0, self.stride), self.stride];
 		}
 		const [length, prefixSize] = decodeVarInt(data);
 		return [data.subarray(prefixSize, prefixSize + length), prefixSize + length];
@@ -45,22 +46,23 @@ export const Bytes = {
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-export type Str = { stride: Stride };
+export type Str = { stride: number };
 
 export const Str = {
+	...CodecDefaults<Str>(),
 	fixed(size: number): Str {
-		return { stride: Stride.fixed(size) };
+		return { stride: size };
 	},
 	variable(): Str {
-		return { stride: Stride.variable() };
+		return { stride: -1 };
 	},
 	encode(self, value: string) {
 		const utf8 = textEncoder.encode(value);
-		if (Stride.isFixed(self.stride)) {
-			if (utf8.length > self.stride.value) {
-				throw new RangeError(`String is ${utf8.length} bytes, exceeds max ${self.stride.value}`);
+		if (self.stride >= 0) {
+			if (utf8.length > self.stride) {
+				throw new RangeError(`String is ${utf8.length} bytes, exceeds max ${self.stride}`);
 			}
-			const out = new Uint8Array(self.stride.value);
+			const out = new Uint8Array(self.stride);
 			out.set(utf8, 0);
 			return out;
 		}
@@ -71,11 +73,11 @@ export const Str = {
 		return out;
 	},
 	decode(self, data) {
-		if (Stride.isFixed(self.stride)) {
-			const buf = data.subarray(0, self.stride.value);
+		if (self.stride >= 0) {
+			const buf = data.subarray(0, self.stride);
 			let end = buf.length;
 			while (end > 0 && buf[end - 1] === 0) end--;
-			return [textDecoder.decode(buf.subarray(0, end)), self.stride.value];
+			return [textDecoder.decode(buf.subarray(0, end)), self.stride];
 		}
 		const [length, prefixSize] = decodeVarInt(data);
 		const utf8 = data.subarray(prefixSize, prefixSize + length);

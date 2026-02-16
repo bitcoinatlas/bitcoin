@@ -1,26 +1,36 @@
-// ── Stride ──
+import type { DefaultImpl } from "~/traits.ts";
 
-export type Stride = { value: number };
+// ── HasStride ──
 
-export const Stride = {
-	fixed(value: number): Stride {
-		return { value };
-	},
-	variable(): Stride {
-		return { value: -1 };
-	},
-	isFixed(stride: Stride): boolean {
-		return stride.value >= 0;
-	},
-	isVariable(stride: Stride): boolean {
-		return stride.value < 0;
-	},
+export type HasStride<Self = any> = {
+	stride(self: Self): number;
+	isFixed(self: Self): boolean;
+	isVariable(self: Self): boolean;
 };
 
-// ── Codec trait ──
-// Self is the schema (carries stride), T is the value type.
+export const HasStrideDefaults = <Self extends { stride: number }>() =>
+	({
+		stride(self) {
+			return self.stride;
+		},
+		isFixed(self) {
+			return self.stride >= 0;
+		},
+		isVariable(self) {
+			return self.stride < 0;
+		},
+	}) satisfies DefaultImpl<HasStride<Self>>;
 
-export type Codec<Self extends { stride: Stride } = { stride: Stride }, T = any> = {
+// ── Codec ──
+
+export type Codec<Self extends { stride: number } = { stride: number }, T = any> = HasStride<Self> & {
 	encode(self: Self, value: T): Uint8Array;
 	decode(self: Self, data: Uint8Array): [T, number];
 };
+
+export const CodecDefaults = <Self extends { stride: number }>() =>
+	({ ...HasStrideDefaults<Self>() }) satisfies DefaultImpl<Codec<Self>>;
+
+// ── InferCodecValue ──
+
+export type InferCodecValue<ImplObj> = ImplObj extends { encode(self: any, value: infer T): Uint8Array } ? T : never;
