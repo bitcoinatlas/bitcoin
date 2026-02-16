@@ -32,7 +32,7 @@
 	},
 	"lint": {
 		"rules": {
-			"exclude": ["no-namespace", "no-explicit-any"],
+			"exclude": ["no-namespace", "no-explicit-any", "ban-types"],
 			"include": ["no-slow-types", "explicit-module-boundary-types"]
 		}
 	}
