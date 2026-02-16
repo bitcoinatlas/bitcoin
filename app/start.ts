@@ -29,7 +29,7 @@ const version: Version = {
 	recvServices: SERVICES.WITNESS,
 	transServices: SERVICES.WITNESS,
 	nonce: 987654321n,
-	userAgent: "/BitcoinMonolith:0.0.1-preview.1/",
+	userAgent: "/BitcoinAtlas:0.0.1-preview.1/",
 	startHeight: 0,
 	relay: false,
 };
