@@ -1,6 +1,6 @@
 ## BIPs Implementation
 
-Not all of these are required but gonna go over these at some point. 
+Not all of these are required but gonna go over these at some point.
 
 - [ ] [BIP 9](https://github.com/DeepDoge/bitcoin-bips/blob/master/bip-0009.mediawiki) – Informational – Version bits
       with timeout and delay
@@ -71,6 +71,7 @@ Not all of these are required but gonna go over these at some point.
 - [ ] [BIP 91](https://github.com/DeepDoge/bitcoin-bips/blob/master/bip-0091.mediawiki) – Consensus (soft fork) –
       Reduced threshold SegWit MASF
 - [ ] [BIP 94](https://github.com/DeepDoge/bitcoin-bips/blob/master/bip-0094.mediawiki) – Applications – Testnet 4
+- [ ] [BIP 110] – Consensus (soft fork) – Taproot Bugfix
 - [ ] [BIP 111](https://github.com/DeepDoge/bitcoin-bips/blob/master/bip-0111.mediawiki) – Peer Services – NODE_BLOOM
       service bit
 - [ ] [BIP 112](https://github.com/DeepDoge/bitcoin-bips/blob/master/bip-0112.mediawiki) – Consensus (soft fork) –
