@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BlockHeader } from "~/lib/satoshi/primitives/BlockHeader.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 import { CompactSize } from "~/lib/CompactSize.ts";
@@ -7,10 +9,14 @@ export type HeadersMessage = {
 	headers: BlockHeader[];
 };
 
-export class HeadersMessageCodec extends Codec<HeadersMessage> {
-	public readonly stride = -1;
+type HeadersMessageCodec = { stride: number };
 
-	public encode(data: HeadersMessage): Uint8Array {
+const HeadersMessageCodec = {
+	...CodecDefaults<HeadersMessageCodec>(),
+	create(): HeadersMessageCodec {
+		return { stride: -1 };
+	},
+	encode(_self, data: HeadersMessage) {
 		const count = data.headers.length;
 		if (count > 2000) {
 			throw new Error("Too many headers (max 2000)");
@@ -39,9 +45,8 @@ export class HeadersMessageCodec extends Codec<HeadersMessage> {
 			offset += c.length;
 		}
 		return out;
-	}
-
-	public decode(bytes: Uint8Array): [HeadersMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		let offset = 0;
 
 		const [count, bytesRead] = CompactSize.decode(bytes, offset);
@@ -66,8 +71,13 @@ export class HeadersMessageCodec extends Codec<HeadersMessage> {
 			headers.push(header);
 		}
 
-		return [{ headers }, offset];
-	}
-}
+		return [{ headers }, offset] as [HeadersMessage, number];
+	},
+} satisfies Impl<HeadersMessageCodec, Codec<HeadersMessageCodec, HeadersMessage>>;
 
-export const HeadersMessage = new PeerMessage("headers", new HeadersMessageCodec());
+const _codec = HeadersMessageCodec.create();
+export const HeadersMessage = PeerMessage.create("headers", {
+	stride: _codec.stride,
+	encode: (v: HeadersMessage) => HeadersMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => HeadersMessageCodec.decode(_codec, d),
+});

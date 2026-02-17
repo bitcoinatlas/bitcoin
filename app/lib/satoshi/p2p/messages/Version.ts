@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 
@@ -21,10 +23,14 @@ export type VersionMessage = Version & {
 	transPort: number;
 };
 
-export class VersionMessageCodec extends Codec<VersionMessage> {
-	public readonly stride = -1;
+type VersionMessageCodec = { stride: number };
 
-	public encode(data: VersionMessage): Uint8Array {
+const VersionMessageCodec = {
+	...CodecDefaults<VersionMessageCodec>(),
+	create(): VersionMessageCodec {
+		return { stride: -1 };
+	},
+	encode(_self, data: VersionMessage) {
 		const userAgentBytes = new TextEncoder().encode(data.userAgent);
 		const userAgentLength = userAgentBytes.length;
 
@@ -75,9 +81,8 @@ export class VersionMessageCodec extends Codec<VersionMessage> {
 		bytes[offset++] = data.relay ? 1 : 0;
 
 		return bytes.subarray(0, offset);
-	}
-
-	public decode(bytes: Uint8Array): [VersionMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		const view = new BytesView(bytes);
 		let offset = 0;
 
@@ -139,11 +144,16 @@ export class VersionMessageCodec extends Codec<VersionMessage> {
 				relay,
 			},
 			offset,
-		];
-	}
-}
+		] as [VersionMessage, number];
+	},
+} satisfies Impl<VersionMessageCodec, Codec<VersionMessageCodec, VersionMessage>>;
 
-export const VersionMessage = new PeerMessage("version", new VersionMessageCodec());
+const _codec = VersionMessageCodec.create();
+export const VersionMessage = PeerMessage.create("version", {
+	stride: _codec.stride,
+	encode: (v: VersionMessage) => VersionMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => VersionMessageCodec.decode(_codec, d),
+});
 
 function encodeIP(ip: string): Uint8Array {
 	const bytes = new Uint8Array(16);

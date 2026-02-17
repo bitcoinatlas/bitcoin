@@ -1,43 +1,48 @@
-import { Bytes, bytes, Codec, Enum, Struct } from "@nomadshiba/codec";
+import { Bytes } from "~/lib/codec/bytes.ts";
+import { EnumCodec, StructCodec } from "~/lib/codec/composites.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
 import { CompactSize } from "~/lib/CompactSize.ts";
+import type { Impl } from "~/traits.ts";
+import { dyn } from "~/traits.ts";
+import { Stride } from "../../codec/mod.ts";
 
-export class StoredWitnessCodec extends Codec<Uint8Array[]> {
-	public readonly stride = -1;
+const sig73 = dyn(Bytes, Bytes.fixed(73));
+const pubkey33 = dyn(Bytes, Bytes.fixed(33));
+const schnorr65 = dyn(Bytes, Bytes.fixed(65));
+const script34 = dyn(Bytes, Bytes.fixed(34));
+const script71 = dyn(Bytes, Bytes.fixed(71));
+const script105 = dyn(Bytes, Bytes.fixed(105));
+const timelock = dyn(Bytes, Bytes.fixed(39));
 
-	encode(data: Uint8Array[]): Uint8Array {
-		return StoredWitnessEnum.encode(detectPattern(data));
-	}
-
-	decode(bytes: Uint8Array): [Uint8Array[], number] {
-		const [enumValue, bytesRead] = StoredWitnessEnum.decode(bytes);
-		return [reconstructWitness(enumValue), bytesRead];
-	}
-}
-
-export const StoredWitness = new StoredWitnessCodec();
-
-const sig73 = new Bytes(73);
-const pubkey33 = new Bytes(33);
-const schnorr65 = new Bytes(65);
-const script34 = new Bytes(34);
-const script71 = new Bytes(71);
-const script105 = new Bytes(105);
-const timelock = new Bytes(39);
-
-type StoredWitnessEnum = Codec.Infer<typeof StoredWitnessEnum>;
-const StoredWitnessEnum = new Enum({
-	empty: new Struct({}),
-	p2wpkh: new Struct({ sig: sig73, pubkey: pubkey33 }),
-	p2trKeyPath: new Struct({ sig: schnorr65 }),
-	p2wsh1of1: new Struct({ sig: sig73, script: script34 }),
-	p2wsh2of2: new Struct({ sig1: sig73, sig2: sig73, script: script71 }),
-	p2wsh2of3: new Struct({ sig1: sig73, sig2: sig73, script: script105 }),
-	p2wsh3of3: new Struct({ sig1: sig73, sig2: sig73, sig3: sig73, script: script105 }),
-	p2wsh1of2: new Struct({ sig: sig73, script: script71 }),
-	p2wsh1of3: new Struct({ sig: sig73, script: script105 }),
-	p2wshTimelock: new Struct({ sig: sig73, script: timelock }),
-	raw: bytes,
+const storedWitnessInternalCodec = EnumCodec.create({
+	empty: dyn(StructCodec, StructCodec.create({})),
+	p2wpkh: dyn(StructCodec, StructCodec.create({ sig: sig73, pubkey: pubkey33 })),
+	p2trKeyPath: dyn(StructCodec, StructCodec.create({ sig: schnorr65 })),
+	p2wsh1of1: dyn(StructCodec, StructCodec.create({ sig: sig73, script: script34 })),
+	p2wsh2of2: dyn(StructCodec, StructCodec.create({ sig1: sig73, sig2: sig73, script: script71 })),
+	p2wsh2of3: dyn(StructCodec, StructCodec.create({ sig1: sig73, sig2: sig73, script: script105 })),
+	p2wsh3of3: dyn(StructCodec, StructCodec.create({ sig1: sig73, sig2: sig73, sig3: sig73, script: script105 })),
+	p2wsh1of2: dyn(StructCodec, StructCodec.create({ sig: sig73, script: script71 })),
+	p2wsh1of3: dyn(StructCodec, StructCodec.create({ sig: sig73, script: script105 })),
+	p2wshTimelock: dyn(StructCodec, StructCodec.create({ sig: sig73, script: timelock })),
+	raw: dyn(Bytes, Bytes.variable()),
 });
+
+type StoredWitnessCodec = { stride: Stride };
+
+const StoredWitnessCodec = {
+	create(): StoredWitnessCodec {
+		return { stride: Stride.variable() };
+	},
+	encode(_self, data: Uint8Array[]) {
+		const enumValue = detectPattern(data);
+		return EnumCodec.encode(storedWitnessInternalCodec, enumValue);
+	},
+	decode(_self, bytes: Uint8Array) {
+		const [enumValue, bytesRead] = EnumCodec.decode(storedWitnessInternalCodec, bytes);
+		return [reconstructWitness(enumValue), bytesRead];
+	},
+} satisfies Impl<StoredWitnessCodec, Codec<StoredWitnessCodec, Uint8Array[]>>;
 
 function detectPattern(items: Uint8Array[]): StoredWitnessEnum {
 	if (items.length === 0) {

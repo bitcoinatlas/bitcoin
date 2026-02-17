@@ -1,7 +1,4 @@
-// TODO: This is mostly AI generated code. Maybe make it more reaadable later. Or don't ever look at it again. idk.
-
 import { sha256 } from "@noble/hashes/sha2";
-import { Codec } from "@nomadshiba/codec";
 
 // --- small fast utils ---
 const ASCII = new TextDecoder("ascii");
@@ -129,7 +126,7 @@ export declare namespace Peer {
 	};
 	export type Message<T> = {
 		command: string; // 1..12 ASCII
-		codec: Codec<T>;
+		codec: BoundCodec<T>;
 	};
 	export type Listener = (msg: Peer.MessagePayload) => void;
 	export type Unlistener = () => void;

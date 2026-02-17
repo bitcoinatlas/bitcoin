@@ -1,15 +1,15 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { Bytes } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { existsSync } from "@std/fs";
 import { dirname, join } from "@std/path";
+import { Bytes } from "~/lib/codec/bytes.ts";
 import { BlockHeader } from "~/lib/satoshi/primitives/BlockHeader.ts";
 import { Chain } from "./Chain.ts";
 import { ChainNode } from "./ChainNode.ts";
 import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils.ts";
 import { readFileExact } from "../fs.ts";
 
-const Item = new Bytes(BlockHeader.stride);
+const itemSchema = Bytes.fixed(BlockHeader.stride);
 
 export class ChainStore {
 	public readonly path: string;
@@ -24,7 +24,7 @@ export class ChainStore {
 		const writer = file.writable.getWriter();
 		for (const { header } of headers) {
 			await writer.write(
-				Item.encode(header),
+				Bytes.encode(itemSchema, header),
 			);
 		}
 		file.close();
@@ -32,7 +32,7 @@ export class ChainStore {
 	}
 
 	public async truncate(height: number): Promise<void> {
-		const size = (height + 1) * Item.stride;
+		const size = (height + 1) * itemSchema.stride;
 		const path = join(this.path);
 		const file = await Deno.open(path, { read: true, write: true });
 		await file.truncate(size);
@@ -42,7 +42,7 @@ export class ChainStore {
 	public async load(chain: Chain): Promise<void> {
 		const path = this.path;
 		const size = existsSync(path) ? Deno.statSync(path).size : 0;
-		if (size % Item.stride !== 0) {
+		if (size % itemSchema.stride !== 0) {
 			throw new Error("Invalid headers.dat file, size is not a multiple of header size");
 		}
 
@@ -51,13 +51,13 @@ export class ChainStore {
 		if (size > 0) {
 			await Deno.mkdir(dirname(path), { recursive: true });
 			const file = await Deno.open(path, { read: true });
-			const headerCount = size / Item.stride;
+			const headerCount = size / itemSchema.stride;
 			console.log(`Loading ${headerCount} headers from ${path}`);
 
 			for (let i = 0; i < headerCount; i++) {
-				const itemBytes = new Uint8Array(Item.stride);
+				const itemBytes = new Uint8Array(itemSchema.stride);
 				await readFileExact(file, itemBytes);
-				const [header] = Item.decode(itemBytes);
+				const [header] = Bytes.decode(itemSchema, itemBytes);
 				const prevHash = header.subarray(
 					BlockHeader.shape.version.stride,
 					BlockHeader.shape.version.stride + BlockHeader.shape.prevHash.stride,

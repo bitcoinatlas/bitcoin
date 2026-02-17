@@ -1,17 +1,28 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 
 export type SendHeadersMessage = null;
 
-export class SendHeadersMessageCodec extends Codec<SendHeadersMessage> {
-	public readonly stride = 0;
+type SendHeadersMessageCodec = { stride: number };
 
-	public encode(_: SendHeadersMessage): Uint8Array {
+const SendHeadersMessageCodec = {
+	...CodecDefaults<SendHeadersMessageCodec>(),
+	create(): SendHeadersMessageCodec {
+		return { stride: 0 };
+	},
+	encode(_self, _: SendHeadersMessage) {
 		return new Uint8Array(0);
-	}
-	public decode(_: Uint8Array): [SendHeadersMessage, number] {
-		return [null, 0];
-	}
-}
+	},
+	decode(_self, _bytes: Uint8Array) {
+		return [null, 0] as [SendHeadersMessage, number];
+	},
+} satisfies Impl<SendHeadersMessageCodec, Codec<SendHeadersMessageCodec, SendHeadersMessage>>;
 
-export const SendHeadersMessage = new PeerMessage("sendheaders", new SendHeadersMessageCodec());
+const _codec = SendHeadersMessageCodec.create();
+export const SendHeadersMessage = PeerMessage.create("sendheaders", {
+	stride: _codec.stride,
+	encode: (v: SendHeadersMessage) => SendHeadersMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => SendHeadersMessageCodec.decode(_codec, d),
+});

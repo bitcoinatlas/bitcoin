@@ -3,6 +3,8 @@
 ## Core Utilities (copy/paste)
 
 ```typescript
+export type Enum<T extends Record<string, (...args: any) => { readonly type: string }>> = ReturnType<T[keyof T]>;
+
 export type Trait<Self = any> = {
 	[key: string]: (self: Self, ...args: any) => any;
 };
@@ -35,6 +37,34 @@ export function dyn<T extends Impl<Self>, Self>(
 type ExtractTrait<T, Self> = {
 	[K in keyof T as T[K] extends (self: Self, ...args: any) => any ? K : never]: T[K];
 };
+```
+
+## Enums
+
+Enums are discriminated unions built from a `const` object of variant constructors. The type is derived via the `Enum`
+utility.
+
+```typescript
+export type Stride = Enum<typeof Stride>;
+export const Stride = {
+	fixed(size: number) {
+		return { type: "fixed", size } as const;
+	},
+	variable() {
+		return { type: "variable" } as const;
+	},
+};
+```
+
+Usage:
+
+```typescript
+const s = Stride.fixed(4);
+// s: { type: "fixed"; size: number }
+
+if (s.type === "fixed") {
+	console.log(s.size);
+}
 ```
 
 ## Structs

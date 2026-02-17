@@ -1,4 +1,7 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
+import type { BoundCodec } from "~/lib/codec/mod.ts";
 import { concat } from "@std/bytes";
 import { sha256 } from "@noble/hashes/sha2";
 import { BytesView } from "~/lib/BytesView.ts";
@@ -28,10 +31,14 @@ export type TxOut = Readonly<{
 	scriptPubKey: Uint8Array;
 }>;
 
-export class TxCodec extends Codec<Tx> {
-	public readonly stride = -1;
+type TxCodec = { stride: number };
 
-	public encode(tx: Omit<Tx, "txId">): Uint8Array {
+const TxCodec = {
+	...CodecDefaults<TxCodec>(),
+	create(): TxCodec {
+		return { stride: -1 };
+	},
+	encode(_self: TxCodec, tx: Omit<Tx, "txId">) {
 		const chunks: Uint8Array[] = [];
 
 		// version (int32 LE)
@@ -90,9 +97,8 @@ export class TxCodec extends Codec<Tx> {
 		chunks.push(lockBuf);
 
 		return concat(chunks);
-	}
-
-	public decode(bytes: Uint8Array): [Tx, number] {
+	},
+	decode(_self: TxCodec, bytes: Uint8Array) {
 		let offset = 0;
 
 		// version (int32 LE)
@@ -196,8 +202,18 @@ export class TxCodec extends Codec<Tx> {
 			witness: hasWitness,
 		};
 
-		return [tx, offset];
-	}
-}
+		return [tx, offset] as [Tx, number];
+	},
+} satisfies Impl<TxCodec, Codec<TxCodec, Tx>>;
 
-export const Tx = new TxCodec();
+const _txCodec = TxCodec.create();
+
+export const Tx: BoundCodec<Tx> = {
+	stride: _txCodec.stride,
+	encode(value: Tx | Omit<Tx, "txId">): Uint8Array {
+		return TxCodec.encode(_txCodec, value as Omit<Tx, "txId">);
+	},
+	decode(data: Uint8Array): [Tx, number] {
+		return TxCodec.decode(_txCodec, data);
+	},
+};

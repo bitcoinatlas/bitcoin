@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 
@@ -6,28 +8,28 @@ export type PongMessage = {
 	nonce: bigint;
 };
 
-export class PongMessageCodec extends Codec<PongMessage> {
-	public readonly stride = 8;
+type PongMessageCodec = { stride: number };
 
-	public encode(data: PongMessage): Uint8Array {
+const PongMessageCodec = {
+	...CodecDefaults<PongMessageCodec>(),
+	create(): PongMessageCodec {
+		return { stride: 8 };
+	},
+	encode(_self, data: PongMessage) {
 		const bytes = new Uint8Array(8);
 		const view = new BytesView(bytes);
-
 		view.setBigUint64(0, data.nonce, true);
-
 		return bytes;
-	}
-
-	public decode(bytes: Uint8Array): [PongMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		const view = new BytesView(bytes);
+		return [{ nonce: view.getBigUint64(0, true) }, 8] as [PongMessage, number];
+	},
+} satisfies Impl<PongMessageCodec, Codec<PongMessageCodec, PongMessage>>;
 
-		return [
-			{
-				nonce: view.getBigUint64(0, true),
-			},
-			8,
-		];
-	}
-}
-
-export const PongMessage = new PeerMessage("pong", new PongMessageCodec());
+const _codec = PongMessageCodec.create();
+export const PongMessage = PeerMessage.create("pong", {
+	stride: _codec.stride,
+	encode: (v: PongMessage) => PongMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => PongMessageCodec.decode(_codec, d),
+});

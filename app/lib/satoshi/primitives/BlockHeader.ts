@@ -1,6 +1,8 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { i32, Struct, u32 } from "@nomadshiba/codec";
-import { bytes32 } from "~/lib/primitives/Bytes32.ts";
+import { dyn } from "~/traits.ts";
+import { I32, U32 } from "~/lib/codec/primitives.ts";
+import { Bytes32 } from "~/lib/codec/bitcoin.ts";
+import { StructCodec } from "~/lib/codec/composites.ts";
 
 export type BlockHeader = Readonly<{
 	hash: Uint8Array;
@@ -12,27 +14,40 @@ export type BlockHeader = Readonly<{
 	nonce: number;
 }>;
 
-export class BlockHeaderCodec extends Struct<Omit<BlockHeader, "hash">> {
-	constructor() {
-		super({
-			version: i32,
-			prevHash: bytes32,
-			merkleRoot: bytes32,
-			timestamp: u32,
-			bits: u32,
-			nonce: u32,
-		});
-	}
+const i32 = I32.create();
+const u32 = U32.create();
+const bytes32 = Bytes32.create();
 
-	public override decode(bytes: Uint8Array): [BlockHeader, number] {
-		if (bytes.length < this.stride) {
-			throw new Error(`Not enough bytes to decode BlockHeader: need ${this.stride}, got ${bytes.length}`);
+const innerCodec = StructCodec.create<Omit<BlockHeader, "hash">>({
+	version: dyn(I32, i32),
+	prevHash: dyn(Bytes32, bytes32),
+	merkleRoot: dyn(Bytes32, bytes32),
+	timestamp: dyn(U32, u32),
+	bits: dyn(U32, u32),
+	nonce: dyn(U32, u32),
+});
+
+export const BlockHeader = {
+	stride: innerCodec.stride,
+	shape: {
+		version: { stride: i32.stride },
+		prevHash: { stride: bytes32.stride },
+		merkleRoot: { stride: bytes32.stride },
+		timestamp: { stride: u32.stride },
+		bits: { stride: u32.stride },
+		nonce: { stride: u32.stride },
+	},
+	encode(value: BlockHeader | Omit<BlockHeader, "hash">): Uint8Array {
+		return StructCodec.encode(innerCodec, value as Omit<BlockHeader, "hash">);
+	},
+	decode(bytes: Uint8Array): [BlockHeader, number] {
+		if (bytes.length < innerCodec.stride) {
+			throw new Error(
+				`Not enough bytes to decode BlockHeader: need ${innerCodec.stride}, got ${bytes.length}`,
+			);
 		}
-
-		const [header, bytesRead] = super.decode(bytes);
+		const [header, bytesRead] = StructCodec.decode<Omit<BlockHeader, "hash">>(innerCodec, bytes);
 		const hash = sha256(sha256(bytes.subarray(0, bytesRead)));
 		return [{ ...header, hash }, bytesRead];
-	}
-}
-
-export const BlockHeader = new BlockHeaderCodec();
+	},
+};

@@ -1,39 +1,41 @@
 import type { Dyn, Impl } from "~/traits.ts";
 import { dyn } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { decodeVarInt, encodeVarInt } from "~/lib/codec/varint.ts";
+import { Stride } from "./mod.ts";
 
 // ── Tuple ──
 // Fixed-length tuple of potentially different types.
 // Concatenates each element (no wrapper prefix).
 
-export type TupleSchema<T extends readonly unknown[] = readonly unknown[]> = {
-	stride: number;
+export type TupleCodec<T extends readonly unknown[] = readonly unknown[]> = {
+	stride: Stride;
 	codecs: { [K in keyof T]: Dyn<Codec<any, T[K]>> };
 };
 
 export const TupleCodec = {
-	...CodecDefaults<TupleSchema>(),
 	create<T extends readonly unknown[]>(
 		codecs: { [K in keyof T]: Dyn<Codec<any, T[K]>> },
-	): TupleSchema<T> {
+	): TupleCodec<T> {
 		let totalStride = 0;
 		let isVariable = false;
 		for (const codec of codecs) {
 			const s = codec.stride();
-			if (s < 0) {
+			if (s.type === "variable") {
 				isVariable = true;
 				break;
 			}
-			totalStride += s;
+			totalStride += s.size;
 		}
 		return {
-			stride: isVariable ? -1 : totalStride,
+			stride: isVariable ? Stride.variable() : Stride.fixed(totalStride),
 			codecs,
 		};
 	},
-	encode<T extends readonly unknown[]>(self: TupleSchema<T>, value: [...T]): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<T extends readonly unknown[]>(self: TupleCodec<T>, value: [...T]): Uint8Array {
 		const parts: Uint8Array[] = [];
 		for (let i = 0; i < self.codecs.length; i++) {
 			parts.push(self.codecs[i]!.encode(value[i]));
@@ -47,7 +49,7 @@ export const TupleCodec = {
 		}
 		return result;
 	},
-	decode<T extends readonly unknown[]>(self: TupleSchema<T>, data: Uint8Array): [T, number] {
+	decode<T extends readonly unknown[]>(self: TupleCodec<T>, data: Uint8Array): [T, number] {
 		const result: unknown[] = [];
 		let offset = 0;
 		for (let i = 0; i < self.codecs.length; i++) {
@@ -57,40 +59,42 @@ export const TupleCodec = {
 		}
 		return [result as unknown as T, offset];
 	},
-} satisfies Impl<TupleSchema, Codec<TupleSchema, readonly unknown[]>>;
+} satisfies Impl<TupleCodec, Codec<TupleCodec>>;
 
 // ── Struct ──
 // Named fields, stored as a tuple in DEFINITION ORDER.
 
-export type StructSchema<T extends Record<string, unknown> = Record<string, unknown>> = {
-	stride: number;
+export type StructCodec<T extends Record<string, unknown> = Record<string, unknown>> = {
+	stride: Stride;
 	keys: (keyof T & string)[];
 	codecs: { [K in keyof T]: Dyn<Codec<any, T[K]>> };
 };
 
 export const StructCodec = {
-	...CodecDefaults<StructSchema>(),
 	create<T extends Record<string, unknown>>(
 		shape: { [K in keyof T]: Dyn<Codec<any, T[K]>> },
-	): StructSchema<T> {
+	): StructCodec<T> {
 		const keys = Object.keys(shape) as (keyof T & string)[];
 		let totalStride = 0;
 		let isVariable = false;
 		for (const key of keys) {
 			const s = shape[key]!.stride();
-			if (s < 0) {
+			if (s.type === "variable") {
 				isVariable = true;
 				break;
 			}
-			totalStride += s;
+			totalStride += s.size;
 		}
 		return {
-			stride: isVariable ? -1 : totalStride,
+			stride: isVariable ? Stride.variable() : Stride.fixed(totalStride),
 			keys,
 			codecs: shape,
 		};
 	},
-	encode<T extends Record<string, unknown>>(self: StructSchema<T>, value: T): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<T extends Record<string, unknown>>(self: StructCodec<T>, value: T): Uint8Array {
 		const parts: Uint8Array[] = [];
 		for (const key of self.keys) {
 			parts.push(self.codecs[key]!.encode(value[key]));
@@ -104,7 +108,7 @@ export const StructCodec = {
 		}
 		return result;
 	},
-	decode<T extends Record<string, unknown>>(self: StructSchema<T>, data: Uint8Array): [T, number] {
+	decode<T extends Record<string, unknown>>(self: StructCodec<T>, data: Uint8Array): [T, number] {
 		const result: Record<string, unknown> = {};
 		let offset = 0;
 		for (const key of self.keys) {
@@ -114,22 +118,24 @@ export const StructCodec = {
 		}
 		return [result as T, offset];
 	},
-} satisfies Impl<StructSchema, Codec<StructSchema, Record<string, unknown>>>;
+} satisfies Impl<StructCodec, Codec<StructCodec>>;
 
 // ── Vector ──
 // Variable-length array. Varint count prefix + concatenated elements.
 
-export type VectorSchema<T = unknown> = {
-	stride: number;
+export type VectorCodec<T = unknown> = {
+	stride: Stride;
 	codec: Dyn<Codec<any, T>>;
 };
 
 export const VectorCodec = {
-	...CodecDefaults<VectorSchema>(),
-	create<T>(codec: Dyn<Codec<any, T>>): VectorSchema<T> {
-		return { stride: -1, codec };
+	create<T>(codec: Dyn<Codec<any, T>>): VectorCodec<T> {
+		return { stride: Stride.variable(), codec };
 	},
-	encode<T>(self: VectorSchema<T>, value: T[]): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<T>(self: VectorCodec<T>, value: T[]): Uint8Array {
 		const parts: Uint8Array[] = [];
 		for (const item of value) {
 			parts.push(self.codec.encode(item));
@@ -147,7 +153,7 @@ export const VectorCodec = {
 		result.set(elementsData, countPrefix.length);
 		return result;
 	},
-	decode<T>(self: VectorSchema<T>, data: Uint8Array): [T[], number] {
+	decode<T>(self: VectorCodec<T>, data: Uint8Array): [T[], number] {
 		const [count, bytesRead] = decodeVarInt(data);
 		const result: T[] = [];
 		let offset = bytesRead;
@@ -158,22 +164,24 @@ export const VectorCodec = {
 		}
 		return [result, offset];
 	},
-} satisfies Impl<VectorSchema, Codec<VectorSchema, unknown[]>>;
+} satisfies Impl<VectorCodec, Codec<VectorCodec>>;
 
 // ── Option ──
 // 0x00 for null, 0x01 + payload for present.
 
-export type OptionSchema<T = unknown> = {
-	stride: number;
+export type OptionCodec<T = unknown> = {
+	stride: Stride;
 	codec: Dyn<Codec<any, T>>;
 };
 
 export const OptionCodec = {
-	...CodecDefaults<OptionSchema>(),
-	create<T>(codec: Dyn<Codec<any, T>>): OptionSchema<T> {
-		return { stride: -1, codec };
+	create<T>(codec: Dyn<Codec<any, T>>): OptionCodec<T> {
+		return { stride: Stride.variable(), codec };
 	},
-	encode<T>(self: OptionSchema<T>, value: T | null): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<T>(self: OptionCodec<T>, value: T | null): Uint8Array {
 		if (value === null) {
 			return new Uint8Array([0]);
 		}
@@ -183,14 +191,14 @@ export const OptionCodec = {
 		result.set(encoded, 1);
 		return result;
 	},
-	decode<T>(self: OptionSchema<T>, data: Uint8Array): [T | null, number] {
+	decode<T>(self: OptionCodec<T>, data: Uint8Array): [T | null, number] {
 		if (data[0] === 0) {
 			return [null, 1];
 		}
 		const [value, size] = self.codec.decode(data.subarray(1));
 		return [value, 1 + size];
 	},
-} satisfies Impl<OptionSchema, Codec<OptionSchema, unknown | null>>;
+} satisfies Impl<OptionCodec, Codec<OptionCodec>>;
 
 // ── Enum ──
 // 1-byte variant index (sorted by name) + payload.
@@ -199,21 +207,39 @@ export type EnumValue<T extends Record<string, unknown> = Record<string, unknown
 	[K in keyof T & string]: { kind: K; value: T[K] };
 }[keyof T & string];
 
-export type EnumSchema<T extends Record<string, unknown> = Record<string, unknown>> = {
-	stride: number;
+export type EnumCodec<T extends Record<string, unknown> = Record<string, unknown>> = {
+	stride: Stride;
 	keys: (keyof T & string)[];
 	variants: { [K in keyof T]: Dyn<Codec<any, T[K]>> };
 };
 
 export const EnumCodec = {
-	...CodecDefaults<EnumSchema>(),
 	create<T extends Record<string, unknown>>(
 		variants: { [K in keyof T]: Dyn<Codec<any, T[K]>> },
-	): EnumSchema<T> {
+	): EnumCodec<T> {
 		const keys = (Object.keys(variants) as (keyof T & string)[]).sort();
-		return { stride: -1, keys, variants };
+		let commonStride: number | null = null;
+		let isFixed = true;
+		for (const key of keys) {
+			const s = variants[key]!.stride();
+			if (s.type === "variable") {
+				isFixed = false;
+				break;
+			}
+			if (commonStride === null) {
+				commonStride = s.size;
+			} else if (commonStride !== s.size) {
+				isFixed = false;
+				break;
+			}
+		}
+		const stride = isFixed && commonStride !== null ? Stride.fixed(1 + commonStride) : Stride.variable();
+		return { stride, keys, variants };
 	},
-	encode<T extends Record<string, unknown>>(self: EnumSchema<T>, value: EnumValue<T>): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<T extends Record<string, unknown>>(self: EnumCodec<T>, value: EnumValue<T>): Uint8Array {
 		const index = self.keys.indexOf(value.kind);
 		if (index === -1) {
 			throw new Error(`Invalid enum variant: ${value.kind}`);
@@ -225,7 +251,7 @@ export const EnumCodec = {
 		result.set(encodedValue, 1);
 		return result;
 	},
-	decode<T extends Record<string, unknown>>(self: EnumSchema<T>, data: Uint8Array): [EnumValue<T>, number] {
+	decode<T extends Record<string, unknown>>(self: EnumCodec<T>, data: Uint8Array): [EnumValue<T>, number] {
 		const index = data[0]!;
 		if (index >= self.keys.length) {
 			throw new Error(`Invalid enum index: ${index}`);
@@ -235,30 +261,32 @@ export const EnumCodec = {
 		const [value, size] = codec.decode(data.subarray(1));
 		return [{ kind: key, value } as EnumValue<T>, 1 + size];
 	},
-} satisfies Impl<EnumSchema, Codec<EnumSchema, EnumValue>>;
+} satisfies Impl<EnumCodec, Codec<EnumCodec>>;
 
 // ── Mapping ──
 // Encoded as a Vector of Tuple [key, value].
 
-export type MappingSchema<K = unknown, V = unknown> = {
-	stride: number;
-	entriesSchema: VectorSchema<[K, V]>;
+export type MappingCodec<K = unknown, V = unknown> = {
+	stride: Stride;
+	entries: VectorCodec<[K, V]>;
 };
 
 export const MappingCodec = {
-	...CodecDefaults<MappingSchema>(),
-	create<K, V>(keyCodec: Dyn<Codec<any, K>>, valueCodec: Dyn<Codec<any, V>>): MappingSchema<K, V> {
-		const tupleSchema = TupleCodec.create<[K, V]>([keyCodec, valueCodec] as any);
-		const tupleDyn = dyn(TupleCodec, tupleSchema) as Dyn<Codec<any, [K, V]>>;
-		const entriesSchema = VectorCodec.create(tupleDyn);
-		return { stride: -1, entriesSchema };
+	create<K, V>(keyCodec: Dyn<Codec<any, K>>, valueCodec: Dyn<Codec<any, V>>): MappingCodec<K, V> {
+		const tupleCodec = TupleCodec.create<[K, V]>([keyCodec, valueCodec] as any);
+		const tupleDyn = dyn(TupleCodec, tupleCodec) as Dyn<Codec<any, [K, V]>>;
+		const entries = VectorCodec.create(tupleDyn);
+		return { stride: Stride.variable(), entries };
 	},
-	encode<K, V>(self: MappingSchema<K, V>, value: Map<K, V>): Uint8Array {
+	stride(self) {
+		return self.stride;
+	},
+	encode<K, V>(self: MappingCodec<K, V>, value: Map<K, V>): Uint8Array {
 		const entries = Array.from(value.entries()) as [K, V][];
-		return VectorCodec.encode(self.entriesSchema, entries);
+		return VectorCodec.encode(self.entries, entries);
 	},
-	decode<K, V>(self: MappingSchema<K, V>, data: Uint8Array): [Map<K, V>, number] {
-		const [entries, size] = VectorCodec.decode(self.entriesSchema, data);
+	decode<K, V>(self: MappingCodec<K, V>, data: Uint8Array): [Map<K, V>, number] {
+		const [entries, size] = VectorCodec.decode(self.entries, data);
 		return [new Map(entries), size];
 	},
-} satisfies Impl<MappingSchema, Codec<MappingSchema, Map<unknown, unknown>>>;
+} satisfies Impl<MappingCodec, Codec<MappingCodec>>;

@@ -1,4 +1,7 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
+import type { BoundCodec } from "~/lib/codec/mod.ts";
 import { StoredPointer } from "./StoredPointer.ts";
 
 /**
@@ -98,10 +101,14 @@ function reconstructScript(typeId: number, payload: Uint8Array): Uint8Array {
 	}
 }
 
-export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
-	public readonly stride = -1;
+type StoredTxOutputCodec = { stride: number };
 
-	encode(obj: StoredTxOutput): Uint8Array {
+const StoredTxOutputCodec = {
+	...CodecDefaults<StoredTxOutputCodec>(),
+	create(): StoredTxOutputCodec {
+		return { stride: -1 };
+	},
+	encode(_self, obj: StoredTxOutput) {
 		if (obj.value < 0n || obj.value >= (1n << 51n)) {
 			throw new Error("Value out of range for 51-bit integer");
 		}
@@ -136,9 +143,8 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 		out.set(header, 0);
 		out.set(payload, 7);
 		return out;
-	}
-
-	decode(data: Uint8Array): [StoredTxOutput, number] {
+	},
+	decode(_self, data: Uint8Array) {
 		if (data.length < 7) throw new Error("Invalid data length for StoredTxOutput");
 
 		let combined = 0n;
@@ -162,18 +168,20 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 				{
 					value,
 					spent,
-					scriptType: "pointer",
+					scriptType: "pointer" as const,
 					pointer,
 				},
 				bytesRead,
-			];
+			] as [StoredTxOutput, number];
 		}
 		if (typeId === SCRIPT_TYPE.raw) {
-			return [{ value, spent, scriptType: "raw", scriptPubKey: payload }, data.length];
+			return [
+				{ value, spent, scriptType: "raw" as const, scriptPubKey: payload },
+				data.length,
+			] as [StoredTxOutput, number];
 		}
 
 		// Fixed-size payloads based on typeId
-
 		const payloadSize = SCRIPT_SIZE[typeId];
 		if (payloadSize === undefined) {
 			throw new Error(`Unknown type ID: ${typeId}`);
@@ -181,8 +189,21 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 
 		bytesRead += payloadSize;
 		const script = reconstructScript(typeId, payload.subarray(0, payloadSize));
-		return [{ value, spent, scriptType: "raw", scriptPubKey: script }, bytesRead];
-	}
-}
+		return [
+			{ value, spent, scriptType: "raw" as const, scriptPubKey: script },
+			bytesRead,
+		] as [StoredTxOutput, number];
+	},
+} satisfies Impl<StoredTxOutputCodec, Codec<StoredTxOutputCodec, StoredTxOutput>>;
 
-export const StoredTxOutput = new StoredTxOutputCodec();
+const _schema = StoredTxOutputCodec.create();
+
+export const StoredTxOutput: BoundCodec<StoredTxOutput> = {
+	stride: _schema.stride,
+	encode(value: StoredTxOutput): Uint8Array {
+		return StoredTxOutputCodec.encode(_schema, value);
+	},
+	decode(data: Uint8Array): [StoredTxOutput, number] {
+		return StoredTxOutputCodec.decode(_schema, data);
+	},
+};

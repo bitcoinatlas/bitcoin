@@ -1,5 +1,7 @@
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { concatBytes } from "@noble/hashes/utils";
-import { Codec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { CompactSize } from "~/lib/CompactSize.ts";
 import { BlockHeader } from "~/lib/satoshi/primitives/BlockHeader.ts";
@@ -11,22 +13,20 @@ export type Block = Readonly<{
 	txs: Tx[];
 }>;
 
-export class BlockCodec extends Codec<Block> {
-	public readonly stride = -1;
+export type BlockCodec = { stride: number };
 
-	public encode(block: Block): Uint8Array {
-		const { header, txs } = block;
-
-		const headerBytes = BlockHeader.encode(header);
-
-		const countBytes = CompactSize.encode(txs.length);
-
-		const txsBytes = txs.map((tx) => Tx.encode(tx));
-
+export const BlockCodec = {
+	...CodecDefaults<BlockCodec>(),
+	create(): BlockCodec {
+		return { stride: -1 };
+	},
+	encode(_self, block: Block) {
+		const headerBytes = BlockHeader.encode(block.header);
+		const countBytes = CompactSize.encode(block.txs.length);
+		const txsBytes = block.txs.map((tx) => Tx.encode(tx));
 		return concatBytes(headerBytes, countBytes, ...txsBytes);
-	}
-
-	public decode(bytes: Uint8Array): [Block, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		let offset = 0;
 
 		const [header, headerBytes] = BlockHeader.decode(bytes.subarray(offset));
@@ -56,8 +56,6 @@ export class BlockCodec extends Codec<Block> {
 			throw new Error(`Transaction count mismatch: expected ${txCount}, got ${txs.length}`);
 		}
 
-		return [{ header, txs }, offset];
-	}
-}
-
-export const Block = new BlockCodec();
+		return [{ header, txs }, offset] as [Block, number];
+	},
+} satisfies Impl<BlockCodec, Codec<BlockCodec, Block>>;

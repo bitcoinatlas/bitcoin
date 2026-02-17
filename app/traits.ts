@@ -1,3 +1,5 @@
+export type Enum<T extends Record<string, (...args: any) => { readonly type: string }>> = ReturnType<T[keyof T]>;
+
 export type Trait<Self = any> = {
 	[key: string]: (self: Self, ...args: any) => any;
 };

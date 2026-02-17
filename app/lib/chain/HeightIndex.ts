@@ -1,14 +1,13 @@
-import { Codec } from "@nomadshiba/codec";
 import { existsSync } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { readFileExactSync } from "../fs.ts";
 
 export class HeightStore<T> {
-	public readonly codec: Codec<T>;
+	public readonly codec: BoundCodec<T>;
 	public readonly path: string;
 	private readonly memory: T[];
 
-	constructor(codec: Codec<T>, path: string) {
+	constructor(codec: BoundCodec<T>, path: string) {
 		this.codec = codec;
 		this.path = path;
 		this.memory = [];

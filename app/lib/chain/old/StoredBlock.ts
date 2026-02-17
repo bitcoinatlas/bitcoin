@@ -1,33 +1,40 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
+import { U24 } from "~/lib/codec/bitcoin.ts";
 import { concat } from "@std/bytes";
-import { u24 } from "../../primitives/U24.ts";
-import { Block } from "../../satoshi/primitives/Block.ts";
+import type { Block } from "../../satoshi/primitives/Block.ts";
 import { SequenceLock } from "../../satoshi/primitives/weirdness/SequenceLock.ts";
 import { TimeLock } from "../../satoshi/primitives/weirdness/TimeLock.ts";
-import { StoredCoinbaseTx } from "./StoredCoinbaseTx.ts";
-import { StoredTx } from "./StoredTx.ts";
-import { StoredTxInput } from "./StoredTxInput.ts";
-import { StoredTxOutput } from "./StoredTxOutput.ts";
+import { StoredCoinbaseTx } from "../old/StoredCoinbaseTx.ts";
+import { StoredTx } from "../old/StoredTx.ts";
+import type { StoredTxInput } from "../old/StoredTxInput.ts";
+import type { StoredTxOutput } from "../old/StoredTxOutput.ts";
+
+const u24Codec = U24.create();
 
 export type StoredBlock = {
 	coinbaseTx: StoredCoinbaseTx;
 	txs: StoredTx[];
 };
-export class StoredBlockCodec extends Codec<StoredBlock> {
-	public readonly stride = -1;
 
-	public encode(value: StoredBlock): Uint8Array {
-		const lengthEncoded = u24.encode(value.txs.length);
+type StoredBlockCodec = { stride: number };
 
+const StoredBlockCodec = {
+	...CodecDefaults<StoredBlockCodec>(),
+	create(): StoredBlockCodec {
+		return { stride: -1 };
+	},
+	encode(_self, value: StoredBlock) {
+		const lengthEncoded = U24.encode(u24Codec, value.txs.length);
 		const coinbaseEncoded = StoredCoinbaseTx.encode(value.coinbaseTx);
 		const txsEncoded = value.txs.values().map((tx) => StoredTx.encode(tx));
 		return concat([lengthEncoded, coinbaseEncoded, ...txsEncoded]);
-	}
-
-	public decode(data: Uint8Array): [StoredBlock, number] {
+	},
+	decode(_self, data: Uint8Array) {
 		let offset = 0;
 
-		const [txCount, txCountSize] = u24.decode(data.subarray(offset));
+		const [txCount, txCountSize] = U24.decode(u24Codec, data.subarray(offset));
 		offset += txCountSize;
 		const [coinbase, coinbaseSize] = StoredCoinbaseTx.decode(data.subarray(offset));
 		offset += coinbaseSize;
@@ -38,10 +45,9 @@ export class StoredBlockCodec extends Codec<StoredBlock> {
 			txs.push(tx);
 			offset += txBytes;
 		}
-		return [{ coinbaseTx: coinbase, txs }, offset];
-	}
-
-	public fromBlock(block: Block): StoredBlock {
+		return [{ coinbaseTx: coinbase, txs }, offset] as [StoredBlock, number];
+	},
+	fromBlock(_self: StoredBlockCodec, block: Block): StoredBlock {
 		const [coinbaseTx, ...txs] = block.txs;
 
 		if (!coinbaseTx) {
@@ -91,7 +97,20 @@ export class StoredBlockCodec extends Codec<StoredBlock> {
 			},
 			txs: storedTxs,
 		};
-	}
-}
+	},
+} satisfies Impl<StoredBlockCodec, Codec<StoredBlockCodec, StoredBlock>>;
 
-export const StoredBlock = new StoredBlockCodec();
+const _codec = StoredBlockCodec.create();
+
+export const StoredBlock: BoundCodec<StoredBlock> & { fromBlock(block: Block): StoredBlock } = {
+	stride: _codec.stride,
+	encode(value: StoredBlock): Uint8Array {
+		return StoredBlockCodec.encode(_codec, value);
+	},
+	decode(data: Uint8Array): [StoredBlock, number] {
+		return StoredBlockCodec.decode(_codec, data);
+	},
+	fromBlock(block: Block): StoredBlock {
+		return StoredBlockCodec.fromBlock(_codec, block);
+	},
+};

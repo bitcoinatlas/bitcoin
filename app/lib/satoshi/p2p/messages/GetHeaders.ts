@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 
@@ -8,10 +10,14 @@ export type GetHeadersMessage = {
 	stopHash: Uint8Array;
 };
 
-export class GetHeadersMessageCodec extends Codec<GetHeadersMessage> {
-	public readonly stride = -1;
+type GetHeadersMessageCodec = { stride: number };
 
-	public encode(data: GetHeadersMessage): Uint8Array {
+const GetHeadersMessageCodec = {
+	...CodecDefaults<GetHeadersMessageCodec>(),
+	create(): GetHeadersMessageCodec {
+		return { stride: -1 };
+	},
+	encode(_self, data: GetHeadersMessage) {
 		const count = data.locators.length;
 		const bytes = new Uint8Array(4 + 1 + 32 * count + 32);
 		const view = new BytesView(bytes);
@@ -41,9 +47,8 @@ export class GetHeadersMessageCodec extends Codec<GetHeadersMessage> {
 		offset += data.stopHash.byteLength;
 
 		return bytes.subarray(0, offset);
-	}
-
-	public decode(bytes: Uint8Array): [GetHeadersMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		const view = new BytesView(bytes);
 
 		let offset = 0;
@@ -62,8 +67,13 @@ export class GetHeadersMessageCodec extends Codec<GetHeadersMessage> {
 		const stopHash = bytes.subarray(offset, offset + 32);
 		offset += 32;
 
-		return [{ version, locators: hashes, stopHash }, offset];
-	}
-}
+		return [{ version, locators: hashes, stopHash }, offset] as [GetHeadersMessage, number];
+	},
+} satisfies Impl<GetHeadersMessageCodec, Codec<GetHeadersMessageCodec, GetHeadersMessage>>;
 
-export const GetHeadersMessage = new PeerMessage("getheaders", new GetHeadersMessageCodec());
+const _codec = GetHeadersMessageCodec.create();
+export const GetHeadersMessage = PeerMessage.create("getheaders", {
+	stride: _codec.stride,
+	encode: (v: GetHeadersMessage) => GetHeadersMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => GetHeadersMessageCodec.decode(_codec, d),
+});

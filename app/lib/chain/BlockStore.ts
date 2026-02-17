@@ -1,7 +1,7 @@
 import { exists, existsSync } from "@std/fs";
 import { dirname, join } from "@std/path";
 import { BlockHeightIndex } from "./BlockHeightIndex.ts";
-import { StoredBlock } from "./primitives/StoredBlock.ts";
+import { StoredBlock } from "./old/StoredBlock.ts";
 import { readFileExact } from "../fs.ts";
 import { MAX_BLOCK_WEIGHT } from "../constants.ts";
 

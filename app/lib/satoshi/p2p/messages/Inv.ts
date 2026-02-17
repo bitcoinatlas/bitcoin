@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
 
@@ -20,10 +22,14 @@ export type InvMessage = {
 	inventory: InvVector[];
 };
 
-export class InvMessageCodec extends Codec<InvMessage> {
-	public readonly stride = -1;
+type InvMessageCodec = { stride: number };
 
-	public encode(data: InvMessage): Uint8Array {
+const InvMessageCodec = {
+	...CodecDefaults<InvMessageCodec>(),
+	create(): InvMessageCodec {
+		return { stride: -1 };
+	},
+	encode(_self, data: InvMessage) {
 		const count = data.inventory.length;
 		if (count >= 0xfd) throw new Error("Too many inventory items");
 
@@ -40,9 +46,8 @@ export class InvMessageCodec extends Codec<InvMessage> {
 		}
 
 		return bytes;
-	}
-
-	public decode(bytes: Uint8Array): [InvMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		let offset = 0;
 		const count = bytes[offset++]!;
 		const inventory = [];
@@ -58,8 +63,13 @@ export class InvMessageCodec extends Codec<InvMessage> {
 			offset += 36;
 		}
 
-		return [{ inventory }, offset];
-	}
-}
+		return [{ inventory }, offset] as [InvMessage, number];
+	},
+} satisfies Impl<InvMessageCodec, Codec<InvMessageCodec, InvMessage>>;
 
-export const InvMessage = new PeerMessage("inv", new InvMessageCodec());
+const _codec = InvMessageCodec.create();
+export const InvMessage = PeerMessage.create("inv", {
+	stride: _codec.stride,
+	encode: (v: InvMessage) => InvMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => InvMessageCodec.decode(_codec, d),
+});

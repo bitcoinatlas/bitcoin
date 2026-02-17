@@ -1,11 +1,5 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec } from "~/lib/codec/mod.ts";
 
-export class PeerMessage<T> {
-	public readonly command: string;
-	public readonly codec: Codec<T>;
-
-	constructor(command: string, codec: Codec<T>) {
-		this.command = command;
-		this.codec = codec;
-	}
-}
+export type PeerMessage<Self = any, T = any> = Codec<T> {
+	command(): string;
+};

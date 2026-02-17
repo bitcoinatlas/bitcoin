@@ -1,4 +1,6 @@
-import { Codec } from "@nomadshiba/codec";
+import type { Impl } from "~/traits.ts";
+import type { Codec } from "~/lib/codec/traits.ts";
+import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { CompactSize } from "~/lib/CompactSize.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
@@ -14,10 +16,14 @@ export type AddrMessage = {
 	addresses: AddrItem[];
 };
 
-export class AddrMessageCodec extends Codec<AddrMessage> {
-	public readonly stride = -1;
+type AddrMessageCodec = { stride: number };
 
-	public encode(data: AddrMessage): Uint8Array {
+const AddrMessageCodec = {
+	...CodecDefaults<AddrMessageCodec>(),
+	create(): AddrMessageCodec {
+		return { stride: -1 };
+	},
+	encode(_self, data: AddrMessage) {
 		const count = data.addresses.length;
 		const countBytes = CompactSize.encode(count);
 		const bytes = new Uint8Array(countBytes.length + count * 30);
@@ -48,9 +54,8 @@ export class AddrMessageCodec extends Codec<AddrMessage> {
 		}
 
 		return bytes.subarray(0, offset);
-	}
-
-	public decode(bytes: Uint8Array): [AddrMessage, number] {
+	},
+	decode(_self, bytes: Uint8Array) {
 		const [count, countSize] = CompactSize.decode(bytes, 0);
 		let offset = countSize;
 
@@ -74,11 +79,16 @@ export class AddrMessageCodec extends Codec<AddrMessage> {
 			addresses.push({ timestamp, services, host: ip, port });
 		}
 
-		return [{ addresses }, offset];
-	}
-}
+		return [{ addresses }, offset] as [AddrMessage, number];
+	},
+} satisfies Impl<AddrMessageCodec, Codec<AddrMessageCodec, AddrMessage>>;
 
-export const AddrMessage = new PeerMessage("addr", new AddrMessageCodec());
+const _codec = AddrMessageCodec.create();
+export const AddrMessage = PeerMessage.create("addr", {
+	stride: _codec.stride,
+	encode: (v: AddrMessage) => AddrMessageCodec.encode(_codec, v),
+	decode: (d: Uint8Array) => AddrMessageCodec.decode(_codec, d),
+});
 
 function encodeIP(ip: string): Uint8Array {
 	const bytes = new Uint8Array(16);

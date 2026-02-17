@@ -1,15 +1,17 @@
-import type { Impl } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { CodecDefaults } from "~/lib/codec/traits.ts";
+import type { Impl } from "~/traits.ts";
+import { Stride } from "./mod.ts";
 
 // ── U8 ──
 
-export type U8 = { stride: number };
+export type U8 = { stride: Stride };
 
 export const U8 = {
-	...CodecDefaults<U8>(),
 	create(): U8 {
-		return { stride: 1 };
+		return { stride: Stride.fixed(1) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		return new Uint8Array([value & 0xff]);
@@ -21,12 +23,14 @@ export const U8 = {
 
 // ── I8 ──
 
-export type I8 = { stride: number };
+export type I8 = { stride: Stride };
 
 export const I8 = {
-	...CodecDefaults<I8>(),
 	create(): I8 {
-		return { stride: 1 };
+		return { stride: Stride.fixed(1) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(1);
@@ -41,12 +45,14 @@ export const I8 = {
 
 // ── U16 ──
 
-export type U16 = { stride: number };
+export type U16 = { stride: Stride };
 
 export const U16 = {
-	...CodecDefaults<U16>(),
-	create(): U16 {
-		return { stride: 2 };
+	create() {
+		return { stride: Stride.fixed(2) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(2);
@@ -61,12 +67,14 @@ export const U16 = {
 
 // ── I16 ──
 
-export type I16 = { stride: number };
+export type I16 = { stride: Stride };
 
 export const I16 = {
-	...CodecDefaults<I16>(),
 	create(): I16 {
-		return { stride: 2 };
+		return { stride: Stride.fixed(2) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(2);
@@ -81,12 +89,14 @@ export const I16 = {
 
 // ── U32 ──
 
-export type U32 = { stride: number };
+export type U32 = { stride: Stride };
 
 export const U32 = {
-	...CodecDefaults<U32>(),
 	create(): U32 {
-		return { stride: 4 };
+		return { stride: Stride.fixed(4) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(4);
@@ -101,12 +111,14 @@ export const U32 = {
 
 // ── I32 ──
 
-export type I32 = { stride: number };
+export type I32 = { stride: Stride };
 
 export const I32 = {
-	...CodecDefaults<I32>(),
 	create(): I32 {
-		return { stride: 4 };
+		return { stride: Stride.fixed(4) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(4);
@@ -121,12 +133,14 @@ export const I32 = {
 
 // ── U64 ──
 
-export type U64 = { stride: number };
+export type U64 = { stride: Stride };
 
 export const U64 = {
-	...CodecDefaults<U64>(),
 	create(): U64 {
-		return { stride: 8 };
+		return { stride: Stride.fixed(8) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: bigint) {
 		const arr = new Uint8Array(8);
@@ -141,12 +155,14 @@ export const U64 = {
 
 // ── I64 ──
 
-export type I64 = { stride: number };
+export type I64 = { stride: Stride };
 
 export const I64 = {
-	...CodecDefaults<I64>(),
 	create(): I64 {
-		return { stride: 8 };
+		return { stride: Stride.fixed(8) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: bigint) {
 		const arr = new Uint8Array(8);
@@ -161,12 +177,14 @@ export const I64 = {
 
 // ── Bool ──
 
-export type Bool = { stride: number };
+export type Bool = { stride: Stride };
 
 export const Bool = {
-	...CodecDefaults<Bool>(),
 	create(): Bool {
-		return { stride: 1 };
+		return { stride: Stride.fixed(1) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: boolean) {
 		return new Uint8Array([value ? 1 : 0]);
@@ -178,12 +196,14 @@ export const Bool = {
 
 // ── F32 ──
 
-export type F32 = { stride: number };
+export type F32 = { stride: Stride };
 
 export const F32 = {
-	...CodecDefaults<F32>(),
 	create(): F32 {
-		return { stride: 4 };
+		return { stride: Stride.fixed(4) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(4);
@@ -198,12 +218,14 @@ export const F32 = {
 
 // ── F64 ──
 
-export type F64 = { stride: number };
+export type F64 = { stride: Stride };
 
 export const F64 = {
-	...CodecDefaults<F64>(),
 	create(): F64 {
-		return { stride: 8 };
+		return { stride: Stride.fixed(8) };
+	},
+	stride(self) {
+		return self.stride;
 	},
 	encode(_self, value: number) {
 		const arr = new Uint8Array(8);
