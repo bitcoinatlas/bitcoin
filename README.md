@@ -13,24 +13,6 @@ We prioritize UX and simplicity. The end user is a normal everyday Bitcoin user,
 We are not trying to change Bitcoin. We are simply giving you a way to use Bitcoin in the best way possible, with less
 storage and less friction.
 
----
-
-## ~~Update: I changed my mind~~
-
-~~I’ve been working on this for a while, and the more I build, the more I feel this project would be even better (and
-more understandable) with ECS and game loops.~~
-
-~~**Current plan:**~~
-
-~~1. First, make the storage optimization work with the current Deno/TypeScript codebase and actually get a full node
-that takes significantly less disk space.~~ ~~2. After that succeeds, I’ll move the implementation to modern C# using an
-ECS library (https://github.com/Felid-Force-Studios/StaticEcs).~~
-
-~~Deno/TS is for fast iteration and proving the storage model.\
-C# + ECS will be for long-term performance, parallelism, and game-loop style logic.~~
-
----
-
 ## Notes
 
 - The whole codebase uses **wire format internally**, so there is no `.reverse()` or `.toReversed()` anywhere in the
@@ -47,16 +29,12 @@ C# + ECS will be for long-term performance, parallelism, and game-loop style log
 - `computeSatoshiMerkleRoot` returns **empty bytes (void)** instead of a `[hash, mutated]` pair. There is no `mutated`
   boolean.
 
----
-
 ## Short-Term Goal
 
 - Install Termux on your phone.
 - `pkg install deno`
 - `deno run -A bitcoinatlas.ts`
 - Have a full node with full history, **running on your phone** and actually fitting in its storage.
-
----
 
 ## Long-Term Goals
 
