@@ -15,8 +15,8 @@
 		"~/": "./app/"
 	},
 	"tasks": {
-		"cache": "deno cache .",
-		"start": "deno run -A ./app/start.ts"
+		"cache": "deno cache ./app/main.ts",
+		"start": "deno run -A ./app/main.ts"
 	},
 	"unstable": ["raw-imports"],
 	"compilerOptions": {
