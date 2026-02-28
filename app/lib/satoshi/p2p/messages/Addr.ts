@@ -1,6 +1,5 @@
 import type { Impl } from "~/traits.ts";
 import type { Codec } from "~/lib/codec/traits.ts";
-import { CodecDefaults } from "~/lib/codec/traits.ts";
 import { BytesView } from "~/lib/BytesView.ts";
 import { CompactSize } from "~/lib/CompactSize.ts";
 import { PeerMessage } from "~/lib/satoshi/p2p/PeerMessage.ts";
@@ -19,7 +18,6 @@ export type AddrMessage = {
 type AddrMessageCodec = { stride: number };
 
 const AddrMessageCodec = {
-	...CodecDefaults<AddrMessageCodec>(),
 	create(): AddrMessageCodec {
 		return { stride: -1 };
 	},
