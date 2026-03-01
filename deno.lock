@@ -4,19 +4,13 @@
     "jsr:@noble/curves@1.9.0": "1.9.0",
     "jsr:@noble/hashes@1.8.0": "1.8.0",
     "jsr:@noble/secp256k1@2.3.0": "2.3.0",
-    "jsr:@soapbox/kysely-deno-sqlite@2.2.0": "2.2.0",
+    "jsr:@std/assert@*": "1.0.18",
     "jsr:@std/async@1.0.14": "1.0.14",
     "jsr:@std/bytes@1.0.6": "1.0.6",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
     "jsr:@std/encoding@1.0.10": "1.0.10",
-    "jsr:@std/fs@1.0.19": "1.0.19",
-    "jsr:@std/internal@^1.0.10": "1.0.10",
-    "jsr:@std/internal@^1.0.9": "1.0.10",
-    "jsr:@std/path@1.1.2": "1.1.2",
-    "jsr:@std/path@^1.1.1": "1.1.2",
-    "jsr:@std/streams@1.0.12": "1.0.12",
-    "npm:kysely@0.27.6": "0.27.6",
-    "npm:kysely@~0.27.2": "0.27.6"
+    "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/streams@1.0.12": "1.0.12"
   },
   "jsr": {
     "@noble/curves@1.9.0": {
@@ -31,10 +25,10 @@
     "@noble/secp256k1@2.3.0": {
       "integrity": "63eb4479a7c548e0ddea1cb5ea9bf7efacafe495e7f1c07bce1b4108df95967f"
     },
-    "@soapbox/kysely-deno-sqlite@2.2.0": {
-      "integrity": "668ec94600bc4b4d7bd618dd7ca65d4ef30ee61c46ffcb379b6f45203c08517a",
+    "@std/assert@1.0.18": {
+      "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
       "dependencies": [
-        "npm:kysely@~0.27.2"
+        "jsr:@std/internal"
       ]
     },
     "@std/async@1.0.14": {
@@ -46,32 +40,14 @@
     "@std/encoding@1.0.10": {
       "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
     },
-    "@std/fs@1.0.19": {
-      "integrity": "051968c2b1eae4d2ea9f79a08a3845740ef6af10356aff43d3e2ef11ed09fb06",
-      "dependencies": [
-        "jsr:@std/internal@^1.0.9",
-        "jsr:@std/path@^1.1.1"
-      ]
-    },
-    "@std/internal@1.0.10": {
-      "integrity": "e3be62ce42cab0e177c27698e5d9800122f67b766a0bea6ca4867886cbde8cf7"
-    },
-    "@std/path@1.1.2": {
-      "integrity": "c0b13b97dfe06546d5e16bf3966b1cadf92e1cc83e56ba5476ad8b498d9e3038",
-      "dependencies": [
-        "jsr:@std/internal@^1.0.10"
-      ]
+    "@std/internal@1.0.12": {
+      "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
     },
     "@std/streams@1.0.12": {
       "integrity": "ae925fa1dc459b1abf5cbaa28cc5c7b0485853af3b2a384b0dc22d86e59dfbf4",
       "dependencies": [
         "jsr:@std/bytes@^1.0.6"
       ]
-    }
-  },
-  "npm": {
-    "kysely@0.27.6": {
-      "integrity": "sha512-FIyV/64EkKhJmjgC0g2hygpBv5RNWVPyNCqSAD7eTCv6eFWNIi4PN1UvdSJGicN/o35bnevgis4Y0UDC0qi8jQ=="
     }
   },
   "remote": {
@@ -90,14 +66,12 @@
       "jsr:@noble/curves@1.9.0",
       "jsr:@noble/hashes@1.8.0",
       "jsr:@noble/secp256k1@2.3.0",
-      "jsr:@soapbox/kysely-deno-sqlite@2.2.0",
       "jsr:@std/async@1.0.14",
       "jsr:@std/bytes@1.0.6",
       "jsr:@std/encoding@1.0.10",
       "jsr:@std/fs@1.0.19",
       "jsr:@std/path@1.1.2",
-      "jsr:@std/streams@1.0.12",
-      "npm:kysely@0.27.6"
+      "jsr:@std/streams@1.0.12"
     ]
   }
 }
