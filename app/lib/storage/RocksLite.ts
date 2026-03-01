@@ -128,6 +128,7 @@ export class RocksLite {
 	// NO STRING CONVERSIONS - pure Uint8Array
 	private memtable: Uint8ArrayMap;
 	private sstFiles: SSTMetadata[] = [];
+	private sstRanges: Array<{ startKey: Uint8Array; endKey: Uint8Array; sstIndex: number }> = [];
 	private fileOffset = 0;
 
 	// Block cache with numeric keys
@@ -195,29 +196,44 @@ export class RocksLite {
 				continue;
 			}
 
-			// Find which SST and block this key is in
-			for (let si = this.sstFiles.length - 1; si >= 0; si--) {
-				const sst = this.sstFiles[si]!;
+			// Binary search for the SST that might contain this key
+			// SSTs are sorted by key range, so we find the one where key is in [startKey, endKey]
+			let sstIndex = -1;
+			let left = 0;
+			let right = this.sstRanges.length - 1;
 
-				// Range check
-				if (this.compareKeys(key, sst.blocks[0]!.startKey) < 0) continue;
-				if (this.compareKeys(key, sst.blocks[sst.blocks.length - 1]!.endKey) > 0) continue;
+			while (left <= right) {
+				const mid = Math.floor((left + right) / 2);
+				const range = this.sstRanges[mid]!;
 
-				// Bloom filter check
-				if (!this.mightContain(sst.bloomFilter, key)) continue;
-
-				// Find block
-				const blockIdx = this.findBlock(sst.blocks, key);
-				if (blockIdx === -1) continue;
-
-				// Queue for batch read
-				const cacheKey = (si << 20) | blockIdx;
-				if (!pendingByBlock.has(cacheKey)) {
-					pendingByBlock.set(cacheKey, []);
+				if (this.compareKeys(key, range.startKey) < 0) {
+					right = mid - 1;
+				} else if (this.compareKeys(key, range.endKey) > 0) {
+					left = mid + 1;
+				} else {
+					// Key is within this SST's range
+					sstIndex = range.sstIndex;
+					break;
 				}
-				pendingByBlock.get(cacheKey)!.push({ keyIndex: ki, key });
-				break; // Found in this SST, move to next key
 			}
+
+			if (sstIndex === -1) continue; // Key not in any SST range
+
+			const sst = this.sstFiles[sstIndex]!;
+
+			// Bloom filter check
+			if (!this.mightContain(sst.bloomFilter, key)) continue;
+
+			// Find block
+			const blockIdx = this.findBlock(sst.blocks, key);
+			if (blockIdx === -1) continue;
+
+			// Queue for batch read
+			const cacheKey = (sstIndex << 20) | blockIdx;
+			if (!pendingByBlock.has(cacheKey)) {
+				pendingByBlock.set(cacheKey, []);
+			}
+			pendingByBlock.get(cacheKey)!.push({ keyIndex: ki, key });
 		}
 
 		// Phase 2: Read blocks in batches
@@ -240,7 +256,7 @@ export class RocksLite {
 				await this.dataFile.seek(block.offset, Deno.SeekMode.Start);
 				const compressed = new Uint8Array(block.compressedSize);
 				await this.dataFile.read(compressed);
-				blockData = await this.decompress(compressed);
+				blockData = compressed;
 
 				// Cache the block
 				this.addToCache(cacheKey, blockData);
@@ -294,7 +310,7 @@ export class RocksLite {
 				const compressed = new Uint8Array(block.compressedSize);
 				await this.dataFile.read(compressed);
 
-				const decompressed = await this.decompress(compressed);
+				const decompressed = compressed;
 
 				for (let i = 0; i < block.entryCount; i++) {
 					const offset = i * this.entrySize;
@@ -376,7 +392,7 @@ export class RocksLite {
 			// Flush block if full or last entry
 			if (blockBufferPos + this.entrySize > this.blockSize || i === entries.length - 1) {
 				const uncompressed = this.blockBuffer.subarray(0, blockBufferPos);
-				const compressed = await this.compress(uncompressed);
+				const compressed = uncompressed;
 
 				await this.dataFile.seek(dataOffset, Deno.SeekMode.Start);
 				await this.dataFile.write(compressed);
@@ -412,7 +428,15 @@ export class RocksLite {
 
 		// Update state
 		this.fileOffset = dataOffset + metadataBytes.length;
+		const sstIndex = this.sstFiles.length;
 		this.sstFiles.push(metadata);
+
+		// Add to range index (SSTs are already sorted since memtable is sorted before flush)
+		this.sstRanges.push({
+			startKey: blocks[0]!.startKey,
+			endKey: blocks[blocks.length - 1]!.endKey,
+			sstIndex,
+		});
 
 		// Clear memtable
 		this.memtable.clear();
@@ -496,7 +520,13 @@ export class RocksLite {
 				block.offset = info.dataStart + block.offset;
 			}
 
+			const sstIndex = this.sstFiles.length;
 			this.sstFiles.push(sst);
+			this.sstRanges.push({
+				startKey: sst.blocks[0]!.startKey,
+				endKey: sst.blocks[sst.blocks.length - 1]!.endKey,
+				sstIndex,
+			});
 		}
 
 		this.fileOffset = stat.size;
@@ -521,7 +551,7 @@ export class RocksLite {
 			const compressed = new Uint8Array(block.compressedSize);
 			await this.dataFile.read(compressed);
 
-			decompressed = await this.decompress(compressed);
+			decompressed = compressed;
 
 			// Add to cache
 			this.addToCache(cacheKey, decompressed);
@@ -634,15 +664,7 @@ export class RocksLite {
 			(filter[Math.floor(idx2 / 8)]! & (1 << (idx2 % 8))) !== 0;
 	}
 
-	private async compress(data: Uint8Array): Promise<Uint8Array> {
-		if (!this.compression) return data;
-		return data;
-	}
 
-	private async decompress(data: Uint8Array): Promise<Uint8Array> {
-		if (!this.compression) return data;
-		return data;
-	}
 
 	private encodeMetadata(metadata: SSTMetadata): Uint8Array {
 		const blockSize = 8 + this.keySize * 2 + 4 + 4 + 4 + 4;

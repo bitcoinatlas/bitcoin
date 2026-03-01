@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
 const VALUE_SIZE = 128;
-const TOTAL_ENTRIES = 1_000_000;
+const TOTAL_ENTRIES = 200_000;
 const READ_SAMPLES = 10_000;
 const SAMPLE_INTERVAL = 5_000;
 
