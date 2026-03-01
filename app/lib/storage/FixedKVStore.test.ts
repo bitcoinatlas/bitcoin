@@ -1,5 +1,5 @@
 import { assertEquals, assertExists, assertRejects } from "jsr:@std/assert";
-import { RocksLite } from "./RocksLite.ts";
+import { FixedKVStore } from "./FixedKVStore.ts";
 
 const TEST_DIR = "./test_data";
 
@@ -16,12 +16,12 @@ async function createTestFile(name: string): Promise<Deno.FsFile> {
 	return await Deno.open(`${TEST_DIR}/${name}`, { read: true, write: true, create: true });
 }
 
-Deno.test("RocksLite - basic CRUD operations", async (t) => {
+Deno.test("FixedKVStore - basic CRUD operations", async (t) => {
 	await cleanup();
 
 	await t.step("set and get a single value", async () => {
 		const file = await createTestFile("basic.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const key = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -39,7 +39,7 @@ Deno.test("RocksLite - basic CRUD operations", async (t) => {
 
 	await t.step("get returns null for missing key", async () => {
 		const file = await createTestFile("missing.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const key = new Uint8Array([9, 9, 9, 9, 9, 9, 9, 9]);
@@ -53,7 +53,7 @@ Deno.test("RocksLite - basic CRUD operations", async (t) => {
 
 	await t.step("overwrite existing key", async () => {
 		const file = await createTestFile("overwrite.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const key = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -73,12 +73,12 @@ Deno.test("RocksLite - basic CRUD operations", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - batch operations", async (t) => {
+Deno.test("FixedKVStore - batch operations", async (t) => {
 	await cleanup();
 
 	await t.step("getMany retrieves multiple values", async () => {
 		const file = await createTestFile("batch.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const keys: Uint8Array[] = [];
@@ -109,7 +109,7 @@ Deno.test("RocksLite - batch operations", async (t) => {
 
 	await t.step("getMany returns null for missing keys", async () => {
 		const file = await createTestFile("batch_missing.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const existingKey = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -131,12 +131,12 @@ Deno.test("RocksLite - batch operations", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - size validation", async (t) => {
+Deno.test("FixedKVStore - size validation", async (t) => {
 	await cleanup();
 
 	await t.step("throws on wrong key size", async () => {
 		const file = await createTestFile("keysize.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const wrongKey = new Uint8Array(4); // Should be 8
@@ -154,7 +154,7 @@ Deno.test("RocksLite - size validation", async (t) => {
 
 	await t.step("throws on wrong value size", async () => {
 		const file = await createTestFile("valuesize.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const key = new Uint8Array(8);
@@ -172,7 +172,7 @@ Deno.test("RocksLite - size validation", async (t) => {
 
 	await t.step("getMany throws on wrong key size", async () => {
 		const file = await createTestFile("batch_keysize.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const wrongKey = new Uint8Array(4);
@@ -190,7 +190,7 @@ Deno.test("RocksLite - size validation", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - persistence", async (t) => {
+Deno.test("FixedKVStore - persistence", async (t) => {
 	await cleanup();
 
 	await t.step("data persists after close and reopen", async () => {
@@ -200,7 +200,7 @@ Deno.test("RocksLite - persistence", async (t) => {
 		// First session: write data
 		{
 			const file = await Deno.open(filePath, { read: true, write: true, create: true });
-			const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+			const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 			await store.init();
 
 			const key = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -213,7 +213,7 @@ Deno.test("RocksLite - persistence", async (t) => {
 		// Second session: read data
 		{
 			const file = await Deno.open(filePath, { read: true, write: true });
-			const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+			const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 			await store.init();
 
 			const key = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -234,7 +234,7 @@ Deno.test("RocksLite - persistence", async (t) => {
 		// First session: write more than memtable size
 		{
 			const file = await Deno.open(filePath, { read: true, write: true, create: true });
-			const store = new RocksLite(file, {
+			const store = new FixedKVStore(file, {
 				keySize: 8,
 				valueSize: 16,
 				memtableSize: 10, // Small to force flush
@@ -257,7 +257,7 @@ Deno.test("RocksLite - persistence", async (t) => {
 		// Second session: read all data
 		{
 			const file = await Deno.open(filePath, { read: true, write: true });
-			const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+			const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 			await store.init();
 
 			for (let i = 0; i < 20; i++) {
@@ -279,12 +279,12 @@ Deno.test("RocksLite - persistence", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - entries iteration", async (t) => {
+Deno.test("FixedKVStore - entries iteration", async (t) => {
 	await cleanup();
 
 	await t.step("entries returns all stored values", async () => {
 		const file = await createTestFile("entries.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const entries = new Map<string, number>();
@@ -321,12 +321,12 @@ Deno.test("RocksLite - entries iteration", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - statistics", async (t) => {
+Deno.test("FixedKVStore - statistics", async (t) => {
 	await cleanup();
 
 	await t.step("stats reflect store state", async () => {
 		const file = await createTestFile("stats.db");
-		const store = new RocksLite(file, {
+		const store = new FixedKVStore(file, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 100,
@@ -358,7 +358,7 @@ Deno.test("RocksLite - statistics", async (t) => {
 
 		// Reopen and check stats
 		const file2 = await Deno.open(`${TEST_DIR}/stats.db`, { read: true, write: true });
-		const store2 = new RocksLite(file2, {
+		const store2 = new FixedKVStore(file2, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 100,
@@ -377,7 +377,7 @@ Deno.test("RocksLite - statistics", async (t) => {
 
 	await t.step("cache stats are tracked", async () => {
 		const file = await createTestFile("cache_stats.db");
-		const store = new RocksLite(file, {
+		const store = new FixedKVStore(file, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 5,
@@ -398,7 +398,7 @@ Deno.test("RocksLite - statistics", async (t) => {
 
 		// Reopen and read to populate cache
 		const file2 = await Deno.open(`${TEST_DIR}/cache_stats.db`, { read: true, write: true });
-		const store2 = new RocksLite(file2, {
+		const store2 = new FixedKVStore(file2, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 5,
@@ -425,12 +425,12 @@ Deno.test("RocksLite - statistics", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - edge cases", async (t) => {
+Deno.test("FixedKVStore - edge cases", async (t) => {
 	await cleanup();
 
 	await t.step("handles zero-filled keys and values", async () => {
 		const file = await createTestFile("zero.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const zeroKey = new Uint8Array(8);
@@ -448,7 +448,7 @@ Deno.test("RocksLite - edge cases", async (t) => {
 
 	await t.step("handles max byte values", async () => {
 		const file = await createTestFile("max.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const maxKey = new Uint8Array(8).fill(255);
@@ -466,7 +466,7 @@ Deno.test("RocksLite - edge cases", async (t) => {
 
 	await t.step("handles many sequential keys", async () => {
 		const file = await createTestFile("sequential.db");
-		const store = new RocksLite(file, {
+		const store = new FixedKVStore(file, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 100,
@@ -501,7 +501,7 @@ Deno.test("RocksLite - edge cases", async (t) => {
 
 	await t.step("handles empty getMany", async () => {
 		const file = await createTestFile("empty_batch.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const results = await store.getMany([]);
@@ -513,7 +513,7 @@ Deno.test("RocksLite - edge cases", async (t) => {
 
 	await t.step("handles single entry getMany", async () => {
 		const file = await createTestFile("single_batch.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		const key = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -531,12 +531,12 @@ Deno.test("RocksLite - edge cases", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - concurrent operations", async (t) => {
+Deno.test("FixedKVStore - concurrent operations", async (t) => {
 	await cleanup();
 
 	await t.step("handles concurrent reads", async () => {
 		const file = await createTestFile("concurrent.db");
-		const store = new RocksLite(file, { keySize: 8, valueSize: 16 });
+		const store = new FixedKVStore(file, { keySize: 8, valueSize: 16 });
 		await store.init();
 
 		// Write test data
@@ -573,12 +573,12 @@ Deno.test("RocksLite - concurrent operations", async (t) => {
 	await cleanup();
 });
 
-Deno.test("RocksLite - multiple SST files", async (t) => {
+Deno.test("FixedKVStore - multiple SST files", async (t) => {
 	await cleanup();
 
 	await t.step("creates multiple SST files when memtable fills", async () => {
 		const file = await createTestFile("multi_sst.db");
-		const store = new RocksLite(file, {
+		const store = new FixedKVStore(file, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 10, // Very small to force multiple flushes
@@ -600,7 +600,7 @@ Deno.test("RocksLite - multiple SST files", async (t) => {
 
 		// Reopen and verify all data
 		const file2 = await Deno.open(`${TEST_DIR}/multi_sst.db`, { read: true, write: true });
-		const store2 = new RocksLite(file2, {
+		const store2 = new FixedKVStore(file2, {
 			keySize: 8,
 			valueSize: 16,
 			memtableSize: 10,

@@ -1,4 +1,4 @@
-export interface RocksLiteOptions {
+export interface FixedKVStoreOptions {
 	keySize: number;
 	valueSize: number;
 	memtableSize?: number;
@@ -111,10 +111,10 @@ class Uint8ArrayMap {
 }
 
 /**
- * RocksLite - Optimized LSM store for fixed-size KV
+ * FixedKVStore - Optimized LSM store for fixed-size KV
  * Uses Uint8ArrayMap to avoid string conversion overhead
  */
-export class RocksLite {
+export class FixedKVStore {
 	private dataFile: Deno.FsFile;
 
 	private keySize: number;
@@ -143,7 +143,7 @@ export class RocksLite {
 
 	constructor(
 		dataFile: Deno.FsFile,
-		options: RocksLiteOptions,
+		options: FixedKVStoreOptions,
 	) {
 		this.dataFile = dataFile;
 		this.keySize = options.keySize;
