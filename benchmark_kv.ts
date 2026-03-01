@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
 const VALUE_SIZE = 128;
-const TOTAL_ENTRIES = 200_000;
+const TOTAL_ENTRIES = 5_000_000;
 const READ_SAMPLES = 10_000;
 const SAMPLE_INTERVAL = 5_000;
 
@@ -216,19 +216,6 @@ function printWriteConsistency(results: BenchmarkResult[]) {
 		header += ` ${r.name.padStart(14)} │`;
 	}
 	console.log(header);
-	console.log("─".repeat(80));
-
-	// Data rows
-	for (let i = 0; i < chunks; i++) {
-		const entries = (i + 1) * SAMPLE_INTERVAL;
-		let row = `${entries.toLocaleString().padStart(6)} │`;
-
-		for (const r of results) {
-			const ops = r.writeSamples[i] || 0;
-			row += ` ${ops.toFixed(0).padStart(14)} │`;
-		}
-		console.log(row);
-	}
 
 	console.log("─".repeat(80));
 
