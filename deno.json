@@ -3,6 +3,7 @@
 		"@noble/curves": "jsr:@noble/curves@1.9.0",
 		"@noble/hashes": "jsr:@noble/hashes@1.8.0",
 		"@noble/secp256k1": "jsr:@noble/secp256k1@2.3.0",
+		"@std/assert": "jsr:@std/assert@^1.0.19",
 		"@std/async": "jsr:@std/async@1.0.14",
 		"@std/bytes": "jsr:@std/bytes@1.0.6",
 		"@std/encoding": "jsr:@std/encoding@1.0.10",
@@ -13,7 +14,8 @@
 	},
 	"tasks": {
 		"cache": "deno cache ./app/main.ts",
-		"start": "deno run -A ./app/main.ts"
+		"start": "deno run -A ./app/main.ts",
+		"check": "deno check app && deno lint app"
 	},
 	"unstable": ["raw-imports"],
 	"compilerOptions": {

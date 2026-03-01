@@ -3,7 +3,6 @@ export interface FixedKVStoreOptions {
 	valueSize: number;
 	memtableSize?: number;
 	blockSize?: number;
-	compression?: boolean;
 	blockCacheSize?: number;
 }
 
@@ -11,8 +10,7 @@ interface BlockMetadata {
 	startKey: Uint8Array;
 	endKey: Uint8Array;
 	offset: number;
-	compressedSize: number;
-	uncompressedSize: number;
+	size: number;
 	entryCount: number;
 }
 
@@ -122,7 +120,6 @@ export class FixedKVStore {
 	private entrySize: number;
 	private memtableSize: number;
 	private blockSize: number;
-	private compression: boolean;
 	private maxCacheSize: number;
 
 	// NO STRING CONVERSIONS - pure Uint8Array
@@ -137,8 +134,6 @@ export class FixedKVStore {
 	private cacheMisses = 0;
 	private accessCounter = 0; // LRU counter instead of performance.now()
 
-	// Pre-allocated buffers
-	private writeBuffer: Uint8Array;
 	private blockBuffer: Uint8Array;
 
 	constructor(
@@ -151,14 +146,11 @@ export class FixedKVStore {
 		this.entrySize = this.keySize + this.valueSize;
 		this.memtableSize = options.memtableSize ?? 10000;
 		this.blockSize = options.blockSize ?? 65536;
-		this.compression = options.compression ?? true;
 		this.maxCacheSize = options.blockCacheSize ?? 1000;
 
 		// Use Uint8ArrayMap - NO STRING CONVERSION
 		this.memtable = new Uint8ArrayMap(this.keySize, this.memtableSize * 2);
 
-		// Pre-allocate buffers
-		this.writeBuffer = new Uint8Array(this.entrySize);
 		this.blockBuffer = new Uint8Array(this.blockSize);
 	}
 
@@ -169,17 +161,13 @@ export class FixedKVStore {
 		}
 	}
 
-	async get(key: Uint8Array): Promise<Uint8Array | null> {
-		const result = await this.getMany([key]);
-		return result[0] ?? null;
-	}
-
 	/**
 	 * Batch get - much faster for multiple keys
 	 * Groups reads by block to minimize disk seeks
+	 * Usage: const [value] = await store.get([key])
 	 */
-	async getMany(keys: Uint8Array[]): Promise<(Uint8Array | null)[]> {
-		const results: (Uint8Array | null)[] = new Array(keys.length).fill(null);
+	async get(keys: Uint8Array[]): Promise<(Uint8Array | undefined)[]> {
+		const results: (Uint8Array | undefined)[] = new Array(keys.length).fill(undefined);
 		const pendingByBlock = new Map<number, Array<{ keyIndex: number; key: Uint8Array }>>();
 
 		// Phase 1: Check memtable and plan block reads
@@ -196,23 +184,16 @@ export class FixedKVStore {
 				continue;
 			}
 
-			// Binary search for the SST that might contain this key
-			// SSTs are sorted by key range, so we find the one where key is in [startKey, endKey]
+			// Find the SST with the highest index (most recent) that contains this key
+			// SSTs can have overlapping ranges when keys are updated, so we search from the end
 			let sstIndex = -1;
-			let left = 0;
-			let right = this.sstRanges.length - 1;
+			for (let i = this.sstFiles.length - 1; i >= 0; i--) {
+				const sst = this.sstFiles[i]!;
+				const startKey = sst.blocks[0]!.startKey;
+				const endKey = sst.blocks[sst.blocks.length - 1]!.endKey;
 
-			while (left <= right) {
-				const mid = Math.floor((left + right) / 2);
-				const range = this.sstRanges[mid]!;
-
-				if (this.compareKeys(key, range.startKey) < 0) {
-					right = mid - 1;
-				} else if (this.compareKeys(key, range.endKey) > 0) {
-					left = mid + 1;
-				} else {
-					// Key is within this SST's range
-					sstIndex = range.sstIndex;
+				if (this.compareKeys(key, startKey) >= 0 && this.compareKeys(key, endKey) <= 0) {
+					sstIndex = i;
 					break;
 				}
 			}
@@ -254,9 +235,8 @@ export class FixedKVStore {
 			} else {
 				// Read from disk
 				await this.dataFile.seek(block.offset, Deno.SeekMode.Start);
-				const compressed = new Uint8Array(block.compressedSize);
-				await this.dataFile.read(compressed);
-				blockData = compressed;
+				blockData = new Uint8Array(block.size);
+				await this.dataFile.read(blockData);
 
 				// Cache the block
 				this.addToCache(cacheKey, blockData);
@@ -294,32 +274,6 @@ export class FixedKVStore {
 			await this.flushMemtable();
 			// Only sync on final close
 			await this.dataFile.sync();
-		}
-	}
-
-	async *entries(): AsyncGenerator<{ key: Uint8Array; value: Uint8Array }> {
-		// Memtable entries first
-		for (const entry of this.memtable.entries()) {
-			yield entry;
-		}
-
-		// SST entries
-		for (const sst of this.sstFiles) {
-			for (const block of sst.blocks) {
-				await this.dataFile.seek(block.offset, Deno.SeekMode.Start);
-				const compressed = new Uint8Array(block.compressedSize);
-				await this.dataFile.read(compressed);
-
-				const decompressed = compressed;
-
-				for (let i = 0; i < block.entryCount; i++) {
-					const offset = i * this.entrySize;
-					yield {
-						key: decompressed.subarray(offset, offset + this.keySize),
-						value: decompressed.subarray(offset + this.keySize, offset + this.entrySize),
-					};
-				}
-			}
 		}
 	}
 
@@ -402,12 +356,11 @@ export class FixedKVStore {
 					startKey: new Uint8Array(blockStartKey),
 					endKey: new Uint8Array(entry.key),
 					offset: dataOffset - sstDataStart,
-					compressedSize: compressed.length,
-					uncompressedSize: blockBufferPos,
+					size: blockBufferPos,
 					entryCount: blockEntryCount,
 				});
 
-				dataOffset += compressed.length;
+				dataOffset += blockBufferPos;
 				blockBufferPos = 0;
 				blockEntryCount = 0;
 				blockStartKey = null;
@@ -429,6 +382,12 @@ export class FixedKVStore {
 		// Update state
 		this.fileOffset = dataOffset + metadataBytes.length;
 		const sstIndex = this.sstFiles.length;
+
+		// Convert block offsets to absolute before storing
+		for (const block of metadata.blocks) {
+			block.offset = sstDataStart + block.offset;
+		}
+
 		this.sstFiles.push(metadata);
 
 		// Add to range index (SSTs are already sorted since memtable is sorted before flush)
@@ -532,36 +491,6 @@ export class FixedKVStore {
 		this.fileOffset = stat.size;
 	}
 
-	private async readBlockValueCached(
-		cacheKey: number,
-		block: BlockMetadata,
-		searchKey: Uint8Array,
-	): Promise<Uint8Array | null> {
-		// Check cache using NUMERIC key
-		const cached = this.blockCache.get(cacheKey);
-		let decompressed: Uint8Array;
-
-		if (cached) {
-			decompressed = cached.data;
-			cached.lastAccess = ++this.accessCounter;
-			this.cacheHits++;
-		} else {
-			// Read from disk
-			await this.dataFile.seek(block.offset, Deno.SeekMode.Start);
-			const compressed = new Uint8Array(block.compressedSize);
-			await this.dataFile.read(compressed);
-
-			decompressed = compressed;
-
-			// Add to cache
-			this.addToCache(cacheKey, decompressed);
-			this.cacheMisses++;
-		}
-
-		// Binary search within block
-		return this.binarySearchInBlock(decompressed, searchKey, block.entryCount);
-	}
-
 	private addToCache(key: number, data: Uint8Array): void {
 		// Evict oldest if cache is full
 		if (this.blockCache.size >= this.maxCacheSize) {
@@ -590,7 +519,7 @@ export class FixedKVStore {
 		data: Uint8Array,
 		searchKey: Uint8Array,
 		entryCount: number,
-	): Uint8Array | null {
+	): Uint8Array | undefined {
 		let left = 0;
 		let right = entryCount - 1;
 
@@ -610,7 +539,7 @@ export class FixedKVStore {
 			}
 		}
 
-		return null;
+		return undefined;
 	}
 
 	private findBlock(blocks: BlockMetadata[], key: Uint8Array): number {
@@ -664,10 +593,8 @@ export class FixedKVStore {
 			(filter[Math.floor(idx2 / 8)]! & (1 << (idx2 % 8))) !== 0;
 	}
 
-
-
 	private encodeMetadata(metadata: SSTMetadata): Uint8Array {
-		const blockSize = 8 + this.keySize * 2 + 4 + 4 + 4 + 4;
+		const blockSize = 8 + this.keySize * 2 + 8 + 4;
 		const totalSize = 8 + 4 + 4 + metadata.blocks.length * blockSize + metadata.bloomFilter.length + 4;
 
 		const buf = new Uint8Array(totalSize);
@@ -700,9 +627,7 @@ export class FixedKVStore {
 			pos += this.keySize;
 			view.setBigUint64(pos, BigInt(block.offset), true);
 			pos += 8;
-			view.setUint32(pos, block.compressedSize, true);
-			pos += 4;
-			view.setUint32(pos, block.uncompressedSize, true);
+			view.setUint32(pos, block.size, true);
 			pos += 4;
 			view.setUint32(pos, block.entryCount, true);
 			pos += 4;
@@ -737,14 +662,12 @@ export class FixedKVStore {
 			pos += this.keySize;
 			const offset = Number(view.getBigUint64(pos, true));
 			pos += 8;
-			const compressedSize = view.getUint32(pos, true);
-			pos += 4;
-			const uncompressedSize = view.getUint32(pos, true);
+			const size = view.getUint32(pos, true);
 			pos += 4;
 			const entryCount = view.getUint32(pos, true);
 			pos += 4;
 
-			blocks.push({ startKey, endKey, offset, compressedSize, uncompressedSize, entryCount });
+			blocks.push({ startKey, endKey, offset, size, entryCount });
 		}
 
 		return { blocks, bloomFilter, totalEntries, fileSize };

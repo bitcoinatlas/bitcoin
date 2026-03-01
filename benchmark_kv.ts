@@ -1,5 +1,5 @@
 /// <reference lib="deno.unstable" />
-import { RocksLite } from "~/lib/storage/RocksLite.ts";
+import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
 import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
@@ -98,7 +98,9 @@ async function benchmarkStore(
 		try {
 			const stat = await Deno.stat(f);
 			fileSize += stat.size;
-		} catch {}
+		} catch {
+			// File may not exist, ignore
+		}
 	}
 
 	// Individual files are kept - cleanup happens at start/end of main()
@@ -117,7 +119,9 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]): Promis
 
 	try {
 		await Deno.remove("data/bench_sqlite.db");
-	} catch {}
+	} catch {
+		// File may not exist, ignore
+	}
 
 	const db = new DatabaseSync("data/bench_sqlite.db");
 	// Minimize SQLite caching for fair comparison with disk-based stores
@@ -187,7 +191,9 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]): Promis
 
 	try {
 		await Deno.remove("data/bench_sqlite.db");
-	} catch {}
+	} catch {
+		// File may not exist, ignore
+	}
 
 	return {
 		name: "SQLite",
@@ -207,8 +213,6 @@ function formatBytes(bytes: number): string {
 function printWriteConsistency(results: BenchmarkResult[]) {
 	console.log("\n📈 WRITE SPEED CONSISTENCY (by 5k chunks)");
 	console.log("─".repeat(80));
-
-	const chunks = results[0]!.writeSamples.length;
 
 	// Header
 	let header = `${"Chunk".padStart(6)} │`;
@@ -306,12 +310,11 @@ function printResults(results: BenchmarkResult[]) {
 async function benchmarkRocksLite(keys: Uint8Array[], values: Uint8Array[]): Promise<BenchmarkResult> {
 	const dataFile = await Deno.open("data/bench_rockslite.db", { read: true, write: true, create: true });
 
-	const store = new RocksLite(dataFile, {
+	const store = new FixedKVStore(dataFile, {
 		keySize: KEY_SIZE,
 		valueSize: VALUE_SIZE,
 		memtableSize: 250_000, // Much larger memtable - only 4 flushes for 1M entries
 		blockSize: 65536,
-		compression: false,
 		blockCacheSize: 5000,
 	});
 
@@ -340,7 +343,9 @@ async function main() {
 	// Clean up data directory
 	try {
 		await Deno.remove("data", { recursive: true });
-	} catch {}
+	} catch {
+		// File may not exist, ignore
+	}
 	await Deno.mkdir("data", { recursive: true });
 
 	console.log("🔥 KV Store Benchmark");
@@ -369,7 +374,9 @@ async function main() {
 	// Clean up data directory at the end
 	try {
 		await Deno.remove("data", { recursive: true });
-	} catch {}
+	} catch {
+		// File may not exist, ignore
+	}
 }
 
 main().catch(console.error);
