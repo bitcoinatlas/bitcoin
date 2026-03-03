@@ -69,7 +69,7 @@ async function benchmarkStore(
 	console.log("  Reading (random, single)...");
 	const readStart = performance.now();
 	for (let i = 0; i < READ_SAMPLES; i++) {
-		await store.get(keys[i]!);
+		await store.get([keys[i]!]);
 	}
 	const readOps = READ_SAMPLES / ((performance.now() - readStart) / 1000);
 
