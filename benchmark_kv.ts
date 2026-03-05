@@ -78,9 +78,6 @@ async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	const batchReadOps = READ_SAMPLES / ((performance.now() - batchReadStart) / 1000);
 	console.log(`    ${batchReadOps.toFixed(0)} ops/sec`);
 
-	const stats = store.getStats();
-	console.log(`    Cache: ${(stats.cacheHitRate * 100).toFixed(1)}% hit rate`);
-
 	await store.close();
 
 	const stat = await Deno.stat("data/bench_kv1.db");
@@ -150,9 +147,7 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
 
 async function main() {
 	// Cleanup
-	try {
-		await Deno.remove("data", { recursive: true });
-	} catch {}
+	await Deno.remove("data", { recursive: true }).catch(() => {});
 	await Deno.mkdir("data", { recursive: true });
 
 	console.log(`🔥 KV Store Benchmark`);
@@ -189,9 +184,7 @@ async function main() {
 	}
 
 	// Cleanup
-	try {
-		await Deno.remove("data", { recursive: true });
-	} catch {}
+	await Deno.remove("data", { recursive: true }).catch(() => {});
 }
 
 main().catch(console.error);
