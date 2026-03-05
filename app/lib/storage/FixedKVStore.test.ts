@@ -1,5 +1,30 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { FixedKVStore, FixedKVStoreOptions } from "./FixedKVStore.ts";
+
+// Fixed-size key and value codecs
+class FixedBytesCodec {
+	readonly stride: number;
+	private size: number;
+
+	constructor(size: number) {
+		this.stride = size;
+		this.size = size;
+	}
+
+	encode(value: Uint8Array): Uint8Array {
+		if (value.length !== this.size) {
+			throw new Error(`Expected ${this.size} bytes, got ${value.length}`);
+		}
+		return value;
+	}
+
+	decode(data: Uint8Array): [Uint8Array, number] {
+		if (data.length < this.size) {
+			throw new Error(`Expected at least ${this.size} bytes, got ${data.length}`);
+		}
+		return [data.slice(0, this.size), this.size];
+	}
+}
 
 // Simple Map wrapper that mimics FixedKVStore behavior
 // but uses JavaScript Map for reference correctness
@@ -88,15 +113,20 @@ function arraysEqual(a: Uint8Array, b: Uint8Array | undefined): boolean {
 	return true;
 }
 
-const DEFAULT_OPTIONS: FixedKVStoreOptions = {
-	keySize: 16,
-	valueSize: 64,
+const KEY_SIZE = 16;
+	const VALUE_SIZE = 64;
+const KEY_CODEC = new FixedBytesCodec(KEY_SIZE);
+const VALUE_CODEC = new FixedBytesCodec(VALUE_SIZE);
+
+const DEFAULT_OPTIONS: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
+	keyCodec: KEY_CODEC as any,
+	valueCodec: VALUE_CODEC as any,
 	memtableSize: 100,
 	blockSize: 4096,
 	blockCacheSize: 100,
 };
 
-Deno.test("FixedKVStore - basic set and get", async () => {
+Deno.test("FixedKVStore - basic set and get (single)", async () => {
 	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
 	const dataPath = `${testDir}/data.bin`;
 
@@ -107,7 +137,7 @@ Deno.test("FixedKVStore - basic set and get", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		const refStore = new MapKVStore(16, 64);
 
@@ -119,16 +149,71 @@ Deno.test("FixedKVStore - basic set and get", async () => {
 			await store.set(key, value);
 			refStore.set(key, value);
 
-			// Verify immediate retrieval
-			const [got] = await store.get([key]);
+			// Verify immediate retrieval (single key)
+			const got = await store.get(key);
 			const [refGot] = refStore.get([key]);
 
 			assertEquals(
-				arraysEqual(value, got),
+				arraysEqual(value, got!),
 				true,
 				`Value mismatch for key ${i} after set`,
 			);
 			assertEquals(got, refGot, `Store and reference differ for key ${i}`);
+		}
+
+		await store.close();
+		await file.close();
+	} finally {
+		await Deno.remove(testDir, { recursive: true });
+	}
+});
+
+Deno.test("FixedKVStore - setMany and getMany", async () => {
+	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
+	const dataPath = `${testDir}/data.bin`;
+
+	try {
+		const file = await Deno.open(dataPath, {
+			create: true,
+			read: true,
+			write: true,
+		});
+		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		await store.prepare();
+
+		const refStore = new MapKVStore(16, 64);
+
+		// Test: batch set using setMany
+		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = [];
+		for (let i = 0; i < 50; i++) {
+			const key = createKey(i, 16);
+			const value = createValue(i, 64);
+			entries.push({ key, value });
+			refStore.set(key, value);
+		}
+
+		await store.setMany(entries);
+
+		// Verify using getMany
+		const keys = entries.map(e => e.key);
+		const results = await store.getMany(keys);
+		const refResults = refStore.get(keys);
+
+		assertEquals(results.length, keys.length, "Result count mismatch");
+		for (let i = 0; i < results.length; i++) {
+			assertEquals(
+				arraysEqual(results[i]!, refResults[i]!),
+				true,
+				`Value mismatch for key ${i}`,
+			);
+		}
+
+		// Also test individual gets
+		for (let i = 0; i < 10; i++) {
+			const key = createKey(i, 16);
+			const got = await store.get(key);
+			const [refGot] = refStore.get([key]);
+			assertEquals(got, refGot, `Individual get mismatch for key ${i}`);
 		}
 
 		await store.close();
@@ -154,7 +239,7 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 				write: true,
 			});
 			const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-			await store.init();
+			await store.prepare();
 
 			for (let i = 0; i < 200; i++) {
 				const key = createKey(i, 16);
@@ -176,14 +261,14 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 				write: true,
 			});
 			const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-			await store.init();
+			await store.prepare();
 
 			// Verify all values are still there
 			for (const i of testKeys) {
 				const key = createKey(i, 16);
 				const expected = createValue(i, 64);
 
-				const [got] = await store.get([key]);
+				const [got] = await store.get(key);
 				const [refGot] = refStore.get([key]);
 
 				assertEquals(
@@ -215,7 +300,7 @@ Deno.test("FixedKVStore - overwrites return latest value", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Set initial values
 		for (let i = 0; i < 50; i++) {
@@ -231,7 +316,7 @@ Deno.test("FixedKVStore - overwrites return latest value", async () => {
 			const key = createKey(i, 16);
 			const expected = createValue(40 + i, 64); // Last write for each key
 
-			const [got] = await store.get([key]);
+			const [got] = await store.get(key);
 			const [refGot] = refStore.get([key]);
 
 			assertEquals(
@@ -263,7 +348,7 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Set values
 		for (let i = 0; i < 100; i++) {
@@ -285,7 +370,7 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 			write: true,
 		});
 		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
-		await store2.init();
+		await store2.prepare();
 
 		// Test getMany with all keys
 		const results = await store2.get(keys);
@@ -325,52 +410,14 @@ Deno.test("FixedKVStore - missing keys return null", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Try to get non-existent keys
 		for (let i = 1000; i < 1010; i++) {
 			const key = createKey(i, 16);
-			const [result] = await store.get([key]);
+			const [result] = await store.get(key);
 			assertEquals(result, undefined, `Non-existent key ${i} should return null`);
 		}
-
-		await store.close();
-		await file.close();
-	} finally {
-		await Deno.remove(testDir, { recursive: true });
-	}
-});
-
-Deno.test("FixedKVStore - invalid key/value sizes throw errors", async () => {
-	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
-	const dataPath = `${testDir}/data.bin`;
-
-	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
-
-		// Wrong key size
-		const wrongKey = new Uint8Array(8);
-		const value = createValue(1, 64);
-		await assertRejects(
-			() => store.set(wrongKey, value),
-			Error,
-			"Key must be 16 bytes",
-		);
-
-		// Wrong value size
-		const key = createKey(1, 16);
-		const wrongValue = new Uint8Array(32);
-		await assertRejects(
-			() => store.set(key, wrongValue),
-			Error,
-			"Value must be 64 bytes",
-		);
 
 		await store.close();
 		await file.close();
@@ -390,7 +437,7 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Initial stats
 		const initialStats = store.getStats();
@@ -419,7 +466,7 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 			write: true,
 		});
 		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
-		await store2.init();
+		await store2.prepare();
 
 		const finalStats = store2.getStats();
 		assertEquals(finalStats.memtableEntries, 0, "Memtable should be empty after reopen");
@@ -445,7 +492,7 @@ Deno.test("FixedKVStore - cache behavior", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Add data and flush
 		for (let i = 0; i < 50; i++) {
@@ -462,7 +509,7 @@ Deno.test("FixedKVStore - cache behavior", async () => {
 			write: true,
 		});
 		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
-		await store2.init();
+		await store2.prepare();
 
 		// Initial cache stats
 		const stats1 = store2.getStats();
@@ -505,7 +552,7 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 			...DEFAULT_OPTIONS,
 			memtableSize: 500, // Smaller memtable to trigger more flushes
 		});
-		await store.init();
+		await store.prepare();
 
 		// Random operations
 		const random = (seed: number) => {
@@ -539,7 +586,7 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 			write: true,
 		});
 		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
-		await store2.init();
+		await store2.prepare();
 
 		// Check all unique keys
 		const uniqueKeys = [...new Set(keyPool)];
@@ -571,7 +618,7 @@ Deno.test("FixedKVStore - empty value handling", async () => {
 			write: true,
 		});
 		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.init();
+		await store.prepare();
 
 		// Value of all zeros
 		const zeroValue = new Uint8Array(64);
@@ -580,7 +627,7 @@ Deno.test("FixedKVStore - empty value handling", async () => {
 		await store.set(key, zeroValue);
 		refStore.set(key, zeroValue);
 
-		const [got] = await store.get([key]);
+		const [got] = await store.get(key);
 		const [refGot] = refStore.get([key]);
 
 		assertEquals(got, refGot, "Zero value should be handled correctly");
@@ -599,6 +646,18 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 
 	const keySize = 32;
 	const valueSize = 256;
+
+	const largeKeyCodec = new FixedBytesCodec(keySize);
+	const largeValueCodec = new FixedBytesCodec(valueSize);
+
+	const largeOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
+		keyCodec: largeKeyCodec as any,
+		valueCodec: largeValueCodec as any,
+		memtableSize: 50,
+		blockSize: 8192,
+		blockCacheSize: 50,
+	};
+
 	const refStore = new MapKVStore(keySize, valueSize);
 
 	try {
@@ -607,14 +666,8 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 			read: true,
 			write: true,
 		});
-		const store = new FixedKVStore(file, {
-			keySize,
-			valueSize,
-			memtableSize: 50,
-			blockSize: 8192,
-			blockCacheSize: 50,
-		});
-		await store.init();
+		const store = new FixedKVStore(file, largeOptions);
+		await store.prepare();
 
 		// Test with larger sizes
 		for (let i = 0; i < 100; i++) {
@@ -630,7 +683,7 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 			const key = createKey(i, keySize);
 			const expected = createValue(i, valueSize);
 
-			const [got] = await store.get([key]);
+			const [got] = await store.get(key);
 			const [refGot] = refStore.get([key]);
 
 			assertEquals(
@@ -656,6 +709,17 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 	const valueSize = 64;
 	const TOTAL_ENTRIES = 2_000_000;
 
+	const massiveKeyCodec = new FixedBytesCodec(keySize);
+	const massiveValueCodec = new FixedBytesCodec(valueSize);
+
+	const massiveOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
+		keyCodec: massiveKeyCodec as any,
+		valueCodec: massiveValueCodec as any,
+		memtableSize: 50000,
+		blockSize: 65536,
+		blockCacheSize: 1000,
+	};
+
 	// Use MapKVStore as reference
 	const refStore = new MapKVStore(keySize, valueSize);
 
@@ -675,14 +739,8 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 			write: true,
 		});
 
-		const store = new FixedKVStore(file, {
-			keySize,
-			valueSize,
-			memtableSize: 50000,
-			blockSize: 65536,
-			blockCacheSize: 1000,
-		});
-		await store.init();
+		const store = new FixedKVStore(file, massiveOptions);
+		await store.prepare();
 
 		console.log("Phase 1: Inserting 2 million entries...");
 		const insertStart = Date.now();
@@ -704,8 +762,8 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		const insertTime = (Date.now() - insertStart) / 1000;
 		console.log(
-			`Insert complete: ${TOTAL_ENTRIES.toLocaleString()} entries in ${insertTime.toFixed(1)}s (${
-				(TOTAL_ENTRIES / insertTime).toFixed(0)
+			`Insert complete: ${TOTAL_ENTRIES.toLocaleString()} entries in ${insertTime.toFixed(1)}s ($
+			{(TOTAL_ENTRIES / insertTime).toFixed(0)
 			}/sec)`,
 		);
 
@@ -728,14 +786,8 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 			read: true,
 			write: true,
 		});
-		const store2 = new FixedKVStore(file2, {
-			keySize,
-			valueSize,
-			memtableSize: 50000,
-			blockSize: 65536,
-			blockCacheSize: 1000,
-		});
-		await store2.init();
+		const store2 = new FixedKVStore(file2, massiveOptions);
+		await store2.prepare();
 
 		const reopenStats = store2.getStats();
 		console.log("Stats after reopen:", {
@@ -753,7 +805,7 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		// Get all entries from reference store and verify
 		const refEntries = refStore.entries();
-		
+
 		// Process in batches for efficiency
 		const BATCH_SIZE = 1000;
 		for (let i = 0; i < refEntries.length; i += BATCH_SIZE) {
@@ -793,7 +845,9 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 		await file2.close();
 
 		const totalTime = (Date.now() - startTime) / 1000;
-		console.log(`\n✓ Massive test complete: ${TOTAL_ENTRIES.toLocaleString()} ops, ${refStore.size} unique entries in ${totalTime.toFixed(1)}s`);
+		console.log(
+			`\n✓ Massive test complete: ${TOTAL_ENTRIES.toLocaleString()} ops, ${refStore.size} unique entries in ${totalTime.toFixed(1)}s`,
+		);
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
