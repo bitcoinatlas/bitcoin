@@ -15,6 +15,16 @@ storage and less friction.
 
 ## Notes
 
+### Terminology
+
+We use more intuitive terms instead of technical blockchain jargon:
+
+- **"timeline"** instead of blockchain
+- **"commit"** instead of block
+- **"entry"** instead of transaction
+
+### Technical Notes
+
 - The whole codebase uses **wire format internally**, so there is no `.reverse()` or `.toReversed()` anywhere in the
   core logic, except when making things like console logs human-readable.
 - I call the original implementation of Bitcoin and anything legacy **“satoshi”**. For example:
