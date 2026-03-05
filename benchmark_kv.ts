@@ -1,5 +1,4 @@
 import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
-import { FixedKVStore2 } from "~/lib/storage/FixedKVStore2.ts";
 import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
@@ -40,7 +39,6 @@ async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	const store = new FixedKVStore(file, {
 		keyCodec: new FixedBytesCodec(KEY_SIZE) as any,
 		valueCodec: new FixedBytesCodec(VALUE_SIZE) as any,
-		memtableSize: 250_000,
 		maxCacheBlockCount: 5000,
 	});
 	await store.prepare();
@@ -89,63 +87,6 @@ async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	console.log(`    File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
 	return { name: "FixedKVStore", writeOps, readOps, batchReadOps, fileSize: stat.size };
-}
-
-async function benchmarkFixedKVStore2(keys: Uint8Array[], values: Uint8Array[]) {
-	console.log("\n📊 FixedKVStore2");
-	const file = await Deno.open("data/bench_kv2.db", { read: true, write: true, create: true });
-
-	const store = new FixedKVStore2(file, {
-		keyCodec: new FixedBytesCodec(KEY_SIZE) as any,
-		valueCodec: new FixedBytesCodec(VALUE_SIZE) as any,
-		maxCacheBlockCount: 5000,
-	});
-	await store.prepare();
-
-	// Writes
-	console.log("  Writing...");
-	const writeStart = performance.now();
-	for (let i = 0; i < TOTAL_ENTRIES; i += BATCH_SIZE) {
-		const batch = [];
-		for (let j = i; j < Math.min(i + BATCH_SIZE, TOTAL_ENTRIES); j++) {
-			batch.push({ key: keys[j]!, value: values[j]! });
-		}
-		await store.setMany(batch);
-
-		const progress = ((i + batch.length) / TOTAL_ENTRIES * 100).toFixed(1);
-		const elapsed = (performance.now() - writeStart) / 1000;
-		const rate = (i + batch.length) / elapsed;
-		console.log(`    ${progress}% - ${(i + batch.length).toLocaleString()} entries (${rate.toFixed(0)} ops/sec)`);
-	}
-	const writeOps = TOTAL_ENTRIES / ((performance.now() - writeStart) / 1000);
-	console.log(`    Total: ${writeOps.toFixed(0)} ops/sec`);
-
-	// Reads
-	console.log("  Reading (single)...");
-	const readStart = performance.now();
-	for (let i = 0; i < READ_SAMPLES; i++) {
-		await store.get(keys[i]!);
-	}
-	const readOps = READ_SAMPLES / ((performance.now() - readStart) / 1000);
-	console.log(`    ${readOps.toFixed(0)} ops/sec`);
-
-	console.log("  Reading (batch)...");
-	const batchReadStart = performance.now();
-	for (let i = 0; i < READ_SAMPLES; i += 100) {
-		await store.getMany(keys.slice(i, Math.min(i + 100, READ_SAMPLES)));
-	}
-	const batchReadOps = READ_SAMPLES / ((performance.now() - batchReadStart) / 1000);
-	console.log(`    ${batchReadOps.toFixed(0)} ops/sec`);
-
-	const stats = store.getStats();
-	console.log(`    Cache: ${(stats.cacheHitRate * 100).toFixed(1)}% hit rate`);
-
-	await store.close();
-
-	const stat = await Deno.stat("data/bench_kv2.db");
-	console.log(`    File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
-
-	return { name: "FixedKVStore2", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
@@ -232,7 +173,6 @@ async function main() {
 	const results = [];
 	// results.push(await benchmarkSQLite(keys, values));
 	results.push(await benchmarkFixedKVStore(keys, values));
-	results.push(await benchmarkFixedKVStore2(keys, values));
 
 	// Summary
 	console.log("\n" + "=".repeat(60));

@@ -141,9 +141,7 @@ const VALUE_CODEC = new FixedBytesCodec(VALUE_SIZE);
 const DEFAULT_OPTIONS: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
 	keyCodec: KEY_CODEC as any,
 	valueCodec: VALUE_CODEC as any,
-	memtableSize: 100,
-	blockSize: 4096,
-	blockCacheSize: 100,
+	maxCacheBlockCount: 100,
 };
 
 Deno.test("FixedKVStore - basic set and get (single)", async () => {
@@ -461,8 +459,7 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 
 		// Initial stats
 		const initialStats = store.getStats();
-		assertEquals(initialStats.memtableEntries, 0, "Initial memtable should be empty");
-		assertEquals(initialStats.sstCount, 0, "Initial SST count should be 0");
+		assertEquals(initialStats.totalEntries, 0, "Initial entries should be empty");
 
 		// Add some entries
 		for (let i = 0; i < 50; i++) {
@@ -472,8 +469,6 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 		}
 
 		const midStats = store.getStats();
-		assertEquals(midStats.memtableEntries, 50, "Memtable should have 50 entries");
-		assertEquals(midStats.sstCount, 0, "No SSTs yet");
 		assertEquals(midStats.totalEntries, 50, "Total entries should be 50");
 
 		// Close (flushes to disk)
@@ -489,10 +484,7 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 		await store2.prepare();
 
 		const finalStats = store2.getStats();
-		assertEquals(finalStats.memtableEntries, 0, "Memtable should be empty after reopen");
-		assertEquals(finalStats.sstEntries, 50, "SST should have 50 entries");
 		assertEquals(finalStats.totalEntries, 50, "Total entries should still be 50");
-		assertEquals(finalStats.sstCount, 1, "Should have 1 SST");
 
 		await store2.close();
 		await file2.close();
@@ -570,7 +562,7 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 		});
 		const store = new FixedKVStore(file, {
 			...DEFAULT_OPTIONS,
-			memtableSize: 500, // Smaller memtable to trigger more flushes
+			maxCacheBlockCount: 500,
 		});
 		await store.prepare();
 
@@ -673,9 +665,7 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 	const largeOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
 		keyCodec: largeKeyCodec as any,
 		valueCodec: largeValueCodec as any,
-		memtableSize: 50,
-		blockSize: 8192,
-		blockCacheSize: 50,
+		maxCacheBlockCount: 50,
 	};
 
 	const refStore = new MapKVStore(keySize, valueSize);
@@ -735,9 +725,7 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 	const massiveOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
 		keyCodec: massiveKeyCodec as any,
 		valueCodec: massiveValueCodec as any,
-		memtableSize: 50000,
-		blockSize: 65536,
-		blockCacheSize: 1000,
+		maxCacheBlockCount: 1000,
 	};
 
 	// Use MapKVStore as reference
@@ -789,10 +777,7 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		const stats = store.getStats();
 		console.log("Stats after insert:", {
-			memtableEntries: stats.memtableEntries,
-			sstCount: stats.sstCount,
 			totalEntries: stats.totalEntries,
-			sstSize: (stats.sstSize / 1024 / 1024).toFixed(1) + " MB",
 			fileSize: (stats.fileSize / 1024 / 1024).toFixed(1) + " MB",
 		});
 
@@ -811,8 +796,6 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		const reopenStats = store2.getStats();
 		console.log("Stats after reopen:", {
-			memtableEntries: reopenStats.memtableEntries,
-			sstCount: reopenStats.sstCount,
 			totalEntries: reopenStats.totalEntries,
 		});
 
