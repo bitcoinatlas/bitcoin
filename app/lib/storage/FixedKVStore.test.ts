@@ -44,14 +44,25 @@ class MapKVStore {
 		return Array.from(key, (b) => b.toString(16).padStart(2, "0")).join("");
 	}
 
-	get(keys: Uint8Array[]): (Uint8Array | undefined)[] {
-		return keys.map((key) => {
-			const k = this.keyToString(key);
-			const value = this.map.get(k);
-			return value !== undefined ? new Uint8Array(value) : undefined;
-		});
+	/**
+	 * Get a single value by key
+	 */
+	get(key: Uint8Array): Uint8Array | undefined {
+		const k = this.keyToString(key);
+		const value = this.map.get(k);
+		return value !== undefined ? new Uint8Array(value) : undefined;
 	}
 
+	/**
+	 * Batch get - returns values for multiple keys
+	 */
+	getMany(keys: Uint8Array[]): (Uint8Array | undefined)[] {
+		return keys.map((key) => this.get(key));
+	}
+
+	/**
+	 * Set a single key-value pair
+	 */
 	set(key: Uint8Array, value: Uint8Array): void {
 		if (value.length !== this.valueSize) {
 			throw new Error(`Value must be ${this.valueSize} bytes`);
@@ -59,6 +70,15 @@ class MapKVStore {
 		const k = this.keyToString(key);
 		// Store a copy to prevent external mutation
 		this.map.set(k, new Uint8Array(value));
+	}
+
+	/**
+	 * Batch set - set multiple key-value pairs
+	 */
+	setMany(entries: Array<{ key: Uint8Array; value: Uint8Array }>): void {
+		for (const { key, value } of entries) {
+			this.set(key, value);
+		}
 	}
 
 	close(): Promise<void> {
@@ -114,7 +134,7 @@ function arraysEqual(a: Uint8Array, b: Uint8Array | undefined): boolean {
 }
 
 const KEY_SIZE = 16;
-	const VALUE_SIZE = 64;
+const VALUE_SIZE = 64;
 const KEY_CODEC = new FixedBytesCodec(KEY_SIZE);
 const VALUE_CODEC = new FixedBytesCodec(VALUE_SIZE);
 
@@ -151,7 +171,7 @@ Deno.test("FixedKVStore - basic set and get (single)", async () => {
 
 			// Verify immediate retrieval (single key)
 			const got = await store.get(key);
-			const [refGot] = refStore.get([key]);
+			const refGot = refStore.get(key);
 
 			assertEquals(
 				arraysEqual(value, got!),
@@ -195,9 +215,9 @@ Deno.test("FixedKVStore - setMany and getMany", async () => {
 		await store.setMany(entries);
 
 		// Verify using getMany
-		const keys = entries.map(e => e.key);
+		const keys = entries.map((e) => e.key);
 		const results = await store.getMany(keys);
-		const refResults = refStore.get(keys);
+		const refResults = refStore.getMany(keys);
 
 		assertEquals(results.length, keys.length, "Result count mismatch");
 		for (let i = 0; i < results.length; i++) {
@@ -212,7 +232,7 @@ Deno.test("FixedKVStore - setMany and getMany", async () => {
 		for (let i = 0; i < 10; i++) {
 			const key = createKey(i, 16);
 			const got = await store.get(key);
-			const [refGot] = refStore.get([key]);
+			const refGot = refStore.get(key);
 			assertEquals(got, refGot, `Individual get mismatch for key ${i}`);
 		}
 
@@ -268,8 +288,8 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 				const key = createKey(i, 16);
 				const expected = createValue(i, 64);
 
-				const [got] = await store.get(key);
-				const [refGot] = refStore.get([key]);
+				const got = await store.get(key);
+				const refGot = refStore.get(key);
 
 				assertEquals(
 					arraysEqual(expected, got),
@@ -316,8 +336,8 @@ Deno.test("FixedKVStore - overwrites return latest value", async () => {
 			const key = createKey(i, 16);
 			const expected = createValue(40 + i, 64); // Last write for each key
 
-			const [got] = await store.get(key);
-			const [refGot] = refStore.get([key]);
+			const got = await store.get(key);
+			const refGot = refStore.get(key);
 
 			assertEquals(
 				arraysEqual(expected, got),
@@ -373,8 +393,8 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 		await store2.prepare();
 
 		// Test getMany with all keys
-		const results = await store2.get(keys);
-		const refResults = refStore.get(keys);
+		const results = await store2.getMany(keys);
+		const refResults = refStore.getMany(keys);
 
 		assertEquals(results.length, keys.length, "Result count mismatch");
 		assertEquals(results, refResults, "Batch results differ from reference");
@@ -386,8 +406,8 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 			createKey(99, 16),
 			createKey(999, 16), // Doesn't exist
 		];
-		const subsetResults = await store2.get(subsetKeys);
-		const refSubsetResults = refStore.get(subsetKeys);
+		const subsetResults = await store2.getMany(subsetKeys);
+		const refSubsetResults = refStore.getMany(subsetKeys);
 
 		assertEquals(subsetResults, refSubsetResults, "Subset results differ from reference");
 		assertEquals(subsetResults[3], undefined, "Non-existent key should return null");
@@ -415,7 +435,7 @@ Deno.test("FixedKVStore - missing keys return null", async () => {
 		// Try to get non-existent keys
 		for (let i = 1000; i < 1010; i++) {
 			const key = createKey(i, 16);
-			const [result] = await store.get(key);
+			const result = await store.get(key);
 			assertEquals(result, undefined, `Non-existent key ${i} should return null`);
 		}
 
@@ -517,13 +537,13 @@ Deno.test("FixedKVStore - cache behavior", async () => {
 		assertEquals(stats1.cacheMisses, 0, "Initial cache misses should be 0");
 
 		// First access - cache miss
-		await store2.get([createKey(0, 16)]);
+		await store2.get(createKey(0, 16));
 		const stats2 = store2.getStats();
 		assertEquals(stats2.cacheMisses, 1, "Should have 1 cache miss");
 		assertEquals(stats2.cacheHits, 0, "Should have 0 cache hits");
 
 		// Second access - cache hit
-		await store2.get([createKey(0, 16)]);
+		await store2.get(createKey(0, 16));
 		const stats3 = store2.getStats();
 		assertEquals(stats3.cacheMisses, 1, "Should still have 1 cache miss");
 		assertEquals(stats3.cacheHits, 1, "Should have 1 cache hit");
@@ -592,8 +612,8 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 		const uniqueKeys = [...new Set(keyPool)];
 		for (const keyNum of uniqueKeys) {
 			const key = createKey(keyNum, 16);
-			const [got] = await store2.get([key]);
-			const [refGot] = refStore.get([key]);
+			const got = await store2.get(key);
+			const refGot = refStore.get(key);
 
 			assertEquals(got, refGot, `Mismatch for key ${keyNum} after stress test`);
 		}
@@ -627,8 +647,8 @@ Deno.test("FixedKVStore - empty value handling", async () => {
 		await store.set(key, zeroValue);
 		refStore.set(key, zeroValue);
 
-		const [got] = await store.get(key);
-		const [refGot] = refStore.get([key]);
+		const got = await store.get(key);
+		const refGot = refStore.get(key);
 
 		assertEquals(got, refGot, "Zero value should be handled correctly");
 		assertEquals(got, zeroValue, "Should retrieve zero value correctly");
@@ -683,8 +703,8 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 			const key = createKey(i, keySize);
 			const expected = createValue(i, valueSize);
 
-			const [got] = await store.get(key);
-			const [refGot] = refStore.get([key]);
+			const got = await store.get(key);
+			const refGot = refStore.get(key);
 
 			assertEquals(
 				arraysEqual(expected, got),
@@ -811,7 +831,7 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 		for (let i = 0; i < refEntries.length; i += BATCH_SIZE) {
 			const batch = refEntries.slice(i, i + BATCH_SIZE);
 			const keys = batch.map(([k, _v]) => k);
-			const values = await store2.get(keys);
+			const values = await store2.getMany(keys);
 
 			for (let j = 0; j < batch.length; j++) {
 				const entry = batch[j]!;
@@ -846,7 +866,9 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		const totalTime = (Date.now() - startTime) / 1000;
 		console.log(
-			`\n✓ Massive test complete: ${TOTAL_ENTRIES.toLocaleString()} ops, ${refStore.size} unique entries in ${totalTime.toFixed(1)}s`,
+			`\n✓ Massive test complete: ${TOTAL_ENTRIES.toLocaleString()} ops, ${refStore.size} unique entries in ${
+				totalTime.toFixed(1)
+			}s`,
 		);
 	} finally {
 		await Deno.remove(testDir, { recursive: true });

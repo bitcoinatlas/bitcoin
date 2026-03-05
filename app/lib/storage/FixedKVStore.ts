@@ -112,9 +112,6 @@ export class FixedKVStore<K, V> {
 	private keyCodec: Codec<K>;
 	private valueCodec: Codec<V>;
 
-	private keySize: number;
-	private valueSize: number;
-	private entrySize: number;
 	private memtableSize: number;
 	private blockSize: number;
 	private maxCacheSize: number;
@@ -149,14 +146,11 @@ export class FixedKVStore<K, V> {
 			throw new Error("Value codec must have fixed stride (>= 0)");
 		}
 
-		this.keySize = options.keyCodec.stride;
-		this.valueSize = options.valueCodec.stride;
-		this.entrySize = this.keySize + this.valueSize;
 		this.memtableSize = options.memtableSize ?? 10000;
 		this.blockSize = options.blockSize ?? 65536;
 		this.maxCacheSize = options.blockCacheSize ?? 1000;
 
-		this.memtable = new Uint8ArrayMap(this.keySize, this.memtableSize * 2);
+		this.memtable = new Uint8ArrayMap(this.keyCodec.stride, this.memtableSize * 2);
 		this.blockBuffer = new Uint8Array(this.blockSize);
 	}
 
@@ -400,8 +394,8 @@ export class FixedKVStore<K, V> {
 			totalBlocks,
 			sstSize,
 			fileSize: this.fileOffset,
-			rawDataSize: (memtableEntries + sstEntries) * this.entrySize,
-			overhead: sstSize - ((memtableEntries + sstEntries) * this.entrySize),
+			rawDataSize: (memtableEntries + sstEntries) * this.keyCodec.stride + this.valueCodec.stride,
+			overhead: sstSize - ((memtableEntries + sstEntries) * this.keyCodec.stride + this.valueCodec.stride),
 			cacheEntries: this.blockCache.size,
 			cacheSize: totalCacheSize,
 			cacheHits: this.cacheHits,
@@ -439,12 +433,12 @@ export class FixedKVStore<K, V> {
 
 			// Write to block buffer
 			this.blockBuffer.set(entry.key, blockBufferPos);
-			this.blockBuffer.set(entry.value, blockBufferPos + this.keySize);
-			blockBufferPos += this.entrySize;
+			this.blockBuffer.set(entry.value, blockBufferPos + this.keyCodec.stride);
+			blockBufferPos += this.keyCodec.stride + this.valueCodec.stride;
 			blockEntryCount++;
 
 			// Flush block if full or last entry
-			if (blockBufferPos + this.entrySize > this.blockSize || i === entries.length - 1) {
+			if (blockBufferPos + this.keyCodec.stride + this.valueCodec.stride > this.blockSize || i === entries.length - 1) {
 				const uncompressed = this.blockBuffer.subarray(0, blockBufferPos);
 				const compressed = uncompressed;
 
@@ -608,13 +602,13 @@ export class FixedKVStore<K, V> {
 
 		while (left <= right) {
 			const mid = Math.floor((left + right) / 2);
-			const offset = mid * this.entrySize;
-			const key = data.subarray(offset, offset + this.keySize);
+			const offset = mid * this.keyCodec.stride + this.valueCodec.stride;
+			const key = data.subarray(offset, offset + this.keyCodec.stride);
 
 			const cmp = this.compareKeys(key, searchKey);
 
 			if (cmp === 0) {
-				return data.subarray(offset + this.keySize, offset + this.entrySize);
+				return data.subarray(offset + this.keyCodec.stride, offset + this.keyCodec.stride + this.valueCodec.stride);
 			} else if (cmp < 0) {
 				left = mid + 1;
 			} else {
@@ -677,7 +671,7 @@ export class FixedKVStore<K, V> {
 	}
 
 	private encodeMetadata(metadata: SSTMetadata): Uint8Array {
-		const blockSize = 8 + this.keySize * 2 + 8 + 4;
+		const blockSize = 8 + this.keyCodec.stride * 2 + 8 + 4;
 		const totalSize = 8 + 4 + 4 + metadata.blocks.length * blockSize + metadata.bloomFilter.length + 4;
 
 		const buf = new Uint8Array(totalSize);
@@ -705,9 +699,9 @@ export class FixedKVStore<K, V> {
 
 		for (const block of metadata.blocks) {
 			buf.set(block.startKey, pos);
-			pos += this.keySize;
+			pos += this.keyCodec.stride;
 			buf.set(block.endKey, pos);
-			pos += this.keySize;
+			pos += this.keyCodec.stride;
 			view.setBigUint64(pos, BigInt(block.offset), true);
 			pos += 8;
 			view.setUint32(pos, block.size, true);
@@ -739,10 +733,10 @@ export class FixedKVStore<K, V> {
 
 		const blocks: BlockMetadata[] = [];
 		for (let i = 0; i < blockCount; i++) {
-			const startKey = new Uint8Array(data.subarray(pos, pos + this.keySize));
-			pos += this.keySize;
-			const endKey = new Uint8Array(data.subarray(pos, pos + this.keySize));
-			pos += this.keySize;
+			const startKey = new Uint8Array(data.subarray(pos, pos + this.keyCodec.stride));
+			pos += this.keyCodec.stride;
+			const endKey = new Uint8Array(data.subarray(pos, pos + this.keyCodec.stride));
+			pos += this.keyCodec.stride;
 			const offset = Number(view.getBigUint64(pos, true));
 			pos += 8;
 			const size = view.getUint32(pos, true);
