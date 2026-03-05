@@ -22,7 +22,8 @@ interface CachedBlock {
  * - No deletes supported
  */
 export class FixedKVStore<K, V> {
-	private dataFile: Deno.FsFile;
+	private filePath: string;
+	private dataFile?: Deno.FsFile;
 	private keyCodec: Codec<K>;
 	private valueCodec: Codec<V>;
 
@@ -40,10 +41,10 @@ export class FixedKVStore<K, V> {
 	private prepared = false;
 
 	constructor(
-		dataFile: Deno.FsFile,
+		filePath: string,
 		options: FixedKVStoreOptions<K, V>,
 	) {
-		this.dataFile = dataFile;
+		this.filePath = filePath;
 		this.keyCodec = options.keyCodec;
 		this.valueCodec = options.valueCodec;
 
@@ -57,6 +58,17 @@ export class FixedKVStore<K, V> {
 		this.maxCacheBlockCount = options.maxCacheBlockCount ?? 1000;
 	}
 
+	private async ensureOpen(): Promise<Deno.FsFile> {
+		if (!this.dataFile) {
+			this.dataFile = await Deno.open(this.filePath, {
+				read: true,
+				write: true,
+				create: true,
+			});
+		}
+		return this.dataFile;
+	}
+
 	/**
 	 * Prepare the store by loading existing index from disk.
 	 * Called automatically on first use, can be called manually.
@@ -64,7 +76,8 @@ export class FixedKVStore<K, V> {
 	async prepare(): Promise<void> {
 		if (this.prepared) return;
 
-		const stat = await this.dataFile.stat();
+		const file = await this.ensureOpen();
+		const stat = await file.stat();
 		if (stat.size > 0) {
 			await this.loadExistingData();
 		}
@@ -78,6 +91,7 @@ export class FixedKVStore<K, V> {
 	 */
 	async get(key: K): Promise<V | undefined> {
 		await this.prepare();
+		const file = await this.ensureOpen();
 
 		const keyBytes = this.keyCodec.encode(key);
 		const keyHash = this.hashKey(keyBytes);
@@ -99,9 +113,9 @@ export class FixedKVStore<K, V> {
 			const blockStart = Math.floor(offset / blockSize) * blockSize;
 			const blockEnd = Math.min(blockStart + blockSize, this.fileOffset);
 
-			await this.dataFile.seek(blockStart, Deno.SeekMode.Start);
+			await file.seek(blockStart, Deno.SeekMode.Start);
 			const blockData = new Uint8Array(blockEnd - blockStart);
-			await this.dataFile.read(blockData);
+			await file.read(blockData);
 
 			// Add to cache
 			this.addToCache(cacheKey, blockData);
@@ -117,6 +131,7 @@ export class FixedKVStore<K, V> {
 	 */
 	async getMany(keys: K[]): Promise<(V | undefined)[]> {
 		await this.prepare();
+		const file = await this.ensureOpen();
 
 		// Group by block to minimize disk reads
 		const byBlock = new Map<number, Array<{ keyIndex: number; offset: number }>>();
@@ -152,9 +167,9 @@ export class FixedKVStore<K, V> {
 				blockStart = cacheKey * blockSize;
 				const blockEnd = Math.min(blockStart + blockSize, this.fileOffset);
 
-				await this.dataFile.seek(blockStart, Deno.SeekMode.Start);
+				await file.seek(blockStart, Deno.SeekMode.Start);
 				blockData = new Uint8Array(blockEnd - blockStart);
-				await this.dataFile.read(blockData);
+				await file.read(blockData);
 
 				this.addToCache(cacheKey, blockData);
 			}
@@ -175,6 +190,7 @@ export class FixedKVStore<K, V> {
 	 */
 	async set(key: K, value: V): Promise<void> {
 		await this.prepare();
+		const file = await this.ensureOpen();
 
 		const keyBytes = this.keyCodec.encode(key);
 		const valueBytes = this.valueCodec.encode(value);
@@ -187,8 +203,8 @@ export class FixedKVStore<K, V> {
 
 		// Write directly to disk at current offset
 		const offset = this.fileOffset;
-		await this.dataFile.seek(offset, Deno.SeekMode.Start);
-		await this.dataFile.write(buf);
+		await file.seek(offset, Deno.SeekMode.Start);
+		await file.write(buf);
 
 		// Update index
 		this.index.set(keyHash, offset);
@@ -200,6 +216,7 @@ export class FixedKVStore<K, V> {
 	 */
 	async setMany(entries: Array<{ key: K; value: V }>): Promise<void> {
 		await this.prepare();
+		const file = await this.ensureOpen();
 
 		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
 		const buf = new Uint8Array(entries.length * entrySize);
@@ -220,15 +237,35 @@ export class FixedKVStore<K, V> {
 		}
 
 		// Single write
-		await this.dataFile.seek(this.fileOffset, Deno.SeekMode.Start);
-		await this.dataFile.write(buf);
+		await file.seek(this.fileOffset, Deno.SeekMode.Start);
+		await file.write(buf);
 
 		this.fileOffset += buf.length;
 	}
 
 	async close(): Promise<void> {
-		await this.dataFile.sync();
-		this.dataFile.close();
+		if (this.dataFile) {
+			await this.dataFile.sync();
+			this.dataFile.close();
+			this.dataFile = undefined;
+		}
+		this.prepared = false;
+		this.index.clear();
+		this.blockCache.clear();
+		this.fileOffset = 0;
+		this.accessCounter = 0;
+	}
+
+	getStats() {
+		const totalCacheSize = this.blockCache.values()
+			.reduce((sum, block) => sum + block.data.length, 0);
+
+		return {
+			totalEntries: this.index.size,
+			fileSize: this.fileOffset,
+			cacheEntries: this.blockCache.size,
+			cacheSize: totalCacheSize,
+		};
 	}
 
 	// Private helpers
@@ -284,7 +321,8 @@ export class FixedKVStore<K, V> {
 	}
 
 	private async loadExistingData(): Promise<void> {
-		const stat = await this.dataFile.stat();
+		const file = this.dataFile!;
+		const stat = await file.stat();
 		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
 
 		if (stat.size % entrySize !== 0) {
@@ -299,8 +337,8 @@ export class FixedKVStore<K, V> {
 		while (offset < stat.size) {
 			const chunkSize = Math.min(CHUNK_SIZE, stat.size - offset);
 			const chunk = new Uint8Array(chunkSize);
-			await this.dataFile.seek(offset, Deno.SeekMode.Start);
-			await this.dataFile.read(chunk);
+			await file.seek(offset, Deno.SeekMode.Start);
+			await file.read(chunk);
 
 			// Process entries in chunk
 			for (let pos = 0; pos + entrySize <= chunkSize; pos += entrySize) {

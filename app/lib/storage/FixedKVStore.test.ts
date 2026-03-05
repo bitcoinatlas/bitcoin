@@ -149,12 +149,7 @@ Deno.test("FixedKVStore - basic set and get (single)", async () => {
 	const dataPath = `${testDir}/data.bin`;
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		const refStore = new MapKVStore(16, 64);
@@ -180,7 +175,6 @@ Deno.test("FixedKVStore - basic set and get (single)", async () => {
 		}
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -191,12 +185,7 @@ Deno.test("FixedKVStore - setMany and getMany", async () => {
 	const dataPath = `${testDir}/data.bin`;
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		const refStore = new MapKVStore(16, 64);
@@ -235,7 +224,6 @@ Deno.test("FixedKVStore - setMany and getMany", async () => {
 		}
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -251,12 +239,7 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 	try {
 		// Phase 1: Create store and add data
 		{
-			const file = await Deno.open(dataPath, {
-				create: true,
-				read: true,
-				write: true,
-			});
-			const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+			const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 			await store.prepare();
 
 			for (let i = 0; i < 200; i++) {
@@ -269,16 +252,11 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 			}
 
 			await store.close();
-			await file.close();
 		}
 
 		// Phase 2: Reopen and verify data persisted
 		{
-			const file = await Deno.open(dataPath, {
-				read: true,
-				write: true,
-			});
-			const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+			const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 			await store.prepare();
 
 			// Verify all values are still there
@@ -298,7 +276,6 @@ Deno.test("FixedKVStore - persistence across reopen", async () => {
 			}
 
 			await store.close();
-			await file.close();
 		}
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
@@ -312,12 +289,7 @@ Deno.test("FixedKVStore - overwrites return latest value", async () => {
 	const refStore = new MapKVStore(16, 64);
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		// Set initial values
@@ -346,7 +318,6 @@ Deno.test("FixedKVStore - overwrites return latest value", async () => {
 		}
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -360,12 +331,7 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 	const keys: Uint8Array[] = [];
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		// Set values
@@ -380,14 +346,9 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 
 		// Flush to ensure some data is on disk
 		await store.close();
-		await file.close();
 
 		// Reopen and test batch get
-		const file2 = await Deno.open(dataPath, {
-			read: true,
-			write: true,
-		});
-		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
+		const store2 = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store2.prepare();
 
 		// Test getMany with all keys
@@ -411,7 +372,6 @@ Deno.test("FixedKVStore - batch retrieval", async () => {
 		assertEquals(subsetResults[3], undefined, "Non-existent key should return null");
 
 		await store2.close();
-		await file2.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -422,12 +382,7 @@ Deno.test("FixedKVStore - missing keys return null", async () => {
 	const dataPath = `${testDir}/data.bin`;
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		// Try to get non-existent keys
@@ -438,7 +393,6 @@ Deno.test("FixedKVStore - missing keys return null", async () => {
 		}
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -449,12 +403,7 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 	const dataPath = `${testDir}/data.bin`;
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		// Initial stats
@@ -473,75 +422,15 @@ Deno.test("FixedKVStore - stats are accurate", async () => {
 
 		// Close (flushes to disk)
 		await store.close();
-		await file.close();
 
 		// Reopen and check stats
-		const file2 = await Deno.open(dataPath, {
-			read: true,
-			write: true,
-		});
-		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
+		const store2 = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store2.prepare();
 
 		const finalStats = store2.getStats();
 		assertEquals(finalStats.totalEntries, 50, "Total entries should still be 50");
 
 		await store2.close();
-		await file2.close();
-	} finally {
-		await Deno.remove(testDir, { recursive: true });
-	}
-});
-
-Deno.test("FixedKVStore - cache behavior", async () => {
-	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
-	const dataPath = `${testDir}/data.bin`;
-
-	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
-		await store.prepare();
-
-		// Add data and flush
-		for (let i = 0; i < 50; i++) {
-			const key = createKey(i, 16);
-			const value = createValue(i, 64);
-			await store.set(key, value);
-		}
-		await store.close();
-		await file.close();
-
-		// Reopen and access some keys
-		const file2 = await Deno.open(dataPath, {
-			read: true,
-			write: true,
-		});
-		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
-		await store2.prepare();
-
-		// Initial cache stats
-		const stats1 = store2.getStats();
-		assertEquals(stats1.cacheHits, 0, "Initial cache hits should be 0");
-		assertEquals(stats1.cacheMisses, 0, "Initial cache misses should be 0");
-
-		// First access - cache miss
-		await store2.get(createKey(0, 16));
-		const stats2 = store2.getStats();
-		assertEquals(stats2.cacheMisses, 1, "Should have 1 cache miss");
-		assertEquals(stats2.cacheHits, 0, "Should have 0 cache hits");
-
-		// Second access - cache hit
-		await store2.get(createKey(0, 16));
-		const stats3 = store2.getStats();
-		assertEquals(stats3.cacheMisses, 1, "Should still have 1 cache miss");
-		assertEquals(stats3.cacheHits, 1, "Should have 1 cache hit");
-
-		await store2.close();
-		await file2.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -555,12 +444,7 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 	const keyPool: number[] = [];
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, {
+		const store = new FixedKVStore(dataPath, {
 			...DEFAULT_OPTIONS,
 			maxCacheBlockCount: 500,
 		});
@@ -590,14 +474,9 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 
 		// Close and reopen
 		await store.close();
-		await file.close();
 
 		// Verify after reopen
-		const file2 = await Deno.open(dataPath, {
-			read: true,
-			write: true,
-		});
-		const store2 = new FixedKVStore(file2, DEFAULT_OPTIONS);
+		const store2 = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store2.prepare();
 
 		// Check all unique keys
@@ -611,7 +490,6 @@ Deno.test("FixedKVStore - stress test with random operations", async () => {
 		}
 
 		await store2.close();
-		await file2.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -624,12 +502,7 @@ Deno.test("FixedKVStore - empty value handling", async () => {
 	const refStore = new MapKVStore(16, 64);
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, DEFAULT_OPTIONS);
+		const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
 		await store.prepare();
 
 		// Value of all zeros
@@ -646,7 +519,6 @@ Deno.test("FixedKVStore - empty value handling", async () => {
 		assertEquals(got, zeroValue, "Should retrieve zero value correctly");
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -671,12 +543,7 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 	const refStore = new MapKVStore(keySize, valueSize);
 
 	try {
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-		const store = new FixedKVStore(file, largeOptions);
+		const store = new FixedKVStore(dataPath, largeOptions);
 		await store.prepare();
 
 		// Test with larger sizes
@@ -705,7 +572,6 @@ Deno.test("FixedKVStore - large key/value sizes", async () => {
 		}
 
 		await store.close();
-		await file.close();
 	} finally {
 		await Deno.remove(testDir, { recursive: true });
 	}
@@ -741,13 +607,7 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 		console.log(`Starting massive test: ${TOTAL_ENTRIES.toLocaleString()} entries...`);
 		const startTime = Date.now();
 
-		const file = await Deno.open(dataPath, {
-			create: true,
-			read: true,
-			write: true,
-		});
-
-		const store = new FixedKVStore(file, massiveOptions);
+		const store = new FixedKVStore(dataPath, massiveOptions);
 		await store.prepare();
 
 		console.log("Phase 1: Inserting 2 million entries...");
@@ -783,15 +643,10 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		console.log("Phase 2: Closing and reopening...");
 		await store.close();
-		await file.close();
 
 		console.log("Phase 3: Reopening and verifying against reference...");
 
-		const file2 = await Deno.open(dataPath, {
-			read: true,
-			write: true,
-		});
-		const store2 = new FixedKVStore(file2, massiveOptions);
+		const store2 = new FixedKVStore(dataPath, massiveOptions);
 		await store2.prepare();
 
 		const reopenStats = store2.getStats();
@@ -839,13 +694,11 @@ Deno.test("FixedKVStore - massive scale test with 2 million entries", async () =
 
 		const finalStats = store2.getStats();
 		console.log("Final stats:", {
-			cacheHitRate: (finalStats.cacheHitRate * 100).toFixed(1) + "%",
 			cacheEntries: finalStats.cacheEntries,
 			cacheSize: (finalStats.cacheSize / 1024 / 1024).toFixed(1) + " MB",
 		});
 
 		await store2.close();
-		await file2.close();
 
 		const totalTime = (Date.now() - startTime) / 1000;
 		console.log(

@@ -34,9 +34,8 @@ function generateKeyValue(): { key: Uint8Array; value: Uint8Array } {
 
 async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	console.log("\n📊 FixedKVStore");
-	const file = await Deno.open("data/bench_kv1.db", { read: true, write: true, create: true });
 
-	const store = new FixedKVStore(file, {
+	const store = new FixedKVStore("data/bench_kv1.db", {
 		keyCodec: new FixedBytesCodec(KEY_SIZE) as any,
 		valueCodec: new FixedBytesCodec(VALUE_SIZE) as any,
 		maxCacheBlockCount: 5000,
