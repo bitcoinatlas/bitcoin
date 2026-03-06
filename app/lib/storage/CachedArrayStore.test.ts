@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { MemoryArrayStore } from "~/lib/storage/MemoryArrayStore.ts";
+import { CachedArrayStore } from "~/lib/storage/CachedArrayStore.ts";
 
 // Simple fixed-size codec for testing
 class FixedBytesCodec {
@@ -37,12 +37,11 @@ function createItem(n: number, size = ITEM_SIZE): Uint8Array {
 }
 
 async function withStore<T>(
-	testFn: (store: MemoryArrayStore<Uint8Array>) => Promise<T>,
+	testFn: (store: CachedArrayStore<Uint8Array>) => Promise<T>,
 ): Promise<T> {
-	const testDir = await Deno.makeTempDir({ prefix: "memoryarraystore-test" });
+	const testDir = await Deno.makeTempDir({ prefix: "cachedarraystore-test" });
 	const filePath = `${testDir}/data.bin`;
-	const file = await Deno.open(filePath, { create: true, read: true, write: true });
-	const store = new MemoryArrayStore<Uint8Array>(file, CODEC);
+	const store = new CachedArrayStore<Uint8Array>(filePath, CODEC);
 
 	try {
 		await store.prepare();
@@ -54,7 +53,7 @@ async function withStore<T>(
 }
 
 // Basic operations
-Deno.test("MemoryArrayStore - basic push and get", async () => {
+Deno.test("CachedArrayStore - basic push and get", async () => {
 	await withStore(async (store) => {
 		const item = createItem(1);
 
@@ -66,14 +65,14 @@ Deno.test("MemoryArrayStore - basic push and get", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - get returns undefined for out of bounds", async () => {
+Deno.test("CachedArrayStore - get returns undefined for out of bounds", async () => {
 	await withStore(async (store) => {
 		const result = await store.get(999);
 		assertEquals(result, undefined);
 	});
 });
 
-Deno.test("MemoryArrayStore - pushMany and getRange", async () => {
+Deno.test("CachedArrayStore - pushMany and getRange", async () => {
 	await withStore(async (store) => {
 		const items = [
 			createItem(1),
@@ -89,7 +88,7 @@ Deno.test("MemoryArrayStore - pushMany and getRange", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - getRange with partial results", async () => {
+Deno.test("CachedArrayStore - getRange with partial results", async () => {
 	await withStore(async (store) => {
 		await store.pushMany([createItem(1), createItem(2), createItem(3)]);
 
@@ -99,7 +98,7 @@ Deno.test("MemoryArrayStore - getRange with partial results", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - length returns correct count", async () => {
+Deno.test("CachedArrayStore - length returns correct count", async () => {
 	await withStore(async (store) => {
 		assertEquals(await store.length(), 0);
 
@@ -112,7 +111,7 @@ Deno.test("MemoryArrayStore - length returns correct count", async () => {
 });
 
 // Persistence
-Deno.test("MemoryArrayStore - persists data across reopen", async () => {
+Deno.test("CachedArrayStore - persists data across reopen", async () => {
 	const testDir = await Deno.makeTempDir({ prefix: "memoryarraystore-test" });
 	const filePath = `${testDir}/data.bin`;
 
@@ -120,15 +119,13 @@ Deno.test("MemoryArrayStore - persists data across reopen", async () => {
 
 	try {
 		// Phase 1: Write data
-		const file1 = await Deno.open(filePath, { create: true, read: true, write: true });
-		const store1 = new MemoryArrayStore(file1, CODEC);
+		const store1 = new CachedArrayStore(filePath, CODEC);
 		await store1.prepare();
 		await store1.pushMany(items);
 		await store1.close();
 
 		// Phase 2: Read data after reopen
-		const file2 = await Deno.open(filePath, { read: true, write: true });
-		const store2 = new MemoryArrayStore(file2, CODEC);
+		const store2 = new CachedArrayStore(filePath, CODEC);
 		await store2.prepare();
 
 		assertEquals(await store2.length(), 3);
@@ -143,7 +140,7 @@ Deno.test("MemoryArrayStore - persists data across reopen", async () => {
 });
 
 // Truncate
-Deno.test("MemoryArrayStore - truncate reduces length", async () => {
+Deno.test("CachedArrayStore - truncate reduces length", async () => {
 	await withStore(async (store) => {
 		await store.pushMany([createItem(1), createItem(2), createItem(3)]);
 		await store.truncate(2);
@@ -155,7 +152,7 @@ Deno.test("MemoryArrayStore - truncate reduces length", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - truncate to zero clears all", async () => {
+Deno.test("CachedArrayStore - truncate to zero clears all", async () => {
 	await withStore(async (store) => {
 		await store.pushMany([createItem(1), createItem(2)]);
 		await store.truncate(0);
@@ -165,7 +162,7 @@ Deno.test("MemoryArrayStore - truncate to zero clears all", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - truncate throws on invalid length", async () => {
+Deno.test("CachedArrayStore - truncate throws on invalid length", async () => {
 	await withStore(async (store) => {
 		await store.push(createItem(1));
 
@@ -180,22 +177,20 @@ Deno.test("MemoryArrayStore - truncate throws on invalid length", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - truncate persists after close", async () => {
+Deno.test("CachedArrayStore - truncate persists after close", async () => {
 	const testDir = await Deno.makeTempDir({ prefix: "memoryarraystore-test" });
 	const filePath = `${testDir}/data.bin`;
 
 	try {
 		// Phase 1: Write and truncate
-		const file1 = await Deno.open(filePath, { create: true, read: true, write: true });
-		const store1 = new MemoryArrayStore(file1, CODEC);
+		const store1 = new CachedArrayStore(filePath, CODEC);
 		await store1.prepare();
 		await store1.pushMany([createItem(1), createItem(2), createItem(3)]);
 		await store1.truncate(1);
 		await store1.close();
 
 		// Phase 2: Verify truncation persisted
-		const file2 = await Deno.open(filePath, { read: true, write: true });
-		const store2 = new MemoryArrayStore(file2, CODEC);
+		const store2 = new CachedArrayStore(filePath, CODEC);
 		await store2.prepare();
 
 		assertEquals(await store2.length(), 1);
@@ -208,7 +203,7 @@ Deno.test("MemoryArrayStore - truncate persists after close", async () => {
 });
 
 // Empty operations
-Deno.test("MemoryArrayStore - handles empty pushMany", async () => {
+Deno.test("CachedArrayStore - handles empty pushMany", async () => {
 	await withStore(async (store) => {
 		const indices = await store.pushMany([]);
 		assertEquals(indices, []);
@@ -216,7 +211,7 @@ Deno.test("MemoryArrayStore - handles empty pushMany", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - handles empty getRange", async () => {
+Deno.test("CachedArrayStore - handles empty getRange", async () => {
 	await withStore(async (store) => {
 		await store.push(createItem(1));
 		const results = await store.getRange(0, 0);
@@ -225,7 +220,7 @@ Deno.test("MemoryArrayStore - handles empty getRange", async () => {
 });
 
 // Concurrent operations
-Deno.test("MemoryArrayStore - handles concurrent pushes", async () => {
+Deno.test("CachedArrayStore - handles concurrent pushes", async () => {
 	await withStore(async (store) => {
 		const promises = [];
 		for (let i = 0; i < 100; i++) {
@@ -246,7 +241,7 @@ Deno.test("MemoryArrayStore - handles concurrent pushes", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - handles concurrent gets", async () => {
+Deno.test("CachedArrayStore - handles concurrent gets", async () => {
 	await withStore(async (store) => {
 		await store.pushMany(Array.from({ length: 100 }, (_, i) => createItem(i)));
 
@@ -263,7 +258,7 @@ Deno.test("MemoryArrayStore - handles concurrent gets", async () => {
 });
 
 // Double prepare/close
-Deno.test("MemoryArrayStore - handles double prepare", async () => {
+Deno.test("CachedArrayStore - handles double prepare", async () => {
 	await withStore(async (store) => {
 		await store.prepare();
 		await store.push(createItem(1));
@@ -272,11 +267,10 @@ Deno.test("MemoryArrayStore - handles double prepare", async () => {
 	});
 });
 
-Deno.test("MemoryArrayStore - handles double close", async () => {
+Deno.test("CachedArrayStore - handles double close", async () => {
 	const testDir = await Deno.makeTempDir({ prefix: "memoryarraystore-test" });
 	const filePath = `${testDir}/data.bin`;
-	const file = await Deno.open(filePath, { create: true, read: true, write: true });
-	const store = new MemoryArrayStore(file, CODEC);
+	const store = new CachedArrayStore(filePath, CODEC);
 
 	try {
 		await store.prepare();
@@ -289,7 +283,7 @@ Deno.test("MemoryArrayStore - handles double close", async () => {
 });
 
 // Many items
-Deno.test("MemoryArrayStore - handles many items", async () => {
+Deno.test("CachedArrayStore - handles many items", async () => {
 	await withStore(async (store) => {
 		const count = 1000;
 		const items = [];

@@ -1,4 +1,4 @@
-import { MemoryArrayStore } from "~/lib/storage/MemoryArrayStore.ts";
+import { CachedArrayStore } from "~/lib/storage/CachedArrayStore.ts";
 
 const ITEM_SIZE = 64;
 const TOTAL_ENTRIES = 5_000_000;
@@ -35,10 +35,9 @@ function generateItem(n: number): Uint8Array {
 	return item;
 }
 
-async function benchmarkMemoryArrayStore1() {
+async function benchmarkCachedArrayStore1() {
 	const filePath = "data/bench_array1.bin";
-	const file = await Deno.open(filePath, { create: true, read: true, write: true });
-	const store = new MemoryArrayStore(file, CODEC);
+	const store = new CachedArrayStore(filePath, CODEC);
 	await store.prepare();
 
 	// Generate test data
@@ -110,8 +109,8 @@ async function main() {
 	// Run benchmarks
 	const results = [];
 
-	console.log("\n📦 MemoryArrayStore (Full in-memory)");
-	results.push(await benchmarkMemoryArrayStore1());
+	console.log("\n📦 CachedArrayStore (Full in-memory)");
+	results.push(await benchmarkCachedArrayStore1());
 
 	// Summary table
 	console.log("\n" + "=".repeat(85));

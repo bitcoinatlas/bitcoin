@@ -1,5 +1,5 @@
 /**
- * MemoryArrayStore - Fixed-size items kept in memory, synced to disk
+ * CachedArrayStore - Fixed-size items kept in memory, synced to disk
  *
  * Like a resident array that persists. Not key-value, just indexed items.
  * Lazy preparation - data loaded on first use.
@@ -7,8 +7,8 @@
 
 import type { Codec } from "@nomadshiba/codec";
 
-export class MemoryArrayStore<T> {
-	private file: Deno.FsFile;
+export class CachedArrayStore<T> {
+	private filePath: string;
 	private codec: Codec<T>;
 
 	// Resident deserialized data
@@ -17,9 +17,10 @@ export class MemoryArrayStore<T> {
 
 	// Preparation state
 	private prepared = false;
+	private file: Deno.FsFile | null = null;
 
-	constructor(file: Deno.FsFile, codec: Codec<T>) {
-		this.file = file;
+	constructor(filePath: string, codec: Codec<T>) {
+		this.filePath = filePath;
 		this.codec = codec;
 
 		if (codec.stride < 0) {
@@ -33,6 +34,8 @@ export class MemoryArrayStore<T> {
 	 */
 	async prepare(): Promise<void> {
 		if (this.prepared) return;
+
+		this.file = await Deno.open(this.filePath, { create: true, read: true, write: true });
 
 		const stat = await this.file.stat();
 		if (stat.size > 0) {
@@ -103,11 +106,14 @@ export class MemoryArrayStore<T> {
 			}
 		}
 
-		this.file.truncate(newLength * this.codec.stride);
+		if (this.file) {
+			this.file.truncate(newLength * this.codec.stride);
+		}
 	}
 
 	async flush(): Promise<void> {
 		if (this.dirty.size === 0) return;
+		if (!this.file) return;
 
 		const sorted = Array.from(this.dirty).sort((a, b) => a - b);
 		const ranges: Array<{ start: number; count: number }> = [];
@@ -150,6 +156,9 @@ export class MemoryArrayStore<T> {
 
 	async close(): Promise<void> {
 		await this.flush();
-		this.file.close();
+		if (this.file) {
+			this.file.close();
+			this.file = null;
+		}
 	}
 }

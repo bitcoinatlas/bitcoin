@@ -1,16 +1,16 @@
-import { sha256 } from "@noble/hashes/sha2";
+import { sha256 } from "@noble/hashes/sha256";
 import { resolve } from "@std/path";
-import { timelineCommit } from "./lib/codec/TimelineCommit.ts";
+import { blockCodec } from "./lib/codec/Block.ts";
 
 export const BASE_DATA_DIR = resolve("./data");
 
-export const MAX_COMMIT_WEIGHT = 4 * 1024 * 1024;
+export const MAX_BLOCK_WEIGHT = 4 * 1024 * 1024;
 export const WITNESS_DATA_WEIGHT = 1;
 export const NON_WITNESS_DATA_WEIGHT = 4;
 
-export const GENESIS_COMMIT_HEIGHT = 0;
-export const GENESIS_COMMIT = new Uint8Array(new SharedArrayBuffer(285));
-GENESIS_COMMIT.set([
+export const GENESIS_BLOCK_HEIGHT = 0;
+export const GENESIS_BLOCK = new Uint8Array(new SharedArrayBuffer(285));
+GENESIS_BLOCK.set([
 	// --- Block header (80 bytes) ---
 	// version
 	...[0x01, 0x00, 0x00, 0x00],
@@ -82,9 +82,9 @@ GENESIS_COMMIT.set([
 	// locktime
 	...[0x00, 0x00, 0x00, 0x00],
 ]);
-export const GENESIS_COMMIT_HEADER = GENESIS_COMMIT.subarray(0, timelineCommit.shape.header.stride);
-export const GENESIS_COMMIT_PREV_HASH = GENESIS_COMMIT_HEADER.subarray(
-	timelineCommit.shape.header.shape.version.stride,
-	timelineCommit.shape.header.shape.version.stride + timelineCommit.shape.header.shape.prevHash.stride,
+export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, blockCodec.shape.header.stride);
+export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
+	blockCodec.shape.header.shape.version.stride,
+	blockCodec.shape.header.shape.version.stride + blockCodec.shape.header.shape.prevHash.stride,
 );
-export const GENESIS_COMMIT_HASH = sha256(sha256(GENESIS_COMMIT_HEADER));
+export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));

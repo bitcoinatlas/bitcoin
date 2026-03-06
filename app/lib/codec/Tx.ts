@@ -4,24 +4,24 @@ import { bytes32 } from "~/lib/codec/primitives.ts";
 import { SequenceLock } from "~/lib/codec/weirdness/SequenceLock.ts";
 import { TimeLock } from "~/lib/codec/weirdness/TimeLock.ts";
 
-export type TimelineEntry = {
+export type TxData = {
 	version: number;
-	vin: TimelineEntryIn[];
-	vout: TimelineEntryOut[];
+	vin: TxInputData[];
+	vout: TxOutputData[];
 	lockTime: TimeLock;
 	witness: boolean;
 };
-export type TimelineEntryWithId = TimelineEntry & { entryId: Uint8Array };
+export type TxWithIdData = TxData & { txId: Uint8Array };
 
-export type TimelineEntryIn = {
-	entryId: Uint8Array;
+export type TxInputData = {
+	txId: Uint8Array;
 	vout: number;
 	scriptSig: Uint8Array;
 	sequenceLock: SequenceLock;
 	witness: Uint8Array[];
 };
 
-export type TimelineEntryOut = {
+export type TxOutputData = {
 	value: bigint;
 	scriptPubKey: Uint8Array;
 };
@@ -29,35 +29,35 @@ export type TimelineEntryOut = {
 const scriptBytes = new BytesCodec();
 const witnessItemBytes = new BytesCodec();
 
-export class TimelineEntryCodec extends Codec<TimelineEntry> {
+export class TxCodec extends Codec<TxData> {
 	readonly stride = -1;
 
-	encode(entry: TimelineEntry): Uint8Array {
+	encode(tx: TxData): Uint8Array {
 		const chunks: Uint8Array[] = [];
 
-		chunks.push(u32LE.encode(entry.version));
+		chunks.push(u32LE.encode(tx.version));
 
-		const hasWitness = entry.witness && entry.vin.some((v) => v.witness.length > 0);
+		const hasWitness = tx.witness && tx.vin.some((v) => v.witness.length > 0);
 		if (hasWitness) {
 			chunks.push(Uint8Array.of(0x00, 0x01));
 		}
 
-		chunks.push(varint.encode(entry.vin.length));
-		for (const vin of entry.vin) {
-			chunks.push(bytes32.encode(vin.entryId));
+		chunks.push(varint.encode(tx.vin.length));
+		for (const vin of tx.vin) {
+			chunks.push(bytes32.encode(vin.txId));
 			chunks.push(u32LE.encode(vin.vout));
 			chunks.push(scriptBytes.encode(vin.scriptSig));
 			chunks.push(u32LE.encode(SequenceLock.encode(vin.sequenceLock)));
 		}
 
-		chunks.push(varint.encode(entry.vout.length));
-		for (const vout of entry.vout) {
+		chunks.push(varint.encode(tx.vout.length));
+		for (const vout of tx.vout) {
 			chunks.push(u64LE.encode(vout.value));
 			chunks.push(scriptBytes.encode(vout.scriptPubKey));
 		}
 
 		if (hasWitness) {
-			for (const vin of entry.vin) {
+			for (const vin of tx.vin) {
 				chunks.push(varint.encode(vin.witness.length));
 				for (const item of vin.witness) {
 					chunks.push(witnessItemBytes.encode(item));
@@ -65,7 +65,7 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 			}
 		}
 
-		chunks.push(u32LE.encode(TimeLock.encode(entry.lockTime)));
+		chunks.push(u32LE.encode(TimeLock.encode(tx.lockTime)));
 
 		let totalLength = 0;
 		for (const chunk of chunks) {
@@ -80,7 +80,7 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 		return result;
 	}
 
-	decode(bytes: Uint8Array): [TimelineEntryWithId, number] {
+	decode(bytes: Uint8Array): [TxWithIdData, number] {
 		let offset = 0;
 
 		const [version] = u32LE.decode(bytes.subarray(offset));
@@ -108,9 +108,9 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 			offset += vinCountBytes;
 		}
 
-		const vin: TimelineEntryIn[] = [];
+		const vin: TxInputData[] = [];
 		for (let i = 0; i < vinCount; i++) {
-			const [entryId] = bytes32.decode(bytes.subarray(offset));
+			const [txId] = bytes32.decode(bytes.subarray(offset));
 			offset += 32;
 
 			const [vout] = u32LE.decode(bytes.subarray(offset));
@@ -123,7 +123,7 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 			offset += 4;
 
 			vin.push({
-				entryId,
+				txId,
 				vout,
 				scriptSig,
 				sequenceLock: SequenceLock.decode(sequence),
@@ -134,7 +134,7 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 		const [voutCount, voutCountBytes] = varint.decode(bytes.subarray(offset));
 		offset += voutCountBytes;
 
-		const vout: TimelineEntryOut[] = [];
+		const vout: TxOutputData[] = [];
 		for (let i = 0; i < voutCount; i++) {
 			const [value] = u64LE.decode(bytes.subarray(offset));
 			offset += 8;
@@ -162,8 +162,8 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 		const [locktime] = u32LE.decode(bytes.subarray(offset));
 		offset += 4;
 
-		const entry: TimelineEntryWithId = {
-			entryId: sha256(sha256(bytes.subarray(0, offset))),
+		const tx: TxWithIdData = {
+			txId: sha256(sha256(bytes.subarray(0, offset))),
 			version,
 			vin,
 			vout,
@@ -171,8 +171,8 @@ export class TimelineEntryCodec extends Codec<TimelineEntry> {
 			witness: hasWitness,
 		};
 
-		return [entry, offset];
+		return [tx, offset];
 	}
 }
 
-export const timelineEntry = new TimelineEntryCodec();
+export const txCodec = new TxCodec();

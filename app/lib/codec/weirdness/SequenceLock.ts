@@ -7,7 +7,7 @@ export type SequenceLock =
 	| {
 		kind: "enable";
 		relativeLock:
-			| { kind: "commit"; commits: number }
+			| { kind: "block"; blocks: number }
 			| { kind: "time"; seconds: number };
 		unused: number;
 	};
@@ -36,7 +36,7 @@ export namespace SequenceLock {
 
 		const relativeLock = typeFlag
 			? { kind: "time" as const, seconds: value * 512 }
-			: { kind: "commit" as const, commits: value };
+			: { kind: "block" as const, blocks: value };
 
 		return {
 			kind: "enable",
@@ -60,11 +60,11 @@ export namespace SequenceLock {
 		let value: number;
 		let typeFlag: boolean;
 
-		if (lock.relativeLock.kind === "commit") {
-			if (lock.relativeLock.commits < 0 || lock.relativeLock.commits > 0xffff) {
-				throw new RangeError("commit count must fit in 16 bits");
+		if (lock.relativeLock.kind === "block") {
+			if (lock.relativeLock.blocks < 0 || lock.relativeLock.blocks > 0xffff) {
+				throw new RangeError("block count must fit in 16 bits");
 			}
-			value = lock.relativeLock.commits;
+			value = lock.relativeLock.blocks;
 			typeFlag = false;
 		} else {
 			if (lock.relativeLock.seconds % 512 !== 0) {

@@ -19,21 +19,17 @@ storage and less friction.
 
 - The whole codebase uses **wire format internally**, so there is no `.reverse()` or `.toReversed()` anywhere in the
   core logic, except when making things like console logs human-readable.
-- I call the original implementation of Bitcoin and anything legacy **“satoshi”**. For example:
+- I call the original implementation of Bitcoin and anything legacy **"satoshi"**. For example:
   - Satoshi Client
   - Satoshi RPC
   - Satoshi P2P
   - `computeSatoshiMerkleRoot`
-  - “satoshi address type”
+  - "satoshi address type"
 - Internally, I use **4 MB as max block weight**:
   - Witness is weighted 1×
   - Non-witness data is weighted 4×
 - `computeSatoshiMerkleRoot` returns **empty bytes (void)** on "mutated = true" instead of a `[hash, mutated]` pair.
   There is no `mutated` boolean.
-- We use more intuitive terms instead of technical blockchain jargon:
-  - **"timeline"** instead of blockchain
-  - **"commit"** instead of block
-  - **"entry"** instead of transaction
 
 ## Short-Term Goal
 

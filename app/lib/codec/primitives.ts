@@ -1,5 +1,5 @@
 import { Codec } from "@nomadshiba/codec";
-import { MAX_COMMIT_WEIGHT } from "~/constants.ts";
+import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export class CompactSizeCodec extends Codec<number> {
@@ -41,7 +41,7 @@ export class CompactSizeCodec extends Codec<number> {
 		}
 		const val = view.getBigUint64(1, true);
 		if (val < 0x100000000n) throw new Error("non-canonical CompactSize");
-		if (val > BigInt(MAX_COMMIT_WEIGHT)) throw new Error("CompactSize too large");
+		if (val > BigInt(MAX_BLOCK_WEIGHT)) throw new Error("CompactSize too large");
 		return [Number(val), 9];
 	}
 }

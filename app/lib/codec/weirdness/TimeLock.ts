@@ -1,6 +1,6 @@
 export type TimeLock =
 	| { kind: "none" }
-	| { kind: "commit"; height: number }
+	| { kind: "block"; height: number }
 	| { kind: "time"; timestamp: number };
 
 export namespace TimeLock {
@@ -8,7 +8,7 @@ export namespace TimeLock {
 		locktime >>>= 0;
 
 		if (locktime === 0) return { kind: "none" };
-		if (locktime < 500_000_000) return { kind: "commit", height: locktime };
+		if (locktime < 500_000_000) return { kind: "block", height: locktime };
 		return { kind: "time", timestamp: locktime };
 	}
 
@@ -16,9 +16,9 @@ export namespace TimeLock {
 		switch (abs.kind) {
 			case "none":
 				return 0;
-			case "commit":
+			case "block":
 				if (abs.height < 0 || abs.height >= 500_000_000) {
-					throw new RangeError("commit height must be 0 … 499,999,999");
+					throw new RangeError("block height must be 0 … 499,999,999");
 				}
 				return abs.height >>> 0;
 			case "time":
