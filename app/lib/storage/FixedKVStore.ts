@@ -3,7 +3,24 @@ import type { Codec } from "@nomadshiba/codec";
 export interface FixedKVStoreOptions<K, V> {
 	keyCodec: Codec<K>;
 	valueCodec: Codec<V>;
-	maxCacheBlockCount?: number;
+	memtableSize?: number;
+	blockSize?: number;
+	blockCacheSize?: number;
+}
+
+interface BlockMetadata {
+	startKey: Uint8Array;
+	endKey: Uint8Array;
+	offset: number;
+	size: number;
+	entryCount: number;
+}
+
+interface SSTMetadata {
+	blocks: BlockMetadata[];
+	bloomFilter: Uint8Array;
+	totalEntries: number;
+	fileSize: number;
 }
 
 interface CachedBlock {
@@ -11,40 +28,108 @@ interface CachedBlock {
 	lastAccess: number;
 }
 
+// Fast Uint8Array hash map using value equality
+class Uint8ArrayMap {
+	private buckets: Array<Array<{ key: Uint8Array; value: Uint8Array }>>;
+	private size = 0;
+	private keySize: number;
+	private mask: number;
+
+	constructor(keySize: number, capacity = 16384) {
+		this.keySize = keySize;
+		const pow2 = Math.pow(2, Math.ceil(Math.log2(capacity)));
+		this.mask = pow2 - 1;
+		this.buckets = new Array(pow2);
+		for (let i = 0; i < pow2; i++) {
+			this.buckets[i] = [];
+		}
+	}
+
+	private hash(key: Uint8Array): number {
+		return ((key[0]! | (key[1]! << 8) | (key[2]! << 16) | (key[3]! << 24)) >>> 0);
+	}
+
+	private keysEqual(a: Uint8Array, b: Uint8Array): boolean {
+		for (let i = 0; i < this.keySize; i++) {
+			if (a[i] !== b[i]) return false;
+		}
+		return true;
+	}
+
+	get(key: Uint8Array): Uint8Array | undefined {
+		const hash = this.hash(key);
+		const bucket = this.buckets[hash & this.mask]!;
+
+		for (let i = 0; i < bucket.length; i++) {
+			if (this.keysEqual(bucket[i]!.key, key)) {
+				return bucket[i]!.value;
+			}
+		}
+		return undefined;
+	}
+
+	set(key: Uint8Array, value: Uint8Array): void {
+		const hash = this.hash(key);
+		const idx = hash & this.mask;
+		const bucket = this.buckets[idx]!;
+
+		for (let i = 0; i < bucket.length; i++) {
+			if (this.keysEqual(bucket[i]!.key, key)) {
+				bucket[i]!.value = value;
+				return;
+			}
+		}
+
+		bucket.push({ key: key.slice(), value });
+		this.size++;
+	}
+
+	clear(): void {
+		for (let i = 0; i < this.buckets.length; i++) {
+			this.buckets[i] = [];
+		}
+		this.size = 0;
+	}
+
+	getSize(): number {
+		return this.size;
+	}
+
+	*entries(): Generator<{ key: Uint8Array; value: Uint8Array }> {
+		for (const bucket of this.buckets) {
+			for (const entry of bucket) {
+				yield entry;
+			}
+		}
+	}
+}
+
 /**
- * FixedKVStore - Disk-first store optimized for fast reads
- *
- * Design:
- * - Writes go directly to disk (append-only)
- * - In-memory hash index for O(1) key lookups
- * - Block cache for frequently read data
- * - Fixed size key-value pairs
- * - No deletes supported
+ * FixedKVStore - Optimized LSM store for fixed-size KV using Codec pattern
  */
 export class FixedKVStore<K, V> {
-	private filePath: string;
-	private dataFile?: Deno.FsFile;
+	private dataFile: Deno.FsFile | undefined;
 	private keyCodec: Codec<K>;
 	private valueCodec: Codec<V>;
 
-	private maxCacheBlockCount: number;
+	private memtableSize: number;
+	private blockSize: number;
+	private maxCacheSize: number;
+
+	private memtable: Uint8ArrayMap;
+	private sstFiles: SSTMetadata[] = [];
+	private sstRanges: Array<{ startKey: Uint8Array; endKey: Uint8Array; sstIndex: number }> = [];
 	private fileOffset = 0;
 
-	// In-memory index: key hash -> disk offset
-	private index: Map<string, number> = new Map();
-
-	// Block cache
 	private blockCache: Map<number, CachedBlock> = new Map();
 	private accessCounter = 0;
 
-	// Preparation state
-	private prepared = false;
+	private blockBuffer: Uint8Array;
 
 	constructor(
-		filePath: string,
+		private filepath: string,
 		options: FixedKVStoreOptions<K, V>,
 	) {
-		this.filePath = filePath;
 		this.keyCodec = options.keyCodec;
 		this.valueCodec = options.valueCodec;
 
@@ -55,129 +140,185 @@ export class FixedKVStore<K, V> {
 			throw new Error("Value codec must have fixed stride (>= 0)");
 		}
 
-		this.maxCacheBlockCount = options.maxCacheBlockCount ?? 1000;
-	}
+		this.memtableSize = options.memtableSize ?? 10000;
+		this.blockSize = options.blockSize ?? 65536;
+		this.maxCacheSize = options.blockCacheSize ?? 1000;
 
-	private async ensureOpen(): Promise<Deno.FsFile> {
-		if (!this.dataFile) {
-			this.dataFile = await Deno.open(this.filePath, {
-				read: true,
-				write: true,
-				create: true,
-			});
-		}
-		return this.dataFile;
+		this.memtable = new Uint8ArrayMap(this.keyCodec.stride, this.memtableSize * 2);
+		this.blockBuffer = new Uint8Array(this.blockSize);
 	}
 
 	/**
-	 * Prepare the store by loading existing index from disk.
+	 * Prepare the store by loading existing data from disk.
 	 * Called automatically on first use, can be called manually.
 	 */
 	async prepare(): Promise<void> {
-		if (this.prepared) return;
+		await this.ensureFile();
+	}
 
-		const file = await this.ensureOpen();
-		const stat = await file.stat();
+	private async ensureFile(): Promise<Deno.FsFile> {
+		if (this.dataFile) {
+			return this.dataFile;
+		}
+
+		this.dataFile = await Deno.open(this.filepath, { create: true, read: true, write: true });
+
+		const stat = await this.dataFile.stat();
 		if (stat.size > 0) {
 			await this.loadExistingData();
 		}
 
-		this.prepared = true;
+		return this.dataFile;
 	}
 
 	/**
 	 * Get a single value by key
-	 * Optimized path: check cache, then disk
+	 * Optimized for single key lookups
 	 */
 	async get(key: K): Promise<V | undefined> {
-		await this.prepare();
-		const file = await this.ensureOpen();
+		const file = await this.ensureFile();
 
 		const keyBytes = this.keyCodec.encode(key);
-		const keyHash = this.hashKey(keyBytes);
 
-		const offset = this.index.get(keyHash);
-		if (offset === undefined) return undefined;
-
-		// Check cache first
-		const cacheKey = Math.floor(offset / this.getBlockSize());
-		const cached = this.blockCache.get(cacheKey);
-
-		let valueBytes: Uint8Array;
-
-		if (cached) {
-			valueBytes = this.extractValueFromBlock(cached.data, offset, cacheKey);
-			cached.lastAccess = ++this.accessCounter;
-		} else {
-			const blockSize = this.getBlockSize();
-			const blockStart = Math.floor(offset / blockSize) * blockSize;
-			const blockEnd = Math.min(blockStart + blockSize, this.fileOffset);
-
-			await file.seek(blockStart, Deno.SeekMode.Start);
-			const blockData = new Uint8Array(blockEnd - blockStart);
-			await file.read(blockData);
-
-			// Add to cache
-			this.addToCache(cacheKey, blockData);
-
-			valueBytes = this.extractValueFromBlock(blockData, offset, blockStart);
+		// Check memtable first
+		const memValue = this.memtable.get(keyBytes);
+		if (memValue !== undefined) {
+			return this.valueCodec.decode(memValue)[0];
 		}
 
-		return this.valueCodec.decode(valueBytes)[0];
+		// Find the SST with the highest index (most recent) that contains this key
+		let sstIndex = -1;
+		for (let i = this.sstFiles.length - 1; i >= 0; i--) {
+			const sst = this.sstFiles[i]!;
+			const startKey = sst.blocks[0]!.startKey;
+			const endKey = sst.blocks[sst.blocks.length - 1]!.endKey;
+
+			if (this.compareKeys(keyBytes, startKey) >= 0 && this.compareKeys(keyBytes, endKey) <= 0) {
+				sstIndex = i;
+				break;
+			}
+		}
+
+		if (sstIndex === -1) return undefined;
+
+		const sst = this.sstFiles[sstIndex]!;
+
+		// Bloom filter check
+		if (!this.mightContain(sst.bloomFilter, keyBytes)) return undefined;
+
+		// Find block
+		const blockIdx = this.findBlock(sst.blocks, keyBytes);
+		if (blockIdx === -1) return undefined;
+
+		// Read block
+		const block = sst.blocks[blockIdx]!;
+		const cacheKey = (sstIndex << 20) | blockIdx;
+
+		let blockData: Uint8Array;
+		const cached = this.blockCache.get(cacheKey);
+
+		if (cached) {
+			blockData = cached.data;
+			cached.lastAccess = ++this.accessCounter;
+		} else {
+			await file.seek(block.offset, Deno.SeekMode.Start);
+			blockData = new Uint8Array(block.size);
+			await file.read(blockData);
+
+			this.addToCache(cacheKey, blockData);
+		}
+
+		// Search for key in block
+		const valueBytes = this.binarySearchInBlock(blockData, keyBytes, block.entryCount);
+		if (valueBytes !== undefined) {
+			return this.valueCodec.decode(valueBytes)[0];
+		}
+
+		return undefined;
 	}
 
 	/**
-	 * Batch get - optimized for multiple keys
+	 * Batch get - much faster for multiple keys
+	 * Groups reads by block to minimize disk seeks
 	 */
 	async getMany(keys: K[]): Promise<(V | undefined)[]> {
-		await this.prepare();
-		const file = await this.ensureOpen();
+		const file = await this.ensureFile();
 
-		// Group by block to minimize disk reads
-		const byBlock = new Map<number, Array<{ keyIndex: number; offset: number }>>();
+		const keyBytes = keys.map((k) => this.keyCodec.encode(k));
 		const results: (V | undefined)[] = new Array(keys.length).fill(undefined);
+		const pendingByBlock = new Map<number, Array<{ keyIndex: number; key: Uint8Array }>>();
 
-		for (let i = 0; i < keys.length; i++) {
-			const keyBytes = this.keyCodec.encode(keys[i]!);
-			const keyHash = this.hashKey(keyBytes);
-			const offset = this.index.get(keyHash);
+		// Phase 1: Check memtable and plan block reads
+		for (let ki = 0; ki < keys.length; ki++) {
+			const key = keyBytes[ki]!;
 
-			if (offset === undefined) continue;
-
-			const cacheKey = Math.floor(offset / this.getBlockSize());
-
-			if (!byBlock.has(cacheKey)) {
-				byBlock.set(cacheKey, []);
+			// Check memtable first
+			const memValue = this.memtable.get(key);
+			if (memValue !== undefined) {
+				results[ki] = this.valueCodec.decode(memValue)[0];
+				continue;
 			}
-			byBlock.get(cacheKey)!.push({ keyIndex: i, offset });
+
+			// Find the SST with the highest index (most recent) that contains this key
+			let sstIndex = -1;
+			for (let i = this.sstFiles.length - 1; i >= 0; i--) {
+				const sst = this.sstFiles[i]!;
+				const startKey = sst.blocks[0]!.startKey;
+				const endKey = sst.blocks[sst.blocks.length - 1]!.endKey;
+
+				if (this.compareKeys(key, startKey) >= 0 && this.compareKeys(key, endKey) <= 0) {
+					sstIndex = i;
+					break;
+				}
+			}
+
+			if (sstIndex === -1) continue;
+
+			const sst = this.sstFiles[sstIndex]!;
+
+			// Bloom filter check
+			if (!this.mightContain(sst.bloomFilter, key)) continue;
+
+			// Find block
+			const blockIdx = this.findBlock(sst.blocks, key);
+			if (blockIdx === -1) continue;
+
+			// Queue for batch read
+			const cacheKey = (sstIndex << 20) | blockIdx;
+			if (!pendingByBlock.has(cacheKey)) {
+				pendingByBlock.set(cacheKey, []);
+			}
+			pendingByBlock.get(cacheKey)!.push({ keyIndex: ki, key });
 		}
 
-		// Read blocks
-		for (const [cacheKey, items] of byBlock) {
-			const cached = this.blockCache.get(cacheKey);
+		// Phase 2: Read blocks in batches
+		for (const [cacheKey, pending] of pendingByBlock) {
+			const si = cacheKey >>> 20;
+			const blockIdx = cacheKey & 0xFFFFF;
+			const sst = this.sstFiles[si]!;
+			const block = sst.blocks[blockIdx]!;
+
+			// Read block once
 			let blockData: Uint8Array;
-			let blockStart: number;
+			const cached = this.blockCache.get(cacheKey);
 
 			if (cached) {
 				blockData = cached.data;
-				blockStart = cacheKey * this.getBlockSize();
 				cached.lastAccess = ++this.accessCounter;
 			} else {
-				const blockSize = this.getBlockSize();
-				blockStart = cacheKey * blockSize;
-				const blockEnd = Math.min(blockStart + blockSize, this.fileOffset);
-
-				await file.seek(blockStart, Deno.SeekMode.Start);
-				blockData = new Uint8Array(blockEnd - blockStart);
+				await file.seek(block.offset, Deno.SeekMode.Start);
+				blockData = new Uint8Array(block.size);
 				await file.read(blockData);
 
 				this.addToCache(cacheKey, blockData);
 			}
 
-			// Extract values
-			for (const { keyIndex, offset } of items) {
-				const valueBytes = this.extractValueFromBlock(blockData, offset, blockStart);
-				results[keyIndex] = this.valueCodec.decode(valueBytes)[0];
+			// Search for all pending keys in this block
+			for (const { keyIndex, key } of pending) {
+				const valueBytes = this.binarySearchInBlock(blockData, key, block.entryCount);
+				if (valueBytes !== undefined) {
+					results[keyIndex] = this.valueCodec.decode(valueBytes)[0];
+				}
 			}
 		}
 
@@ -186,119 +327,223 @@ export class FixedKVStore<K, V> {
 
 	/**
 	 * Set a single key-value pair
-	 * Writes directly to disk, updates index
+	 * Optimized for single key operations
 	 */
 	async set(key: K, value: V): Promise<void> {
 		await this.prepare();
-		const file = await this.ensureOpen();
 
 		const keyBytes = this.keyCodec.encode(key);
 		const valueBytes = this.valueCodec.encode(value);
-		const keyHash = this.hashKey(keyBytes);
 
-		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
-		const buf = new Uint8Array(entrySize);
-		buf.set(keyBytes, 0);
-		buf.set(valueBytes, this.keyCodec.stride);
+		// Add to memtable
+		this.memtable.set(keyBytes, valueBytes.slice());
 
-		// Write directly to disk at current offset
-		const offset = this.fileOffset;
-		await file.seek(offset, Deno.SeekMode.Start);
-		await file.write(buf);
-
-		// Update index
-		this.index.set(keyHash, offset);
-		this.fileOffset += entrySize;
+		// Flush if full
+		if (this.memtable.getSize() >= this.memtableSize) {
+			await this.flushMemtable();
+		}
 	}
 
 	/**
-	 * Batch set - optimized for multiple writes
+	 * Batch set - optimized for multiple key-value pairs
+	 * More efficient than calling set() multiple times
 	 */
 	async setMany(entries: Array<{ key: K; value: V }>): Promise<void> {
 		await this.prepare();
-		const file = await this.ensureOpen();
 
-		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
-		const buf = new Uint8Array(entries.length * entrySize);
-		let pos = 0;
-
+		// Add all entries to memtable
 		for (const { key, value } of entries) {
 			const keyBytes = this.keyCodec.encode(key);
 			const valueBytes = this.valueCodec.encode(value);
-			const keyHash = this.hashKey(keyBytes);
-
-			buf.set(keyBytes, pos);
-			buf.set(valueBytes, pos + this.keyCodec.stride);
-
-			// Update index
-			this.index.set(keyHash, this.fileOffset + pos);
-
-			pos += entrySize;
+			this.memtable.set(keyBytes, valueBytes.slice());
 		}
 
-		// Single write
-		await file.seek(this.fileOffset, Deno.SeekMode.Start);
-		await file.write(buf);
-
-		this.fileOffset += buf.length;
+		// Flush if full
+		if (this.memtable.getSize() >= this.memtableSize) {
+			await this.flushMemtable();
+		}
 	}
 
 	async close(): Promise<void> {
-		if (this.dataFile) {
-			await this.dataFile.sync();
-			this.dataFile.close();
-			this.dataFile = undefined;
+		if (this.memtable.getSize() > 0) {
+			await this.flushMemtable();
+			await this.dataFile?.sync();
 		}
-		this.prepared = false;
-		this.index.clear();
-		this.blockCache.clear();
-		this.fileOffset = 0;
-		this.accessCounter = 0;
+		this.dataFile?.close();
+		this.dataFile = undefined;
 	}
 
-	getStats() {
-		const totalCacheSize = this.blockCache.values()
-			.reduce((sum, block) => sum + block.data.length, 0);
+	private async flushMemtable(): Promise<void> {
+		if (this.memtable.getSize() === 0) return;
+		const file = await this.ensureFile();
 
-		return {
-			totalEntries: this.index.size,
-			fileSize: this.fileOffset,
-			cacheEntries: this.blockCache.size,
-			cacheSize: totalCacheSize,
+		// Collect entries
+		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = this.memtable.entries().toArray();
+		entries.sort((a, b) => this.compareKeys(a.key, b.key));
+
+		// Build bloom filter
+		const bloomFilter = this.buildBloomFilter(entries);
+
+		// Track SST boundaries
+		const sstDataStart = this.fileOffset;
+
+		// Write data blocks first
+		const blocks: BlockMetadata[] = [];
+		let dataOffset = sstDataStart;
+		let blockBufferPos = 0;
+		let blockEntryCount = 0;
+		let blockStartKey: Uint8Array | null = null;
+
+		for (let i = 0; i < entries.length; i++) {
+			const entry = entries[i]!;
+
+			if (blockStartKey === null) {
+				blockStartKey = entry.key;
+			}
+
+			// Write to block buffer
+			this.blockBuffer.set(entry.key, blockBufferPos);
+			this.blockBuffer.set(entry.value, blockBufferPos + this.keyCodec.stride);
+			blockBufferPos += this.keyCodec.stride + this.valueCodec.stride;
+			blockEntryCount++;
+
+			// Flush block if full or last entry
+			if (
+				blockBufferPos + this.keyCodec.stride + this.valueCodec.stride > this.blockSize ||
+				i === entries.length - 1
+			) {
+				const uncompressed = this.blockBuffer.subarray(0, blockBufferPos);
+				const compressed = uncompressed;
+
+				await file.seek(dataOffset, Deno.SeekMode.Start);
+				await file.write(compressed);
+
+				// Store offset relative to SST data start
+				blocks.push({
+					startKey: new Uint8Array(blockStartKey),
+					endKey: new Uint8Array(entry.key),
+					offset: dataOffset - sstDataStart,
+					size: blockBufferPos,
+					entryCount: blockEntryCount,
+				});
+
+				dataOffset += blockBufferPos;
+				blockBufferPos = 0;
+				blockEntryCount = 0;
+				blockStartKey = null;
+			}
+		}
+
+		// Now write metadata at the end
+		const metadata: SSTMetadata = {
+			blocks,
+			bloomFilter,
+			totalEntries: entries.length,
+			fileSize: dataOffset - sstDataStart,
 		};
-	}
 
-	// Private helpers
+		const metadataBytes = this.encodeMetadata(metadata);
+		await file.seek(dataOffset, Deno.SeekMode.Start);
+		await file.write(metadataBytes);
 
-	private getBlockSize(): number {
-		// Calculate block size based on entry size
-		// Target ~200 entries per block, rounded to power of 2
-		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
-		const targetSize = entrySize * 200;
-		const powerOf2 = Math.pow(2, Math.ceil(Math.log2(targetSize)));
-		return Math.max(4096, Math.min(65536, powerOf2));
-	}
+		// Update state
+		this.fileOffset = dataOffset + metadataBytes.length;
+		const sstIndex = this.sstFiles.length;
 
-	private hashKey(key: Uint8Array): string {
-		// Simple hash - could be improved
-		let hash = 0;
-		for (let i = 0; i < key.length; i++) {
-			hash = ((hash << 5) - hash) + key[i]!;
-			hash = hash & hash; // Convert to 32bit integer
+		// Convert block offsets to absolute before storing
+		for (const block of metadata.blocks) {
+			block.offset = sstDataStart + block.offset;
 		}
-		return hash.toString(16);
+
+		this.sstFiles.push(metadata);
+
+		// Add to range index
+		this.sstRanges.push({
+			startKey: blocks[0]!.startKey,
+			endKey: blocks[blocks.length - 1]!.endKey,
+			sstIndex,
+		});
+
+		// Clear memtable
+		this.memtable.clear();
 	}
 
-	private extractValueFromBlock(blockData: Uint8Array, entryOffset: number, blockStart: number): Uint8Array {
-		const relativeOffset = entryOffset - blockStart;
-		const valueStart = relativeOffset + this.keyCodec.stride;
-		const valueEnd = valueStart + this.valueCodec.stride;
-		return blockData.subarray(valueStart, valueEnd);
+	private async loadExistingData(): Promise<void> {
+		const stat = await this.dataFile!.stat();
+		if (stat.size === 0) {
+			this.fileOffset = 0;
+			return;
+		}
+
+		// Read the whole file to find metadata blocks
+		const fileData = new Uint8Array(stat.size);
+		await this.dataFile!.seek(0, Deno.SeekMode.Start);
+		await this.dataFile!.read(fileData);
+
+		// Find all magic numbers (0x524F434B) which marks metadata blocks
+		const magicValue = 0x524F434B;
+		const sstInfos: Array<{ dataStart: number; metadataStart: number; metadataSize: number; fileSize: number }> =
+			[];
+		let searchPos = 4;
+
+		while (searchPos <= stat.size) {
+			const magicPos = searchPos;
+			if (magicPos + 4 > stat.size) break;
+
+			const view = new DataView(fileData.buffer, magicPos, 4);
+			const magic = view.getUint32(0, true);
+
+			if (magic === magicValue) {
+				const metadataStart = magicPos - 4;
+				if (metadataStart < 0) {
+					searchPos++;
+					continue;
+				}
+
+				const metadataSizeView = new DataView(fileData.buffer, metadataStart, 4);
+				const metadataSize = metadataSizeView.getUint32(0, true);
+
+				if (metadataStart + metadataSize <= stat.size && metadataSize > 8) {
+					const sst = this.decodeMetadata(fileData.subarray(metadataStart, metadataStart + metadataSize));
+					let dataStart: number;
+					if (sstInfos.length === 0) {
+						dataStart = 0;
+					} else {
+						const prev = sstInfos[sstInfos.length - 1]!;
+						dataStart = prev.dataStart + prev.fileSize + prev.metadataSize;
+					}
+					sstInfos.push({ dataStart, metadataStart, metadataSize, fileSize: sst.fileSize });
+				}
+			}
+
+			searchPos++;
+		}
+
+		// Load each SST metadata
+		for (const info of sstInfos) {
+			const metadataBuf = fileData.subarray(info.metadataStart, info.metadataStart + info.metadataSize);
+			const sst = this.decodeMetadata(metadataBuf);
+
+			// Adjust block offsets to be absolute from start of file
+			for (const block of sst.blocks) {
+				block.offset = info.dataStart + block.offset;
+			}
+
+			const sstIndex = this.sstFiles.length;
+			this.sstFiles.push(sst);
+			this.sstRanges.push({
+				startKey: sst.blocks[0]!.startKey,
+				endKey: sst.blocks[sst.blocks.length - 1]!.endKey,
+				sstIndex,
+			});
+		}
+
+		this.fileOffset = stat.size;
 	}
 
 	private addToCache(key: number, data: Uint8Array): void {
 		// Evict oldest if cache is full
-		if (this.blockCache.size >= this.maxCacheBlockCount) {
+		if (this.blockCache.size >= this.maxCacheSize) {
 			let oldestKey: number | null = null;
 			let oldestTime = Infinity;
 
@@ -320,36 +565,181 @@ export class FixedKVStore<K, V> {
 		});
 	}
 
-	private async loadExistingData(): Promise<void> {
-		const file = this.dataFile!;
-		const stat = await file.stat();
-		const entrySize = this.keyCodec.stride + this.valueCodec.stride;
+	private binarySearchInBlock(
+		data: Uint8Array,
+		searchKey: Uint8Array,
+		entryCount: number,
+	): Uint8Array | undefined {
+		let left = 0;
+		let right = entryCount - 1;
 
-		if (stat.size % entrySize !== 0) {
-			throw new Error(`Corrupt file: size ${stat.size} not divisible by entry size ${entrySize}`);
-		}
+		while (left <= right) {
+			const mid = Math.floor((left + right) / 2);
+			const entrySize = this.keyCodec.stride + this.valueCodec.stride;
+			const offset = mid * entrySize;
+			const key = data.subarray(offset, offset + this.keyCodec.stride);
 
-		// Read file and build index
-		// For large files, read in chunks
-		const CHUNK_SIZE = 65536;
-		let offset = 0;
+			const cmp = this.compareKeys(key, searchKey);
 
-		while (offset < stat.size) {
-			const chunkSize = Math.min(CHUNK_SIZE, stat.size - offset);
-			const chunk = new Uint8Array(chunkSize);
-			await file.seek(offset, Deno.SeekMode.Start);
-			await file.read(chunk);
-
-			// Process entries in chunk
-			for (let pos = 0; pos + entrySize <= chunkSize; pos += entrySize) {
-				const keyBytes = chunk.subarray(pos, pos + this.keyCodec.stride);
-				const keyHash = this.hashKey(keyBytes);
-				this.index.set(keyHash, offset + pos);
+			if (cmp === 0) {
+				return data.subarray(
+					offset + this.keyCodec.stride,
+					offset + this.keyCodec.stride + this.valueCodec.stride,
+				);
+			} else if (cmp < 0) {
+				left = mid + 1;
+			} else {
+				right = mid - 1;
 			}
-
-			offset += chunkSize;
 		}
 
-		this.fileOffset = stat.size;
+		return undefined;
+	}
+
+	private findBlock(blocks: BlockMetadata[], key: Uint8Array): number {
+		let left = 0;
+		let right = blocks.length - 1;
+
+		while (left <= right) {
+			const mid = Math.floor((left + right) / 2);
+			const block = blocks[mid]!;
+
+			if (this.compareKeys(key, block.startKey) < 0) {
+				right = mid - 1;
+			} else if (this.compareKeys(key, block.endKey) > 0) {
+				left = mid + 1;
+			} else {
+				return mid;
+			}
+		}
+
+		return -1;
+	}
+
+	private buildBloomFilter(entries: Array<{ key: Uint8Array; value: Uint8Array }>): Uint8Array {
+		const bits = entries.length * 8;
+		const bytes = Math.ceil(bits / 8);
+		const filter = new Uint8Array(bytes);
+
+		for (const entry of entries) {
+			const h1 = this.hashKey(entry.key, 0);
+			const h2 = this.hashKey(entry.key, 1);
+
+			const idx1 = h1 % bits;
+			const idx2 = h2 % bits;
+
+			filter[Math.floor(idx1 / 8)]! |= 1 << (idx1 % 8);
+			filter[Math.floor(idx2 / 8)]! |= 1 << (idx2 % 8);
+		}
+
+		return filter;
+	}
+
+	private mightContain(filter: Uint8Array, key: Uint8Array): boolean {
+		const bits = filter.length * 8;
+		const h1 = this.hashKey(key, 0);
+		const h2 = this.hashKey(key, 1);
+
+		const idx1 = h1 % bits;
+		const idx2 = h2 % bits;
+
+		return (filter[Math.floor(idx1 / 8)]! & (1 << (idx1 % 8))) !== 0 &&
+			(filter[Math.floor(idx2 / 8)]! & (1 << (idx2 % 8))) !== 0;
+	}
+
+	private encodeMetadata(metadata: SSTMetadata): Uint8Array {
+		const blockSize = 8 + this.keyCodec.stride * 2 + 8 + 4;
+		const totalSize = 8 + 4 + 4 + metadata.blocks.length * blockSize + metadata.bloomFilter.length + 4;
+
+		const buf = new Uint8Array(totalSize);
+		const view = new DataView(buf.buffer);
+		let pos = 0;
+
+		view.setUint32(pos, totalSize, true);
+		pos += 4;
+		view.setUint32(pos, 0x524F434B, true);
+		pos += 4;
+
+		view.setUint32(pos, metadata.bloomFilter.length, true);
+		pos += 4;
+		buf.set(metadata.bloomFilter, pos);
+		pos += metadata.bloomFilter.length;
+
+		view.setUint32(pos, metadata.totalEntries, true);
+		pos += 4;
+
+		view.setUint32(pos, metadata.fileSize, true);
+		pos += 4;
+
+		view.setUint32(pos, metadata.blocks.length, true);
+		pos += 4;
+
+		for (const block of metadata.blocks) {
+			buf.set(block.startKey, pos);
+			pos += this.keyCodec.stride;
+			buf.set(block.endKey, pos);
+			pos += this.keyCodec.stride;
+			view.setBigUint64(pos, BigInt(block.offset), true);
+			pos += 8;
+			view.setUint32(pos, block.size, true);
+			pos += 4;
+			view.setUint32(pos, block.entryCount, true);
+			pos += 4;
+		}
+
+		return buf;
+	}
+
+	private decodeMetadata(data: Uint8Array): SSTMetadata {
+		const view = new DataView(data.buffer, data.byteOffset);
+		let pos = 8; // Skip header (metadataSize + magic)
+
+		const bloomSize = view.getUint32(pos, true);
+		pos += 4;
+		const bloomFilter = new Uint8Array(data.subarray(pos, pos + bloomSize));
+		pos += bloomSize;
+
+		const totalEntries = view.getUint32(pos, true);
+		pos += 4;
+
+		const fileSize = view.getUint32(pos, true);
+		pos += 4;
+
+		const blockCount = view.getUint32(pos, true);
+		pos += 4;
+
+		const blocks: BlockMetadata[] = [];
+		for (let i = 0; i < blockCount; i++) {
+			const startKey = new Uint8Array(data.subarray(pos, pos + this.keyCodec.stride));
+			pos += this.keyCodec.stride;
+			const endKey = new Uint8Array(data.subarray(pos, pos + this.keyCodec.stride));
+			pos += this.keyCodec.stride;
+			const offset = Number(view.getBigUint64(pos, true));
+			pos += 8;
+			const size = view.getUint32(pos, true);
+			pos += 4;
+			const entryCount = view.getUint32(pos, true);
+			pos += 4;
+
+			blocks.push({ startKey, endKey, offset, size, entryCount });
+		}
+
+		return { blocks, bloomFilter, totalEntries, fileSize };
+	}
+
+	private hashKey(key: Uint8Array, seed: number): number {
+		let hash = seed;
+		for (let i = 0; i < 4 && i < key.length; i++) {
+			hash = (hash * 31 + key[i]!) | 0;
+		}
+		return Math.abs(hash);
+	}
+
+	private compareKeys(a: Uint8Array, b: Uint8Array): number {
+		for (let i = 0; i < a.length; i++) {
+			if (a[i]! < b[i]!) return -1;
+			if (a[i]! > b[i]!) return 1;
+		}
+		return 0;
 	}
 }

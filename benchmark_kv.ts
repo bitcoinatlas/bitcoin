@@ -1,4 +1,4 @@
-import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
+import { FixedKVStore as FixedKVStore1 } from "~/lib/storage/FixedKVStore.ts";
 import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
@@ -32,13 +32,13 @@ function generateKeyValue(): { key: Uint8Array; value: Uint8Array } {
 	return { key, value };
 }
 
-async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
-	console.log("\n📊 FixedKVStore");
+async function benchmarkFixedKVStore1(keys: Uint8Array[], values: Uint8Array[]) {
+	console.log("\n📊 FixedKVStore1");
 
-	const store = new FixedKVStore("data/bench_kv1.db", {
-		keyCodec: new FixedBytesCodec(KEY_SIZE) as any,
-		valueCodec: new FixedBytesCodec(VALUE_SIZE) as any,
-		maxCacheBlockCount: 5000,
+	const store = new FixedKVStore1("data/bench_kv1.db", {
+		keyCodec: new FixedBytesCodec(KEY_SIZE),
+		valueCodec: new FixedBytesCodec(VALUE_SIZE),
+		blockCacheSize: 5000,
 	});
 	await store.prepare();
 
@@ -82,7 +82,7 @@ async function benchmarkFixedKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	const stat = await Deno.stat("data/bench_kv1.db");
 	console.log(`    File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "FixedKVStore", writeOps, readOps, batchReadOps, fileSize: stat.size };
+	return { name: "FixedKVStore1", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
@@ -165,8 +165,8 @@ async function main() {
 
 	// Run benchmarks
 	const results = [];
+	results.push(await benchmarkFixedKVStore1(keys, values));
 	// results.push(await benchmarkSQLite(keys, values));
-	results.push(await benchmarkFixedKVStore(keys, values));
 
 	// Summary
 	console.log("\n" + "=".repeat(60));
@@ -184,6 +184,8 @@ async function main() {
 
 	// Cleanup
 	await Deno.remove("data", { recursive: true }).catch(() => {});
+	await Deno.remove("data/bench_kv2.idx").catch(() => {});
+	await Deno.remove("data/bench_kv2.val").catch(() => {});
 }
 
 main().catch(console.error);
