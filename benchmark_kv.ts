@@ -1,4 +1,4 @@
-import { FixedKVStore as FixedKVStore1 } from "~/lib/storage/FixedKVStore.ts";
+import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
 import { DatabaseSync } from "node:sqlite";
 
 const KEY_SIZE = 32;
@@ -35,7 +35,7 @@ function generateKeyValue(): { key: Uint8Array; value: Uint8Array } {
 async function benchmarkFixedKVStore1(keys: Uint8Array[], values: Uint8Array[]) {
 	console.log("\n📊 FixedKVStore1");
 
-	const store = new FixedKVStore1("data/bench_kv1.db", {
+	const store = new FixedKVStore("data/bench_kv1.db", {
 		keyCodec: new FixedBytesCodec(KEY_SIZE),
 		valueCodec: new FixedBytesCodec(VALUE_SIZE),
 		blockCacheSize: 5000,
@@ -82,7 +82,7 @@ async function benchmarkFixedKVStore1(keys: Uint8Array[], values: Uint8Array[]) 
 	const stat = await Deno.stat("data/bench_kv1.db");
 	console.log(`    File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "FixedKVStore1", writeOps, readOps, batchReadOps, fileSize: stat.size };
+	return { name: "FixedKVStore", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
