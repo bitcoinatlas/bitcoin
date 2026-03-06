@@ -1,5 +1,5 @@
 /**
- * FixedDurableMemoryStore - Fixed-size items kept in memory, synced to disk
+ * MemoryArrayStore - Fixed-size items kept in memory, synced to disk
  *
  * Like a resident array that persists. Not key-value, just indexed items.
  * Lazy preparation - data loaded on first use.
@@ -7,7 +7,7 @@
 
 import type { Codec } from "@nomadshiba/codec";
 
-export class FixedDurableMemoryStore<T> {
+export class MemoryArrayStore<T> {
 	private file: Deno.FsFile;
 	private codec: Codec<T>;
 

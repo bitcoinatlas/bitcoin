@@ -184,8 +184,6 @@ async function main() {
 
 	// Cleanup
 	await Deno.remove("data", { recursive: true }).catch(() => {});
-	await Deno.remove("data/bench_kv2.idx").catch(() => {});
-	await Deno.remove("data/bench_kv2.val").catch(() => {});
 }
 
 main().catch(console.error);
