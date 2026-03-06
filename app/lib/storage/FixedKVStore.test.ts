@@ -51,10 +51,6 @@ function createValue(n: number, size = VALUE_SIZE): Uint8Array {
 	return value;
 }
 
-function toHex(bytes: Uint8Array): string {
-	return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 async function withStore<T>(
 	testFn: (store: FixedKVStore<Uint8Array, Uint8Array>) => Promise<T>,
 ): Promise<T> {
