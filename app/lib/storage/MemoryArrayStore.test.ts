@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { MemoryArrayStore } from "./MemoryArrayStore.ts";
+import { MemoryArrayStore } from "~/lib/storage/MemoryArrayStore.ts";
 
 // Simple fixed-size codec for testing
 class FixedBytesCodec {

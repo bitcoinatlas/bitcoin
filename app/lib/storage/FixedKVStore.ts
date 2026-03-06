@@ -1,4 +1,5 @@
 import type { Codec } from "@nomadshiba/codec";
+import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export interface FixedKVStoreOptions<K, V> {
 	keyCodec: Codec<K>;
@@ -691,7 +692,7 @@ export class FixedKVStore<K, V> {
 	}
 
 	private decodeMetadata(data: Uint8Array): SSTMetadata {
-		const view = new DataView(data.buffer, data.byteOffset);
+		const view = new Uint8ArrayView(data);
 		let pos = 8; // Skip header (metadataSize + magic)
 
 		const bloomSize = view.getUint32(pos, true);

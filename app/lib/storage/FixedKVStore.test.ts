@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { FixedKVStore, FixedKVStoreOptions } from "./FixedKVStore.ts";
+import { FixedKVStore, FixedKVStoreOptions } from "~/lib/storage/FixedKVStore.ts";
 
 // Simple fixed-size codec for testing
 class FixedBytesCodec {
