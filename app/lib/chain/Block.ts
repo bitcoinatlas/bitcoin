@@ -65,6 +65,7 @@ export class Block {
 
 		// Reconstruct coinbase tx
 		const coinbaseTx = new Tx({
+			txId: storedBlock.coinbaseTx.txId,
 			version: storedBlock.coinbaseTx.version,
 			locktime: storedBlock.coinbaseTx.lockTime,
 			witness: storedBlock.coinbaseTx.coinbase.data.witness.length > 0,

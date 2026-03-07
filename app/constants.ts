@@ -1,6 +1,6 @@
-import { sha256 } from "@noble/hashes/sha256";
+import { sha256 } from "@noble/hashes/sha2";
 import { resolve } from "@std/path";
-import { blockCodec } from "~/lib/codec/Block.ts";
+import { WireBlockHeader } from "./lib/chain/codec/wire/WireBlockHeader.ts";
 
 export const BASE_DATA_DIR = resolve("./data");
 
@@ -82,10 +82,10 @@ GENESIS_BLOCK.set([
 	// locktime
 	...[0x00, 0x00, 0x00, 0x00],
 ]);
-export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, blockCodec.shape.header.stride);
+export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, WireBlockHeader.inner.stride);
 export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
-	blockCodec.shape.header.shape.version.stride,
-	blockCodec.shape.header.shape.version.stride + blockCodec.shape.header.shape.prevHash.stride,
+	WireBlockHeader.inner.shape.version.stride,
+	WireBlockHeader.inner.shape.version.stride + WireBlockHeader.inner.shape.prevHash.stride,
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
 

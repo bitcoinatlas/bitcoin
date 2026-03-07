@@ -1,4 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
 import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
@@ -9,6 +8,7 @@ import { ScriptPubKey } from "~/lib/chain/utils/ScriptPubKey.ts";
 import type { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
 
 export type TxData = {
+	txId: Uint8Array;
 	version: number;
 	locktime: TimeLock;
 	witness: boolean;
@@ -24,7 +24,7 @@ export class Tx {
 	}
 
 	async toWire(): Promise<WireTx> {
-		const { version, locktime } = this.data;
+		const { txId, version, locktime } = this.data;
 
 		const inputs: WireTxInput[] = [];
 		const witness: Uint8Array[][] = [];
@@ -51,7 +51,7 @@ export class Tx {
 			});
 		}
 
-		return { version, locktime, inputs, outputs, witness };
+		return { txId, version, locktime, inputs, outputs, witness };
 	}
 
 	static fromWire(wireTx: WireTx): Promise<Tx> {
@@ -86,6 +86,7 @@ export class Tx {
 		}
 
 		const tx = new Tx({
+			txId: wireTx.txId,
 			version: wireTx.version,
 			locktime: wireTx.locktime,
 			witness: wireTx.witness.length > 0,
@@ -96,27 +97,26 @@ export class Tx {
 		return Promise.resolve(tx);
 	}
 
-	async toStore(): Promise<StoredTx> {
-		const wireTx = await this.toWire();
-		const wireBytes = WireTx.encode(wireTx);
-		const txId = sha256(sha256(wireBytes));
-
-		return {
-			txId,
+	toStore(): Promise<StoredTx> {
+		return Promise.resolve({
+			txId: this.data.txId,
 			version: this.data.version,
 			lockTime: this.data.locktime,
 			vout: this.data.outputs,
 			vin: this.data.inputs,
-		};
+		});
 	}
 
 	static fromStore(storedTx: StoredTx): Promise<Tx> {
-		return Promise.resolve(new Tx({
-			version: storedTx.version,
-			locktime: storedTx.lockTime,
-			witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
-			inputs: storedTx.vin,
-			outputs: storedTx.vout,
-		}));
+		return Promise.resolve(
+			new Tx({
+				txId: storedTx.txId,
+				version: storedTx.version,
+				locktime: storedTx.lockTime,
+				witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
+				inputs: storedTx.vin,
+				outputs: storedTx.vout,
+			}),
+		);
 	}
 }

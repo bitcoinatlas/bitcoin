@@ -99,7 +99,7 @@ export const U56 = {
 } satisfies Impl<U56, Codec<U56, bigint>>;
 
 // ── Bytes32 ──
-// Fixed 32-byte array. Used for block hashes, txids, merkle roots.
+// Fixed 32-byte array. Used for block hashes, txIds, merkle roots.
 // Convenience wrapper around Bytes.fixed(32).
 
 export type Bytes32 = { stride: Stride };

@@ -4,18 +4,11 @@ import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
 import { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
 import { WireSegwitMarker } from "~/lib/chain/codec/wire/WireSegwitMarker.ts";
+import { sha256 } from "@noble/hashes/sha2";
 
 // WireTx = version + [segwit_marker] + inputs + outputs + [witness] + locktime
 // Note: witness is NOT inside inputs in wire format, it's at tx level
 // Segwit marker is 0x00 0x01, present only when witness exists
-
-export type WireTx = {
-	version: number;
-	locktime: TimeLock;
-	inputs: WireTxInput[];
-	outputs: WireTxOutput[];
-	witness: Uint8Array[][];
-};
 
 // Part 1: Everything before witness (including marker detection)
 const WireTxPreWitness = new StructCodec({
@@ -30,10 +23,18 @@ const WireTxPostWitness = new StructCodec({
 	locktime: TimeLock,
 });
 
-export class WireTxCodec extends Codec<WireTx> {
+type T = {
+	version: number;
+	locktime: TimeLock;
+	inputs: WireTxInput[];
+	outputs: WireTxOutput[];
+	witness: Uint8Array[][];
+};
+
+class WireTxCodec extends Codec<T> {
 	readonly stride = -1;
 
-	encode(tx: WireTx): Uint8Array {
+	encode(tx: T): Uint8Array {
 		const hasWitness = tx.witness.length > 0;
 
 		// Encode pre-witness data
@@ -59,7 +60,7 @@ export class WireTxCodec extends Codec<WireTx> {
 		return Uint8Array.from(chunks);
 	}
 
-	decode(bytes: Uint8Array): [WireTx, number] {
+	decode(bytes: Uint8Array): [T, number] {
 		// Decode pre-witness data
 		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes);
 		let offset = preWitnessBytes;
@@ -88,9 +89,6 @@ export class WireTxCodec extends Codec<WireTx> {
 		}, offset];
 	}
 }
-
-// Uppercase singleton instance (codec convention)
-export const WireTx = new WireTxCodec();
 
 // Encode witness: array of witness per input
 function encodeWitness(witness: Uint8Array[][]): Uint8Array {
@@ -124,3 +122,11 @@ function decodeWitness(data: Uint8Array, inputCount: number): [Uint8Array[][], n
 	}
 	return [witness, offset];
 }
+
+export type WireTx = Codec.Infer<typeof WireTx>;
+export const WireTx = new WireTxCodec().transform((value, bytes) => {
+	return {
+		txId: sha256(sha256(bytes)),
+		...value,
+	};
+});
