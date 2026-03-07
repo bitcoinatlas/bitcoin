@@ -1,5 +1,8 @@
 import { Codec } from "@nomadshiba/codec";
+import { ScriptPubKey } from "../chain/utils/ScriptPubKey.ts";
+import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
 import { storedPointer } from "~/lib/codec/StoredPointer.ts";
+import { compactSize } from "~/lib/codec/primitives.ts";
 
 /**
  * StoredTxOutput binary layout
@@ -11,7 +14,7 @@ import { storedPointer } from "~/lib/codec/StoredPointer.ts";
  *
  * typeId mapping:
  *   0 = pointer (StoredPointer:u48)
- *   1 = raw     (scriptPubKey, arbitrary length)
+ *   1 = raw     (scriptPubKey, arbitrary length with CompactSize prefix)
  *   2 = p2pkh   (20-byte hash160)
  *   3 = p2sh    (20-byte hash160)
  *   4 = p2wpkh  (20-byte hash160)
@@ -21,15 +24,15 @@ import { storedPointer } from "~/lib/codec/StoredPointer.ts";
  *
  * ── payload (variable) ──
  * if typeId = 0: 6 bytes [StoredPointer:u48]
- * if typeId = 1: raw scriptPubKey (arbitrary length)
+ * if typeId = 1: CompactSize + raw scriptPubKey
  * if typeId = 2–6: fixed-length data as listed above
  *
- * userland type is always either:
- *   { value, spent, scriptType: "pointer", pointer }
- *   { value, spent, scriptType: "script", scriptPubKey }
+ * userland type is TxOutput with TxOutputData
  */
 
-const SCRIPT_TYPE = {
+type Kind = ScriptPubKey["kind"] | "pointer";
+
+const KIND_TO_ID: Record<Kind, number> = {
 	pointer: 0,
 	raw: 1,
 	p2pkh: 2,
@@ -37,95 +40,62 @@ const SCRIPT_TYPE = {
 	p2wpkh: 4,
 	p2wsh: 5,
 	p2tr: 6,
-} as const;
-
-const SCRIPT_SIZE: Record<number, number> = {
-	[SCRIPT_TYPE.p2pkh]: 20,
-	[SCRIPT_TYPE.p2sh]: 20,
-	[SCRIPT_TYPE.p2wpkh]: 20,
-	[SCRIPT_TYPE.p2wsh]: 32,
-	[SCRIPT_TYPE.p2tr]: 32,
 };
 
-export type StoredTxOutput =
-	| { value: bigint; spent: boolean; scriptType: "pointer"; pointer: number }
-	| { value: bigint; spent: boolean; scriptType: "raw"; scriptPubKey: Uint8Array };
+const ID_TO_KIND: Record<number, Kind> = {
+	[KIND_TO_ID.pointer]: "pointer",
+	[KIND_TO_ID.raw]: "raw",
+	[KIND_TO_ID.p2pkh]: "p2pkh",
+	[KIND_TO_ID.p2sh]: "p2sh",
+	[KIND_TO_ID.p2wpkh]: "p2wpkh",
+	[KIND_TO_ID.p2wsh]: "p2wsh",
+	[KIND_TO_ID.p2tr]: "p2tr",
+};
 
-function detectCompact(script: Uint8Array):
-	| { typeId: number; payload: Uint8Array }
-	| null {
-	// p2pkh
-	if (
-		script.length === 25 &&
-		script[0] === 0x76 && script[1] === 0xa9 &&
-		script[2] === 0x14 && script[23] === 0x88 && script[24] === 0xac
-	) {
-		return { typeId: SCRIPT_TYPE.p2pkh, payload: script.subarray(3, 23) };
-	}
-	// p2sh
-	if (script.length === 23 && script[0] === 0xa9 && script[1] === 0x14 && script[22] === 0x87) {
-		return { typeId: SCRIPT_TYPE.p2sh, payload: script.subarray(2, 22) };
-	}
-	// p2wpkh
-	if (script.length === 22 && script[0] === 0x00 && script[1] === 0x14) {
-		return { typeId: SCRIPT_TYPE.p2wpkh, payload: script.subarray(2) };
-	}
-	// p2wsh
-	if (script.length === 34 && script[0] === 0x00 && script[1] === 0x20) {
-		return { typeId: SCRIPT_TYPE.p2wsh, payload: script.subarray(2) };
-	}
-	// p2tr
-	if (script.length === 34 && script[0] === 0x51 && script[1] === 0x20) {
-		return { typeId: SCRIPT_TYPE.p2tr, payload: script.subarray(2) };
-	}
-	return null;
-}
+const EXPECTED_HASH_LEN: Record<Exclude<Kind, "raw" | "pointer">, number> = {
+	p2pkh: 20,
+	p2sh: 20,
+	p2wpkh: 20,
+	p2wsh: 32,
+	p2tr: 32,
+};
 
-function reconstructScript(typeId: number, payload: Uint8Array): Uint8Array {
-	switch (typeId) {
-		case SCRIPT_TYPE.p2pkh:
-			return Uint8Array.of(0x76, 0xa9, 0x14, ...payload, 0x88, 0xac);
-		case SCRIPT_TYPE.p2sh:
-			return Uint8Array.of(0xa9, 0x14, ...payload, 0x87);
-		case SCRIPT_TYPE.p2wpkh:
-			return Uint8Array.of(0x00, 0x14, ...payload);
-		case SCRIPT_TYPE.p2wsh:
-			return Uint8Array.of(0x00, 0x20, ...payload);
-		case SCRIPT_TYPE.p2tr:
-			return Uint8Array.of(0x51, 0x20, ...payload);
-		default:
-			throw new Error(`Cannot reconstruct unknown compact type ${typeId}`);
-	}
-}
-
-export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
+export class StoredTxOutputCodec extends Codec<TxOutput> {
 	readonly stride = -1;
 
-	encode(obj: StoredTxOutput): Uint8Array {
-		if (obj.value < 0n || obj.value >= (1n << 51n)) {
+	encode(output: TxOutput): Uint8Array {
+		const { data } = output;
+
+		if (data.value < 0n || data.value >= (1n << 51n)) {
 			throw new Error("Value out of range for 51-bit integer");
 		}
 
-		let typeId: number;
 		let payload: Uint8Array;
+		let storeKind: Kind;
 
-		if (obj.scriptType === "pointer") {
-			typeId = SCRIPT_TYPE.pointer;
-			payload = storedPointer.encode(obj.pointer);
+		if (data.scriptPubKey.kind === "pointer") {
+			storeKind = "pointer";
+			payload = storedPointer.encode(data.scriptPubKey.value);
 		} else {
-			const detected = detectCompact(obj.scriptPubKey);
-			if (detected) {
-				typeId = detected.typeId;
-				payload = detected.payload;
+			const normalized = ScriptPubKey.normalize(data.scriptPubKey);
+			storeKind = normalized.kind;
+
+			if (storeKind === "raw") {
+				// Raw scripts: CompactSize prefix + full script bytes
+				const script = ScriptPubKey.toRaw(normalized);
+				const len = compactSize.encode(script.length);
+				payload = new Uint8Array(len.length + script.length);
+				payload.set(len, 0);
+				payload.set(script, len.length);
 			} else {
-				typeId = SCRIPT_TYPE.raw;
-				payload = obj.scriptPubKey;
+				// Known types: just the hash (value)
+				payload = normalized.value;
 			}
 		}
 
-		let bits = BigInt(typeId);
-		if (obj.spent) bits |= 1n << 4n; // spent flag bit
-		const combined = (bits << 51n) | obj.value;
+		let bits = BigInt(KIND_TO_ID[storeKind]);
+		if (data.spent) bits |= 1n << 4n;
+		const combined = (bits << 51n) | data.value;
 
 		const header = new Uint8Array(7);
 		for (let i = 0; i < 7; i++) {
@@ -138,55 +108,55 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 		return out;
 	}
 
-	decode(data: Uint8Array): [StoredTxOutput, number] {
-		if (data.length < 7) throw new Error("Invalid data length for StoredTxOutput");
+	decode(bytes: Uint8Array): [TxOutput, number] {
+		if (bytes.length < 7) throw new Error("Invalid data length for StoredTxOutput");
 
 		let combined = 0n;
 		for (let i = 0; i < 7; i++) {
-			combined |= BigInt(data[i]!) << BigInt(i * 8);
+			combined |= BigInt(bytes[i]!) << BigInt(i * 8);
 		}
 
 		const value = combined & ((1n << 51n) - 1n);
 		const bits = combined >> 51n;
 		const spent = (bits & (1n << 4n)) !== 0n;
 		const typeId = Number(bits & 0xfn);
-		const payload = data.subarray(7);
+		const payload = bytes.subarray(7);
 
 		let bytesRead = 7;
+		let scriptPubKey: TxOutputData["scriptPubKey"];
 
-		if (typeId === SCRIPT_TYPE.pointer) {
-			if (payload.length < storedPointer.stride) throw new Error("Invalid pointer payload length");
-			const [pointer] = storedPointer.decode(payload);
-			bytesRead += storedPointer.stride;
-			return [
-				{
-					value,
-					spent,
-					scriptType: "pointer" as const,
-					pointer,
-				},
-				bytesRead,
-			];
-		}
-		if (typeId === SCRIPT_TYPE.raw) {
-			return [
-				{ value, spent, scriptType: "raw" as const, scriptPubKey: payload },
-				data.length,
-			];
-		}
+		const kind = ID_TO_KIND[typeId];
 
-		// Fixed-size payloads based on typeId
-		const payloadSize = SCRIPT_SIZE[typeId];
-		if (payloadSize === undefined) {
+		if (kind === "pointer") {
+			const [pointer, size] = storedPointer.decode(payload);
+			bytesRead += size;
+			scriptPubKey = { kind: "pointer", value: pointer };
+		} else if (kind === "raw") {
+			// Raw scripts: CompactSize prefix + full script bytes
+			const [scriptLen, lenSize] = compactSize.decode(payload);
+			if (payload.length < lenSize + scriptLen) {
+				throw new Error(
+					`Invalid raw script length: expected ${lenSize + scriptLen} bytes, got ${payload.length}`,
+				);
+			}
+			const scriptBytes = payload.subarray(lenSize, lenSize + scriptLen);
+			const decoded = ScriptPubKey.fromRaw(scriptBytes);
+			bytesRead += lenSize + scriptLen;
+			scriptPubKey = decoded;
+		} else if (kind) {
+			// Known script type - payload is just the hash
+			const expectedLen = EXPECTED_HASH_LEN[kind];
+			if (payload.length < expectedLen) {
+				throw new Error(`Invalid payload length for ${kind}: expected ${expectedLen}, got ${payload.length}`);
+			}
+			scriptPubKey = { kind, value: payload.subarray(0, expectedLen) };
+			bytesRead += expectedLen;
+		} else {
 			throw new Error(`Unknown type ID: ${typeId}`);
 		}
 
-		bytesRead += payloadSize;
-		const script = reconstructScript(typeId, payload.subarray(0, payloadSize));
-		return [
-			{ value, spent, scriptType: "raw" as const, scriptPubKey: script },
-			bytesRead,
-		];
+		const data: TxOutputData = { value, spent, scriptPubKey };
+		return [new TxOutput(data), bytesRead];
 	}
 }
 

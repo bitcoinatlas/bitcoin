@@ -3,7 +3,7 @@ import { compactSize } from "~/lib/codec/primitives.ts";
 
 // Internal enum representation for pattern detection
 type StoredWitnessEnum =
-	| { kind: "empty"; value: Record<string, never> }
+	| { kind: "raw"; value: Uint8Array }
 	| { kind: "p2wpkh"; value: { sig: Uint8Array; pubkey: Uint8Array } }
 	| { kind: "p2trKeyPath"; value: { sig: Uint8Array } }
 	| { kind: "p2wsh1of1"; value: { sig: Uint8Array; script: Uint8Array } }
@@ -12,8 +12,7 @@ type StoredWitnessEnum =
 	| { kind: "p2wsh3of3"; value: { sig1: Uint8Array; sig2: Uint8Array; sig3: Uint8Array; script: Uint8Array } }
 	| { kind: "p2wsh1of2"; value: { sig: Uint8Array; script: Uint8Array } }
 	| { kind: "p2wsh1of3"; value: { sig: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wshTimelock"; value: { sig: Uint8Array; script: Uint8Array } }
-	| { kind: "raw"; value: Uint8Array };
+	| { kind: "p2wshTimelock"; value: { sig: Uint8Array; script: Uint8Array } };
 
 export class StoredWitnessCodec extends Codec<Uint8Array[]> {
 	readonly stride = -1;
@@ -34,7 +33,7 @@ export const storedWitness = new StoredWitnessCodec();
 // Pattern detection functions (extracted for clarity)
 function detectPattern(items: Uint8Array[]): StoredWitnessEnum {
 	if (items.length === 0) {
-		return { kind: "empty", value: {} };
+		return { kind: "raw", value: new Uint8Array(0) };
 	}
 
 	// P2WPKH
@@ -198,7 +197,7 @@ function decodeStoredWitnessEnum(bytes: Uint8Array): [StoredWitnessEnum, number]
 
 function getKindId(kind: StoredWitnessEnum["kind"]): number {
 	const ids: Record<string, number> = {
-		empty: 0,
+		raw: 0,
 		p2wpkh: 1,
 		p2trKeyPath: 2,
 		p2wsh1of1: 3,
@@ -208,15 +207,14 @@ function getKindId(kind: StoredWitnessEnum["kind"]): number {
 		p2wsh1of2: 7,
 		p2wsh1of3: 8,
 		p2wshTimelock: 9,
-		raw: 255,
 	};
-	return ids[kind] ?? 255;
+	return ids[kind] ?? 0;
 }
 
 function encodePayload(enumValue: StoredWitnessEnum): Uint8Array {
 	switch (enumValue.kind) {
-		case "empty":
-			return new Uint8Array(0);
+		case "raw":
+			return enumValue.value.slice();
 		case "p2wpkh": {
 			const { sig, pubkey } = enumValue.value;
 			const out = new Uint8Array(73 + 33);
@@ -281,15 +279,13 @@ function encodePayload(enumValue: StoredWitnessEnum): Uint8Array {
 			out.set(script, 73);
 			return out;
 		}
-		case "raw":
-			return enumValue.value.slice();
 	}
 }
 
 function decodeKindPayload(data: Uint8Array, kindId: number): [StoredWitnessEnum, number] {
 	switch (kindId) {
-		case 0: // empty
-			return [{ kind: "empty", value: {} }, 0];
+		case 0: // raw
+			return [{ kind: "raw", value: data.slice() }, data.length];
 		case 1: { // p2wpkh
 			const sig = data.subarray(0, 73);
 			const pubkey = data.subarray(73, 106);
@@ -338,9 +334,7 @@ function decodeKindPayload(data: Uint8Array, kindId: number): [StoredWitnessEnum
 			const script = data.subarray(73, 112);
 			return [{ kind: "p2wshTimelock", value: { sig, script } }, 112];
 		}
-		case 255: // raw
-			return [{ kind: "raw", value: data.slice() }, data.length];
-		default:
+		default: // raw fallback
 			return [{ kind: "raw", value: data.slice() }, data.length];
 	}
 }
@@ -349,9 +343,6 @@ function reconstructWitness(stored: StoredWitnessEnum): Uint8Array[] {
 	const items: Uint8Array[] = [];
 
 	switch (stored.kind) {
-		case "empty":
-			break;
-
 		case "p2wpkh": {
 			const sig = stored.value.sig;
 			let sigLen = 73;

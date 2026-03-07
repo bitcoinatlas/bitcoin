@@ -88,3 +88,11 @@ export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 	blockCodec.shape.header.shape.version.stride + blockCodec.shape.header.shape.prevHash.stride,
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
+
+export const KNOWN_ADDRESS_TYPES = [
+	"p2pkh",
+	"p2sh",
+	"p2wpkh",
+	"p2wsh",
+	"p2tr",
+] as const;

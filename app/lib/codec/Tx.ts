@@ -1,9 +1,8 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { BytesCodec, Codec, u32LE, u64LE, varint } from "@nomadshiba/codec";
-import { bytes32 } from "~/lib/codec/primitives.ts";
-import { SequenceLock } from "~/lib/codec/weirdness/SequenceLock.ts";
-import { TimeLock } from "~/lib/codec/weirdness/TimeLock.ts";
-
+import { BytesCodec, Codec, u32LE, u64LE } from "@nomadshiba/codec";
+import { bytes32, compactSize } from "~/lib/codec/primitives.ts";
+import { TimeLock } from "../chain/utils/TimeLock.ts";
+import { SequenceLock } from "../chain/utils/SequenceLock.ts";
 export type TxData = {
 	version: number;
 	vin: TxInputData[];
@@ -26,8 +25,8 @@ export type TxOutputData = {
 	scriptPubKey: Uint8Array;
 };
 
-const scriptBytes = new BytesCodec();
-const witnessItemBytes = new BytesCodec();
+const scriptBytes = new BytesCodec(undefined, { lengthCodec: compactSize });
+const witnessItemBytes = new BytesCodec(undefined, { lengthCodec: compactSize });
 
 export class TxCodec extends Codec<TxData> {
 	readonly stride = -1;
@@ -42,15 +41,15 @@ export class TxCodec extends Codec<TxData> {
 			chunks.push(Uint8Array.of(0x00, 0x01));
 		}
 
-		chunks.push(varint.encode(tx.vin.length));
+		chunks.push(compactSize.encode(tx.vin.length));
 		for (const vin of tx.vin) {
 			chunks.push(bytes32.encode(vin.txId));
 			chunks.push(u32LE.encode(vin.vout));
 			chunks.push(scriptBytes.encode(vin.scriptSig));
-			chunks.push(u32LE.encode(SequenceLock.encode(vin.sequenceLock)));
+			chunks.push(u32LE.encode(SequenceLock.toU32(vin.sequenceLock)));
 		}
 
-		chunks.push(varint.encode(tx.vout.length));
+		chunks.push(compactSize.encode(tx.vout.length));
 		for (const vout of tx.vout) {
 			chunks.push(u64LE.encode(vout.value));
 			chunks.push(scriptBytes.encode(vout.scriptPubKey));
@@ -58,14 +57,14 @@ export class TxCodec extends Codec<TxData> {
 
 		if (hasWitness) {
 			for (const vin of tx.vin) {
-				chunks.push(varint.encode(vin.witness.length));
+				chunks.push(compactSize.encode(vin.witness.length));
 				for (const item of vin.witness) {
 					chunks.push(witnessItemBytes.encode(item));
 				}
 			}
 		}
 
-		chunks.push(u32LE.encode(TimeLock.encode(tx.lockTime)));
+		chunks.push(u32LE.encode(TimeLock.toU32(tx.lockTime)));
 
 		let totalLength = 0;
 		for (const chunk of chunks) {
@@ -88,10 +87,10 @@ export class TxCodec extends Codec<TxData> {
 
 		let hasWitness = false;
 
-		let [vinCount] = varint.decode(bytes.subarray(offset));
+		let [vinCount] = compactSize.decode(bytes.subarray(offset));
 		let vinCountBytes: number;
 		{
-			const [, br] = varint.decode(bytes.subarray(offset));
+			const [, br] = compactSize.decode(bytes.subarray(offset));
 			vinCountBytes = br;
 		}
 
@@ -99,7 +98,7 @@ export class TxCodec extends Codec<TxData> {
 			const flags = bytes[offset + vinCountBytes] ?? 0;
 			offset += 1;
 			if (flags !== 0) {
-				const [vc, vcBytes] = varint.decode(bytes.subarray(offset));
+				const [vc, vcBytes] = compactSize.decode(bytes.subarray(offset));
 				vinCount = vc;
 				offset += vcBytes;
 				hasWitness = (flags & 1) !== 0;
@@ -126,12 +125,12 @@ export class TxCodec extends Codec<TxData> {
 				txId,
 				vout,
 				scriptSig,
-				sequenceLock: SequenceLock.decode(sequence),
+				sequenceLock: SequenceLock.fromU32(sequence),
 				witness: [],
 			});
 		}
 
-		const [voutCount, voutCountBytes] = varint.decode(bytes.subarray(offset));
+		const [voutCount, voutCountBytes] = compactSize.decode(bytes.subarray(offset));
 		offset += voutCountBytes;
 
 		const vout: TxOutputData[] = [];
@@ -147,7 +146,7 @@ export class TxCodec extends Codec<TxData> {
 
 		if (hasWitness) {
 			for (let i = 0; i < vinCount; i++) {
-				const [nItems, nItemsBytes] = varint.decode(bytes.subarray(offset));
+				const [nItems, nItemsBytes] = compactSize.decode(bytes.subarray(offset));
 				offset += nItemsBytes;
 
 				const witness = vin[i]!.witness as Uint8Array[];
@@ -167,7 +166,7 @@ export class TxCodec extends Codec<TxData> {
 			version,
 			vin,
 			vout,
-			lockTime: TimeLock.decode(locktime),
+			lockTime: TimeLock.fromU32(locktime),
 			witness: hasWitness,
 		};
 

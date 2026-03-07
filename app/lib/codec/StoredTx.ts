@@ -1,84 +1,77 @@
 import { ArrayCodec, Codec, u32LE } from "@nomadshiba/codec";
 import { bytes32, compactSize } from "~/lib/codec/primitives.ts";
-import { StoredTxInput, storedTxInput } from "~/lib/codec/StoredTxInput.ts";
-import { StoredTxOutput, storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import { storedTxInput } from "~/lib/codec/StoredTxInput.ts";
+import { storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import { Tx } from "~/lib/chain/Tx.ts";
+import { TxInput } from "~/lib/chain/TxInput.ts";
+import { TxOutput } from "~/lib/chain/TxOutput.ts";
+import { TimeLock } from "~/lib/chain/utils/TimeLock.ts";
 
-export type { StoredTxInput } from "~/lib/codec/StoredTxInput.ts";
-export type { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+// StoredTx binary layout (optimized for disk storage):
+// - txId: 32 bytes (full hash)
+// - version: 4 bytes (u32LE)
+// - lockTime: 4 bytes (u32LE) - stored as raw number, converted to TimeLock on decode
+// - vout[]: CompactSize count + StoredTxOutput[]
+// - vin[]: CompactSize count + StoredTxInput[] (uses pointers for prevOut when resolved)
 
-export type StoredTx = {
-	// This is the only place where we store the full txId,
-	// if we dont store it anywhere else, in order to find the txId,
-	// we have to hash every transaction until the coinbase transactions of the utxo we are spending.
-	txId: Uint8Array;
-	version: number;
-	lockTime: number;
-	vout: StoredTxOutput[];
-	vin: StoredTxInput[];
-};
-
-// Re-export from primitives for convenience
-export { storedTxInput } from "~/lib/codec/StoredTxInput.ts";
-export { storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
-
-// Arrays using compactSize for count
-const voutArray = new ArrayCodec(storedTxOutput, { countCodec: compactSize });
-const vinArray = new ArrayCodec(storedTxInput, { countCodec: compactSize });
-
-export class StoredTxCodec extends Codec<StoredTx> {
+export class StoredTxCodec extends Codec<Tx> {
 	readonly stride = -1;
 
-	encode(value: StoredTx): Uint8Array {
-		const chunks: Uint8Array[] = [];
-
-		chunks.push(bytes32.encode(value.txId));
-		chunks.push(u32LE.encode(value.version));
-		chunks.push(u32LE.encode(value.lockTime));
-		chunks.push(voutArray.encode(value.vout));
-		chunks.push(vinArray.encode(value.vin));
-
-		// Calculate total size and concatenate
-		let totalLength = 0;
-		for (const chunk of chunks) {
-			totalLength += chunk.length;
-		}
-		const result = new Uint8Array(totalLength);
-		let offset = 0;
-		for (const chunk of chunks) {
-			result.set(chunk, offset);
-			offset += chunk.length;
-		}
-		return result;
+	encode(tx: Tx): Uint8Array {
+		throw new Error("StoredTx encoding requires txId computation - use wire format first");
 	}
 
-	decode(data: Uint8Array): [StoredTx, number] {
+	decode(bytes: Uint8Array): [Tx, number] {
 		let offset = 0;
 
-		const [txId] = bytes32.decode(data.subarray(offset));
+		// txId (32 bytes)
+		const [txId] = bytes32.decode(bytes.subarray(offset));
 		offset += 32;
 
-		const [version] = u32LE.decode(data.subarray(offset));
+		// version (4 bytes)
+		const [version] = u32LE.decode(bytes.subarray(offset));
 		offset += 4;
 
-		const [lockTime] = u32LE.decode(data.subarray(offset));
+		// lockTime (4 bytes) - convert to TimeLock
+		const [lockTimeRaw] = u32LE.decode(bytes.subarray(offset));
 		offset += 4;
+		const locktime = TimeLock.decode(lockTimeRaw);
 
-		const [vout, voutBytes] = voutArray.decode(data.subarray(offset));
-		offset += voutBytes;
+		// vout[] - use StoredTxOutput which decodes to TxOutput
+		const [voutCount, voutCountBytes] = compactSize.decode(bytes.subarray(offset));
+		offset += voutCountBytes;
 
-		const [vin, vinBytes] = vinArray.decode(data.subarray(offset));
-		offset += vinBytes;
+		const vout: TxOutput[] = [];
+		for (let i = 0; i < voutCount; i++) {
+			const [output, bytesRead] = storedTxOutput.decode(bytes.subarray(offset));
+			vout.push(output);
+			offset += bytesRead;
+		}
 
-		return [
-			{
-				txId,
-				version,
-				lockTime,
-				vout,
-				vin,
-			},
-			offset,
-		];
+		// vin[] - use StoredTxInput which decodes to TxInput
+		const [vinCount, vinCountBytes] = compactSize.decode(bytes.subarray(offset));
+		offset += vinCountBytes;
+
+		const vin: TxInput[] = [];
+		for (let i = 0; i < vinCount; i++) {
+			const [input, bytesRead] = storedTxInput.decode(bytes.subarray(offset));
+			vin.push(input);
+			offset += bytesRead;
+		}
+
+		// witness flag - stored format doesn't explicitly store this
+		// We can infer from inputs having witness data
+		const witness = vin.some((v) => v.data.witness.length > 0);
+
+		const tx = new Tx({
+			version,
+			locktime,
+			witness,
+			inputs: vin,
+			output: vout,
+		});
+
+		return [tx, offset];
 	}
 }
 

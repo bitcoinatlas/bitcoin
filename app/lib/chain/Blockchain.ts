@@ -1,9 +1,9 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { StringCodec, u64 } from "@nomadshiba/codec";
-import { blockCodec, BlockHeaderData } from "./codec/Block.ts";
-import { TxData } from "./codec/Tx.ts";
-import { CachedArrayStore } from "./storage/CachedArrayStore.ts";
-import { FixedKVStore } from "./storage/FixedKVStore.ts";
+import { blockCodec, BlockHeaderData } from "../codec/Block.ts";
+import { TxData } from "../codec/Tx.ts";
+import { CachedArrayStore } from "../storage/CachedArrayStore.ts";
+import { FixedKVStore } from "../storage/FixedKVStore.ts";
 
 export class Blockchain {
 	#blockHeaderStore = new CachedArrayStore("./data/headers", blockCodec.shape.header);
