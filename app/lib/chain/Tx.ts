@@ -11,7 +11,7 @@ export type TxData = {
 	locktime: TimeLock;
 	witness: boolean;
 	inputs: TxInput[];
-	output: TxOutput[];
+	outputs: TxOutput[];
 };
 
 export class Tx {
@@ -22,6 +22,8 @@ export class Tx {
 	}
 
 	async toWireTx(): Promise<WireTx> {
+		const { version, locktime } = this.data;
+
 		const inputs: WireTxInput[] = [];
 		const witness: Uint8Array[][] = [];
 
@@ -39,7 +41,7 @@ export class Tx {
 		}
 
 		const outputs: WireTxOutput[] = [];
-		for (const output of this.data.output) {
+		for (const output of this.data.outputs) {
 			const scriptPubKey = await output.getScriptPubKey();
 			outputs.push({
 				value: output.data.value,
@@ -47,13 +49,7 @@ export class Tx {
 			});
 		}
 
-		return {
-			version: this.data.version,
-			locktime: this.data.locktime,
-			inputs,
-			output: outputs,
-			witness: this.data.witness ? witness : [],
-		};
+		return { version, locktime, inputs, outputs, witness };
 	}
 
 	static fromWireTx(wireTx: WireTx): Promise<Tx> {
@@ -63,39 +59,38 @@ export class Tx {
 			const wireInput = wireTx.inputs[i]!;
 			const inputWitness = wireTx.witness[i] ?? [];
 
-			inputs.push(
-				new TxInput({
-					prevOut: {
-						txId: { kind: "raw", value: wireInput.prevOut.txId },
-						vout: wireInput.prevOut.vout,
-					},
-					scriptSig: wireInput.scriptSig,
-					sequence: wireInput.sequence,
-					witness: inputWitness,
-				}),
-			);
+			const input = new TxInput({
+				prevOut: {
+					txId: { kind: "raw", value: wireInput.prevOut.txId },
+					vout: wireInput.prevOut.vout,
+				},
+				scriptSig: wireInput.scriptSig,
+				sequence: wireInput.sequence,
+				witness: inputWitness,
+			});
+
+			inputs.push(input);
 		}
 
 		const outputs: TxOutput[] = [];
-		for (const wireOutput of wireTx.output) {
+		for (const wireOutput of wireTx.outputs) {
 			const scriptPubKey = ScriptPubKey.fromRaw(wireOutput.scriptPubKey);
-			outputs.push(
-				new TxOutput({
-					value: wireOutput.value,
-					spent: false,
-					scriptPubKey,
-				}),
-			);
+			const output = new TxOutput({
+				value: wireOutput.value,
+				spent: false,
+				scriptPubKey,
+			});
+			outputs.push(output);
 		}
 
-		return Promise.resolve(
-			new Tx({
-				version: wireTx.version,
-				locktime: wireTx.locktime,
-				witness: wireTx.witness.length > 0,
-				inputs,
-				output: outputs,
-			}),
-		);
+		const tx = new Tx({
+			version: wireTx.version,
+			locktime: wireTx.locktime,
+			witness: wireTx.witness.length > 0,
+			inputs,
+			outputs,
+		});
+
+		return Promise.resolve(tx);
 	}
 }

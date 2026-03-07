@@ -3,7 +3,7 @@ import { TxInput } from "~/lib/chain/TxInput.ts";
 import { SequenceLockCodec } from "~/lib/chain/codec/SequenceLock.ts";
 import { U24LE } from "~/lib/codec/primitives.ts";
 import { StoredPointer } from "~/lib/chain/codec/stored/StoredPointer.ts";
-import { storedWitness } from "~/lib/chain/codec/stored/StoredWitness.ts";
+import { StoredWitness } from "~/lib/chain/codec/stored/StoredWitness.ts";
 
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();
@@ -45,7 +45,7 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 
 		const sequenceEncoded = U32LE.encode(SequenceLockCodec.toU32(data.sequence));
 		const scriptSigEncoded = scriptSigCodec.encode(data.scriptSig);
-		const witnessEncoded = storedWitness.encode(data.witness);
+		const witnessEncoded = StoredWitness.encode(data.witness);
 
 		const totalLength = prevOutEncoded.length + sequenceEncoded.length + scriptSigEncoded.length +
 			witnessEncoded.length;
@@ -92,7 +92,7 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data.subarray(offset));
 		offset += scriptSigBytes;
 
-		const [witness, witnessBytes] = storedWitness.decode(data.subarray(offset));
+		const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
 		offset += witnessBytes;
 
 		const input = new TxInput({

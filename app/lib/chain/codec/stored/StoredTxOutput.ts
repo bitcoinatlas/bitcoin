@@ -26,8 +26,6 @@ import { CompactSize } from "~/lib/codec/primitives.ts";
  * if typeId = 0: 6 bytes [StoredPointer:u48]
  * if typeId = 1: CompactSize + raw scriptPubKey
  * if typeId = 2–6: fixed-length data as listed above
- *
- * userland type is TxOutput with TxOutputData
  */
 
 type Kind = ScriptPubKey["kind"] | "pointer";

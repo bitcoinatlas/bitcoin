@@ -2,8 +2,7 @@ import type { Codec } from "@nomadshiba/codec";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export interface FixedKVStoreOptions<K, V> {
-	keyCodec: Codec<K>;
-	valueCodec: Codec<V>;
+	codecs: [Codec<K>, Codec<V>];
 	memtableSize?: number;
 	blockSize?: number;
 	blockCacheSize?: number;
@@ -131,13 +130,12 @@ export class FixedKVStore<K, V> {
 		private filepath: string,
 		options: FixedKVStoreOptions<K, V>,
 	) {
-		this.keyCodec = options.keyCodec;
-		this.valueCodec = options.valueCodec;
+		[this.keyCodec, this.valueCodec] = options.codecs;
 
-		if (options.keyCodec.stride < 0) {
+		if (this.keyCodec.stride < 0) {
 			throw new Error("Key codec must have fixed stride (>= 0)");
 		}
-		if (options.valueCodec.stride < 0) {
+		if (this.valueCodec.stride < 0) {
 			throw new Error("Value codec must have fixed stride (>= 0)");
 		}
 

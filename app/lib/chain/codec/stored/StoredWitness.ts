@@ -28,7 +28,7 @@ export class StoredWitnessCodec extends Codec<Uint8Array[]> {
 	}
 }
 
-export const storedWitness = new StoredWitnessCodec();
+export const StoredWitness = new StoredWitnessCodec();
 
 // Pattern detection functions (extracted for clarity)
 function detectPattern(items: Uint8Array[]): StoredWitnessEnum {

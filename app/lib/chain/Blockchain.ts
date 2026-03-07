@@ -1,51 +1,21 @@
-import { sha256 } from "@noble/hashes/sha2";
-import { StringCodec, u64 } from "@nomadshiba/codec";
-import { blockCodec, BlockHeaderData } from "~/lib/chain/codec/wire/WireBlock.ts";
-import { TxData } from "~/lib/chain/codec/wire/WireTx.ts";
+import { WireBlock } from "~/lib/chain/codec/wire/WireBlock.ts";
 import { CachedArrayStore } from "~/lib/storage/CachedArrayStore.ts";
-import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
+import { Bytes32 } from "../codec/primitives.ts";
+import { FixedKVStore } from "../storage/FixedKVStore.ts";
+import { Block } from "./Block.ts";
+import { StoredBlock } from "./codec/stored/StoredBlock.ts";
 
 export class Blockchain {
-	#blockHeaderStore = new CachedArrayStore("./data/headers", blockCodec.shape.header);
-	#heightMetaStore = new FixedKVStore("./data/height.meta", { keyCodec: new StringCodec(), valueCodec: u64 });
+	#blockHeaderStore = new CachedArrayStore("./data/headers", WireBlock.shape.header);
+	#unorderedBlocks = new FixedKVStore("./data/blocks", { codecs: [Bytes32, StoredBlock] });
 
-	public async getVerificationHeight() {
-		return await this.#heightMetaStore.get("verificationHeight");
-	}
-
-	public async setVerificationHeight(height: bigint) {
-		return await this.#heightMetaStore.set("verificationHeight", height);
-	}
-
-	public async getOrderedDownloadHeight() {
-		return await this.#heightMetaStore.get("orderedDownloadHeight");
-	}
-
-	public async setOrderedDownloadHeight(height: bigint) {
-		return await this.#heightMetaStore.set("orderedDownloadHeight", height);
-	}
-
-	async pushBlockHeader(header: BlockHeaderData) {
-		await this.#blockHeaderStore.push(header);
+	async pushBlockHeaders(headers: WireBlock["header"][]): Promise<void> {
+		await this.#blockHeaderStore.pushMany(headers);
 	}
 
 	async getBlockByHeight(height: number): Promise<Block | undefined> {
 		const header = await this.#blockHeaderStore.get(height);
 		if (!header) return undefined;
 		return new Block(header);
-	}
-}
-
-export class Block {
-	public readonly header: BlockHeaderData;
-	public readonly headerHash: Uint8Array;
-	public async txs(): Promise<TxData[]> {
-		return [];
-	}
-
-	constructor(header: BlockHeaderData) {
-		this.header = header;
-		// There are not many headers, so probably this wont be too slow, but in case it becomes an issue, do the same thing you did with the transactions.
-		this.headerHash = sha256(sha256(blockCodec.shape.header.encode(header)));
 	}
 }

@@ -1,25 +1,17 @@
-import { Tx } from "~/lib/chain/Tx.ts";
-
-export type BlockHeader = {
-	version: number;
-	prevHash: Uint8Array;
-	merkleRoot: Uint8Array;
-	timestamp: number;
-	bits: number;
-	nonce: number;
-};
+import { sha256 } from "@noble/hashes/sha2";
+import { WireBlock } from "./codec/wire/WireBlock.ts";
+import { WireTx } from "./codec/wire/WireTx.ts";
 
 export class Block {
-	public header: BlockHeader;
-	#txs?: Tx[];
-
-	constructor(header: BlockHeader, txs?: Tx[]) {
-		this.header = header;
-		this.#txs = txs;
+	public readonly header: WireBlock["header"];
+	public readonly headerHash: Uint8Array;
+	public async txs(): Promise<WireTx[]> {
+		return [];
 	}
 
-	public async getTxs(): Promise<Tx[]> {
-		if (this.#txs) return this.#txs;
-		throw new Error("Not Implemented");
+	constructor(header: WireBlock["header"]) {
+		this.header = header;
+		// There are not many headers, so probably this wont be too slow, but in case it becomes an issue, do the same thing you did with the transactions.
+		this.headerHash = sha256(sha256(WireBlock.shape.header.encode(header)));
 	}
 }

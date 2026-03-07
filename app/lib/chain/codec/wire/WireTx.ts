@@ -13,7 +13,7 @@ export type WireTx = {
 	version: number;
 	locktime: TimeLock;
 	inputs: WireTxInput[];
-	output: WireTxOutput[];
+	outputs: WireTxOutput[];
 	witness: Uint8Array[][];
 };
 
@@ -41,7 +41,7 @@ export class WireTxCodec extends Codec<WireTx> {
 			version: tx.version,
 			hasWitness,
 			inputs: tx.inputs,
-			outputs: tx.output,
+			outputs: tx.outputs,
 		});
 
 		const chunks: Uint8Array[] = [preWitness];
@@ -83,7 +83,7 @@ export class WireTxCodec extends Codec<WireTx> {
 			version: preWitness.version,
 			locktime: postWitness.locktime,
 			inputs: preWitness.inputs,
-			output: preWitness.outputs,
+			outputs: preWitness.outputs,
 			witness,
 		}, offset];
 	}
