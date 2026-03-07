@@ -12,7 +12,7 @@ export class ChunkedBlobStore {
 	private readonly directoryPath: string;
 
 	private currentChunk: CurrentChunk | null = null;
-	private initPromise: Promise<CurrentChunk> | null = null;
+	private preparePromise: Promise<CurrentChunk> | null = null;
 	private writeQueue: Promise<void> = Promise.resolve();
 
 	constructor(directoryPath: string, chunkByteSize: number = 10 * 1024 * 1024 * 1024) {
@@ -21,10 +21,7 @@ export class ChunkedBlobStore {
 	}
 
 	private prepare(): Promise<CurrentChunk> {
-		if (this.currentChunk) return Promise.resolve(this.currentChunk);
-		if (this.initPromise) return this.initPromise;
-
-		this.initPromise = (async () => {
+		return this.preparePromise ??= (async () => {
 			try {
 				await Deno.mkdir(this.directoryPath, { recursive: true });
 
@@ -54,12 +51,10 @@ export class ChunkedBlobStore {
 				this.currentChunk = { index, file, size };
 				return this.currentChunk;
 			} catch (err) {
-				this.initPromise = null; // Allow retry if initialization failed
+				this.preparePromise = null; // Allow retry if initialization failed
 				throw err;
 			}
 		})();
-
-		return this.initPromise;
 	}
 
 	private async nextChunk(): Promise<CurrentChunk> {
@@ -130,7 +125,7 @@ export class ChunkedBlobStore {
 		if (this.currentChunk) {
 			this.currentChunk.file.close();
 			this.currentChunk = null;
-			this.initPromise = null;
+			this.preparePromise = null;
 		}
 	}
 }
