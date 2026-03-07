@@ -6,6 +6,7 @@
  */
 
 import type { Codec } from "@nomadshiba/codec";
+import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
 export class CachedArrayStore<T> {
 	private filePath: string;
@@ -46,12 +47,12 @@ export class CachedArrayStore<T> {
 				);
 			}
 
-			const buf = new Uint8Array(stat.size);
-			await this.file.read(buf);
+			const buffer = new Uint8Array(stat.size);
+			await readFileFull(this.file, buffer);
 
 			this.data = new Array(count);
 			for (let i = 0; i < count; i++) {
-				const bytes = buf.subarray(i * this.codec.stride, (i + 1) * this.codec.stride);
+				const bytes = buffer.subarray(i * this.codec.stride, (i + 1) * this.codec.stride);
 				this.data[i] = this.codec.decode(bytes)[0];
 			}
 		}
@@ -134,7 +135,7 @@ export class CachedArrayStore<T> {
 
 		for (const { start, count } of ranges) {
 			const totalSize = count * this.codec.stride;
-			const buf = new Uint8Array(totalSize);
+			const buffer = new Uint8Array(totalSize);
 
 			for (let i = 0; i < count; i++) {
 				const item = this.data[start + i]!;
@@ -142,12 +143,12 @@ export class CachedArrayStore<T> {
 				if (encoded.length !== this.codec.stride) {
 					throw new Error(`Encoded size ${encoded.length} != stride ${this.codec.stride}`);
 				}
-				buf.set(encoded, i * this.codec.stride);
+				buffer.set(encoded, i * this.codec.stride);
 			}
 
 			const offset = BigInt(start * this.codec.stride);
 			await this.file.seek(offset, Deno.SeekMode.Start);
-			await this.file.write(buf);
+			await writeFileFull(this.file, buffer);
 		}
 
 		this.dirty.clear();

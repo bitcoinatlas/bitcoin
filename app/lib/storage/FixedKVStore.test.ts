@@ -30,8 +30,7 @@ const KEY_CODEC = new FixedBytesCodec(KEY_SIZE);
 const VALUE_CODEC = new FixedBytesCodec(VALUE_SIZE);
 
 const DEFAULT_OPTIONS: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
-	keyCodec: KEY_CODEC,
-	valueCodec: VALUE_CODEC,
+	codecs: [KEY_CODEC, VALUE_CODEC],
 };
 
 // Test helpers
@@ -211,8 +210,7 @@ Deno.test("FixedKVStore - supports custom key/value sizes", async () => {
 	const dataPath = `${testDir}/data.bin`;
 
 	const customOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
-		keyCodec: new FixedBytesCodec(32),
-		valueCodec: new FixedBytesCodec(256),
+		codecs: [new FixedBytesCodec(32), new FixedBytesCodec(256)],
 	};
 
 	const store = new FixedKVStore(dataPath, customOptions);

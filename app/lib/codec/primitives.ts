@@ -8,21 +8,21 @@ export class CompactSizeCodec extends Codec<number> {
 	encode(n: number): Uint8Array {
 		if (n < 0xfd) return Uint8Array.of(n);
 		if (n <= 0xffff) {
-			const buf = new Uint8Array(3);
-			buf[0] = 0xfd;
-			new Uint8ArrayView(buf).setUint16(1, n, true);
-			return buf;
+			const buffer = new Uint8Array(3);
+			buffer[0] = 0xfd;
+			new Uint8ArrayView(buffer).setUint16(1, n, true);
+			return buffer;
 		}
 		if (n <= 0xffffffff) {
-			const buf = new Uint8Array(5);
-			buf[0] = 0xfe;
-			new Uint8ArrayView(buf).setUint32(1, n, true);
-			return buf;
+			const buffer = new Uint8Array(5);
+			buffer[0] = 0xfe;
+			new Uint8ArrayView(buffer).setUint32(1, n, true);
+			return buffer;
 		}
-		const buf = new Uint8Array(9);
-		buf[0] = 0xff;
-		new Uint8ArrayView(buf).setBigUint64(1, BigInt(n), true);
-		return buf;
+		const buffer = new Uint8Array(9);
+		buffer[0] = 0xff;
+		new Uint8ArrayView(buffer).setBigUint64(1, BigInt(n), true);
+		return buffer;
 	}
 
 	decode(data: Uint8Array): [number, number] {

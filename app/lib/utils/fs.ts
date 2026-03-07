@@ -1,10 +1,3 @@
-// File system utilities
-
-/**
- * Read exactly `buf.length` bytes from a file into the buffer.
- * Returns the number of bytes actually read.
- * Useful for reading complete blocks of data from files.
- */
 export async function readFileFull(file: Deno.FsFile, buffer: Uint8Array): Promise<number> {
 	let totalRead = 0;
 	while (totalRead < buffer.length) {
@@ -13,4 +6,14 @@ export async function readFileFull(file: Deno.FsFile, buffer: Uint8Array): Promi
 		totalRead += n;
 	}
 	return totalRead;
+}
+
+export async function writeFileFull(file: Deno.FsFile, buffer: Uint8Array): Promise<number> {
+	let totalWritten = 0;
+	while (totalWritten < buffer.length) {
+		const n = await file.write(buffer.subarray(totalWritten));
+		if (n === 0) throw new Error("Failed to write to file");
+		totalWritten += n;
+	}
+	return totalWritten;
 }

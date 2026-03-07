@@ -1,5 +1,6 @@
 import type { Codec } from "@nomadshiba/codec";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
+import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
 export interface FixedKVStoreOptions<K, V> {
 	codecs: [Codec<K>, Codec<V>];
@@ -222,7 +223,7 @@ export class FixedKVStore<K, V> {
 		} else {
 			await file.seek(block.offset, Deno.SeekMode.Start);
 			blockData = new Uint8Array(block.size);
-			await file.read(blockData);
+			await readFileFull(this.dataFile!, blockData);
 
 			this.addToCache(cacheKey, blockData);
 		}
@@ -307,7 +308,7 @@ export class FixedKVStore<K, V> {
 			} else {
 				await file.seek(block.offset, Deno.SeekMode.Start);
 				blockData = new Uint8Array(block.size);
-				await file.read(blockData);
+				await readFileFull(this.dataFile!, blockData);
 
 				this.addToCache(cacheKey, blockData);
 			}
@@ -415,7 +416,7 @@ export class FixedKVStore<K, V> {
 				const compressed = uncompressed;
 
 				await file.seek(dataOffset, Deno.SeekMode.Start);
-				await file.write(compressed);
+				await writeFileFull(file, compressed);
 
 				// Store offset relative to SST data start
 				blocks.push({
@@ -443,7 +444,7 @@ export class FixedKVStore<K, V> {
 
 		const metadataBytes = this.encodeMetadata(metadata);
 		await file.seek(dataOffset, Deno.SeekMode.Start);
-		await file.write(metadataBytes);
+		await writeFileFull(file, metadataBytes);
 
 		// Update state
 		this.fileOffset = dataOffset + metadataBytes.length;
@@ -477,7 +478,7 @@ export class FixedKVStore<K, V> {
 		// Read the whole file to find metadata blocks
 		const fileData = new Uint8Array(stat.size);
 		await this.dataFile!.seek(0, Deno.SeekMode.Start);
-		await this.dataFile!.read(fileData);
+		await readFileFull(this.dataFile!, fileData);
 
 		// Find all magic numbers (0x524F434B) which marks metadata blocks
 		const magicValue = 0x524F434B;
@@ -650,8 +651,8 @@ export class FixedKVStore<K, V> {
 		const blockSize = 8 + this.keyCodec.stride * 2 + 8 + 4;
 		const totalSize = 8 + 4 + 4 + metadata.blocks.length * blockSize + metadata.bloomFilter.length + 4;
 
-		const buf = new Uint8Array(totalSize);
-		const view = new DataView(buf.buffer);
+		const buffer = new Uint8Array(totalSize);
+		const view = new DataView(buffer.buffer);
 		let pos = 0;
 
 		view.setUint32(pos, totalSize, true);
@@ -661,7 +662,7 @@ export class FixedKVStore<K, V> {
 
 		view.setUint32(pos, metadata.bloomFilter.length, true);
 		pos += 4;
-		buf.set(metadata.bloomFilter, pos);
+		buffer.set(metadata.bloomFilter, pos);
 		pos += metadata.bloomFilter.length;
 
 		view.setUint32(pos, metadata.totalEntries, true);
@@ -674,9 +675,9 @@ export class FixedKVStore<K, V> {
 		pos += 4;
 
 		for (const block of metadata.blocks) {
-			buf.set(block.startKey, pos);
+			buffer.set(block.startKey, pos);
 			pos += this.keyCodec.stride;
-			buf.set(block.endKey, pos);
+			buffer.set(block.endKey, pos);
 			pos += this.keyCodec.stride;
 			view.setBigUint64(pos, BigInt(block.offset), true);
 			pos += 8;
@@ -686,7 +687,7 @@ export class FixedKVStore<K, V> {
 			pos += 4;
 		}
 
-		return buf;
+		return buffer;
 	}
 
 	private decodeMetadata(data: Uint8Array): SSTMetadata {

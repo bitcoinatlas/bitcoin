@@ -4,6 +4,7 @@ import { BlockHeightIndex } from "./BlockHeightIndex.ts";
 import { StoredBlock } from "./old/StoredBlock.ts";
 import { readFileExact } from "../fs.ts";
 import { MAX_BLOCK_WEIGHT } from "../constants.ts";
+import { writeFileFull } from "~/lib/utils/fs.ts";
 
 export namespace BlockStore {
 	export type Init = {
@@ -112,7 +113,7 @@ export class BlockStore {
 		const file = await Deno.open(path, { read: true, write: true });
 		try {
 			await file.seek(fileOffset, Deno.SeekMode.Start);
-			await file.write(data);
+			await writeFileFull(file, data);
 		} finally {
 			file.close();
 		}
