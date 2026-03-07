@@ -1,6 +1,6 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { resolve } from "@std/path";
-import { blockCodec } from "./lib/codec/Block.ts";
+import { blockCodec } from "~/lib/codec/Block.ts";
 
 export const BASE_DATA_DIR = resolve("./data");
 

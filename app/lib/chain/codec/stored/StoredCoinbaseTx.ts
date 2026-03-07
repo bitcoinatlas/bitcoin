@@ -1,6 +1,6 @@
 import { ArrayCodec, BytesCodec, Codec, U32LE } from "@nomadshiba/codec";
 import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
-import { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import { StoredTxOutput } from "~/lib/chain/codec/stored/StoredTxOutput.ts";
 import type { TxOutput } from "~/lib/chain/TxOutput.ts";
 
 // Per block optimizations like coinbase transaction, doesn't save that much space,
@@ -15,7 +15,7 @@ export type StoredCoinbaseTx = {
 };
 
 // Re-export for convenience
-export { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+export { StoredTxOutput } from "./StoredTxOutput.ts";
 
 // Bytes codecs
 const scriptBytes = new BytesCodec();

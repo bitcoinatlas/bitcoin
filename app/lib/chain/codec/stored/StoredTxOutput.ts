@@ -1,7 +1,7 @@
 import { Codec } from "@nomadshiba/codec";
-import { ScriptPubKey } from "../chain/utils/ScriptPubKey.ts";
+import { ScriptPubKey } from "~/lib/chain/utils/ScriptPubKey.ts";
 import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
-import { StoredPointer } from "~/lib/codec/StoredPointer.ts";
+import { StoredPointer } from "~/lib/chain/codec/stored/StoredPointer.ts";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 
 /**

@@ -2,7 +2,7 @@ import { Codec } from "@nomadshiba/codec";
 
 // Segwit marker codec: encodes 0x00 0x01, decodes by peeking
 // This is used in the Bitcoin wire format to signal the presence of witness data
-export class SegwitMarkerCodec extends Codec<boolean> {
+export class WireSegwitMarkerCodec extends Codec<boolean> {
 	readonly stride = -1;
 
 	encode(hasWitness: boolean): Uint8Array {
@@ -18,4 +18,4 @@ export class SegwitMarkerCodec extends Codec<boolean> {
 }
 
 // Uppercase singleton instance (codec convention)
-export const SegwitMarker = new SegwitMarkerCodec();
+export const WireSegwitMarker = new WireSegwitMarkerCodec();

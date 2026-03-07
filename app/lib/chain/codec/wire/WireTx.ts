@@ -1,9 +1,9 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { CompactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock } from "./TimeLock.ts";
-import { WireTxInput } from "./WireTxInput.ts";
-import { WireTxOutput } from "./WireTxOutput.ts";
-import { SegwitMarker } from "./SegwitMarker.ts";
+import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
+import { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
+import { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
+import { WireSegwitMarker } from "~/lib/chain/codec/wire/WireSegwitMarker.ts";
 
 // WireTx = version + [segwit_marker] + inputs + outputs + [witness] + locktime
 // Note: witness is NOT inside inputs in wire format, it's at tx level
@@ -20,7 +20,7 @@ export type WireTx = {
 // Part 1: Everything before witness (including marker detection)
 const WireTxPreWitness = new StructCodec({
 	version: U32LE,
-	hasWitness: SegwitMarker,
+	hasWitness: WireSegwitMarker,
 	inputs: new ArrayCodec(WireTxInput, { countCodec: CompactSize }),
 	outputs: new ArrayCodec(WireTxOutput, { countCodec: CompactSize }),
 });

@@ -1,9 +1,9 @@
 import { BytesCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
-import { Bytes32, U24LE } from "~/lib/codec/primitives.ts";
-import { StoredPointer } from "~/lib/codec/StoredPointer.ts";
-import { storedWitness } from "~/lib/codec/StoredWitness.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
-import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
+import { SequenceLockCodec } from "~/lib/chain/codec/SequenceLock.ts";
+import { U24LE } from "~/lib/codec/primitives.ts";
+import { StoredPointer } from "~/lib/chain/codec/stored/StoredPointer.ts";
+import { storedWitness } from "~/lib/chain/codec/stored/StoredWitness.ts";
 
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();

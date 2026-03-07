@@ -1,9 +1,9 @@
 import { ArrayCodec, Codec } from "@nomadshiba/codec";
 import { CompactSize, U24LE } from "~/lib/codec/primitives.ts";
-import { StoredCoinbaseTx } from "~/lib/codec/StoredCoinbaseTx.ts";
-import { StoredTx } from "~/lib/codec/StoredTx.ts";
+import { StoredCoinbaseTx } from "~/lib/chain/codec/stored/StoredCoinbaseTx.ts";
+import { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
 
-export type { StoredCoinbaseTx } from "~/lib/codec/StoredCoinbaseTx.ts";
+export type { StoredCoinbaseTx } from "./StoredCoinbaseTx.ts";
 
 export type StoredBlock = {
 	coinbaseTx: StoredCoinbaseTx;

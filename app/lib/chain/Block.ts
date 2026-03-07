@@ -1,4 +1,4 @@
-import { Tx } from "../chain/Tx.ts";
+import { Tx } from "~/lib/chain/Tx.ts";
 
 export type BlockHeader = {
 	version: number;

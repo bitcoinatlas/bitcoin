@@ -1,6 +1,6 @@
 import { BytesCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
-import { SequenceLock } from "./SequenceLock.ts";
+import { SequenceLock } from "~/lib/chain/codec/SequenceLock.ts";
 
 // Wire format TxInput - EXACTLY what's on the wire
 // - prevOut: { txId (32 bytes), vout (4 bytes) }

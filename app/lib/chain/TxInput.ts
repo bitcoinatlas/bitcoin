@@ -1,4 +1,4 @@
-import { SequenceLock } from "../codec/SequenceLock.ts";
+import { SequenceLock } from "~/lib/chain/codec/SequenceLock.ts";
 
 export type OutPoint = {
 	txId:
