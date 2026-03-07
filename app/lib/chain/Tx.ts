@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2";
 import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
 import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
@@ -5,6 +6,7 @@ import type { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
 import { TxOutput } from "~/lib/chain/TxOutput.ts";
 import { ScriptPubKey } from "~/lib/chain/utils/ScriptPubKey.ts";
+import type { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
 
 export type TxData = {
 	version: number;
@@ -21,7 +23,7 @@ export class Tx {
 		this.data = data;
 	}
 
-	async toWireTx(): Promise<WireTx> {
+	async toWire(): Promise<WireTx> {
 		const { version, locktime } = this.data;
 
 		const inputs: WireTxInput[] = [];
@@ -52,7 +54,7 @@ export class Tx {
 		return { version, locktime, inputs, outputs, witness };
 	}
 
-	static fromWireTx(wireTx: WireTx): Promise<Tx> {
+	static fromWire(wireTx: WireTx): Promise<Tx> {
 		const inputs: TxInput[] = [];
 
 		for (let i = 0; i < wireTx.inputs.length; i++) {
@@ -92,5 +94,29 @@ export class Tx {
 		});
 
 		return Promise.resolve(tx);
+	}
+
+	async toStore(): Promise<StoredTx> {
+		const wireTx = await this.toWire();
+		const wireBytes = WireTx.encode(wireTx);
+		const txId = sha256(sha256(wireBytes));
+
+		return {
+			txId,
+			version: this.data.version,
+			lockTime: this.data.locktime,
+			vout: this.data.outputs,
+			vin: this.data.inputs,
+		};
+	}
+
+	static fromStore(storedTx: StoredTx): Promise<Tx> {
+		return Promise.resolve(new Tx({
+			version: storedTx.version,
+			locktime: storedTx.lockTime,
+			witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
+			inputs: storedTx.vin,
+			outputs: storedTx.vout,
+		}));
 	}
 }

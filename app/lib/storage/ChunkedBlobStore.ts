@@ -7,6 +7,11 @@ type CurrentChunk = {
 	size: number;
 };
 
+export type ChunkedBlobStoreOptions = {
+	/** Maximum size of each chunk in bytes. Default is 10 GB. */
+	chunkByteSize?: number;
+};
+
 export class ChunkedBlobStore {
 	private readonly chunkByteSize: number;
 	private readonly directoryPath: string;
@@ -15,9 +20,9 @@ export class ChunkedBlobStore {
 	private preparePromise: Promise<CurrentChunk> | null = null;
 	private writeQueue: Promise<void> = Promise.resolve();
 
-	constructor(directoryPath: string, chunkByteSize: number = 10 * 1024 * 1024 * 1024) {
+	constructor(directoryPath: string, options: ChunkedBlobStoreOptions = {}) {
 		this.directoryPath = directoryPath;
-		this.chunkByteSize = chunkByteSize;
+		this.chunkByteSize = options.chunkByteSize ?? 10 * 1024 * 1024 * 1024;
 	}
 
 	private prepare(): Promise<CurrentChunk> {

@@ -3,7 +3,7 @@
 		"@noble/curves": "jsr:@noble/curves@1.9.0",
 		"@noble/hashes": "jsr:@noble/hashes@1.8.0",
 		"@noble/secp256k1": "jsr:@noble/secp256k1@2.3.0",
-		"@nomadshiba/codec": "jsr:@nomadshiba/codec@0.1.0-preview.16",
+		"@nomadshiba/codec": "jsr:@nomadshiba/codec@0.1.0-preview.21",
 		"@std/assert": "jsr:@std/assert@^1.0.19",
 		"@std/async": "jsr:@std/async@1.0.14",
 		"@std/bytes": "jsr:@std/bytes@1.0.6",

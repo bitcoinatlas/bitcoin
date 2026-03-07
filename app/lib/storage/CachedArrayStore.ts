@@ -8,19 +8,19 @@
 import type { Codec } from "@nomadshiba/codec";
 import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
-export class CachedArrayStore<T> {
+export class CachedArrayStore<T extends Codec<any>> {
 	private filePath: string;
-	private codec: Codec<T>;
+	private codec: T;
 
 	// Resident deserialized data
-	private data: T[] = [];
+	private data: Codec.Infer<T>[] = [];
 	private dirty = new Set<number>();
 
 	// Preparation state
 	private prepared = false;
 	private file: Deno.FsFile | null = null;
 
-	constructor(filePath: string, codec: Codec<T>) {
+	constructor(filePath: string, codec: T) {
 		this.filePath = filePath;
 		this.codec = codec;
 
@@ -65,17 +65,17 @@ export class CachedArrayStore<T> {
 		return this.data.length;
 	}
 
-	async get(index: number): Promise<T | undefined> {
+	async get(index: number): Promise<Codec.Infer<T> | undefined> {
 		await this.prepare();
 		return this.data[index];
 	}
 
-	async getRange(start: number, count: number): Promise<T[]> {
+	async getRange(start: number, count: number): Promise<Codec.Infer<T>[]> {
 		await this.prepare();
 		return this.data.slice(start, start + count);
 	}
 
-	async push(item: T): Promise<number> {
+	async push(item: Codec.Infer<T>): Promise<number> {
 		await this.prepare();
 		const index = this.data.length;
 		this.data.push(item);
@@ -83,7 +83,7 @@ export class CachedArrayStore<T> {
 		return index;
 	}
 
-	async pushMany(items: T[]): Promise<number[]> {
+	async pushMany(items: Codec.Infer<T>[]): Promise<number[]> {
 		await this.prepare();
 		const startIndex = this.data.length;
 		this.data.push(...items);

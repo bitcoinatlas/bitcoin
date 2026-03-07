@@ -1,16 +1,10 @@
-import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, StructCodec } from "@nomadshiba/codec";
 import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
-import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
+import { CompactSize } from "~/lib/codec/primitives.ts";
+import { WireBlockHeader } from "./WireBlockHeader.ts";
 
 export type WireBlock = Codec.Infer<typeof WireBlock>;
 export const WireBlock = new StructCodec({
-	header: new StructCodec({
-		version: U32LE,
-		prevHash: Bytes32,
-		merkleRoot: Bytes32,
-		timestamp: U32LE,
-		bits: U32LE,
-		nonce: U32LE,
-	}),
+	header: WireBlockHeader,
 	txs: new ArrayCodec(WireTx, { countCodec: CompactSize }),
 });

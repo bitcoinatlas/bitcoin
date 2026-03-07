@@ -2,8 +2,7 @@ import type { Codec } from "@nomadshiba/codec";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
-export interface FixedKVStoreOptions<K, V> {
-	codecs: [Codec<K>, Codec<V>];
+export interface FixedKVStoreOptions {
 	memtableSize?: number;
 	blockSize?: number;
 	blockCacheSize?: number;
@@ -109,7 +108,8 @@ class Uint8ArrayMap {
  * FixedKVStore - Optimized LSM store for fixed-size KV using Codec pattern
  */
 export class FixedKVStore<K, V> {
-	private dataFile: Deno.FsFile | undefined;
+	private filepath: string;
+	private file: Deno.FsFile | undefined;
 	private keyCodec: Codec<K>;
 	private valueCodec: Codec<V>;
 
@@ -128,10 +128,11 @@ export class FixedKVStore<K, V> {
 	private blockBuffer: Uint8Array;
 
 	constructor(
-		private filepath: string,
-		options: FixedKVStoreOptions<K, V>,
+		filepath: string,
+		codecs: [Codec<K>, Codec<V>],
+		options: FixedKVStoreOptions = {},
 	) {
-		[this.keyCodec, this.valueCodec] = options.codecs;
+		[this.keyCodec, this.valueCodec] = codecs;
 
 		if (this.keyCodec.stride < 0) {
 			throw new Error("Key codec must have fixed stride (>= 0)");
@@ -140,6 +141,7 @@ export class FixedKVStore<K, V> {
 			throw new Error("Value codec must have fixed stride (>= 0)");
 		}
 
+		this.filepath = filepath;
 		this.memtableSize = options.memtableSize ?? 10000;
 		this.blockSize = options.blockSize ?? 65536;
 		this.maxCacheSize = options.blockCacheSize ?? 1000;
@@ -157,18 +159,18 @@ export class FixedKVStore<K, V> {
 	}
 
 	private async ensureFile(): Promise<Deno.FsFile> {
-		if (this.dataFile) {
-			return this.dataFile;
+		if (this.file) {
+			return this.file;
 		}
 
-		this.dataFile = await Deno.open(this.filepath, { create: true, read: true, write: true });
+		this.file = await Deno.open(this.filepath, { create: true, read: true, write: true });
 
-		const stat = await this.dataFile.stat();
+		const stat = await this.file.stat();
 		if (stat.size > 0) {
 			await this.loadExistingData();
 		}
 
-		return this.dataFile;
+		return this.file;
 	}
 
 	/**
@@ -223,7 +225,7 @@ export class FixedKVStore<K, V> {
 		} else {
 			await file.seek(block.offset, Deno.SeekMode.Start);
 			blockData = new Uint8Array(block.size);
-			await readFileFull(this.dataFile!, blockData);
+			await readFileFull(this.file!, blockData);
 
 			this.addToCache(cacheKey, blockData);
 		}
@@ -308,7 +310,7 @@ export class FixedKVStore<K, V> {
 			} else {
 				await file.seek(block.offset, Deno.SeekMode.Start);
 				blockData = new Uint8Array(block.size);
-				await readFileFull(this.dataFile!, blockData);
+				await readFileFull(this.file!, blockData);
 
 				this.addToCache(cacheKey, blockData);
 			}
@@ -367,10 +369,10 @@ export class FixedKVStore<K, V> {
 	async close(): Promise<void> {
 		if (this.memtable.getSize() > 0) {
 			await this.flushMemtable();
-			await this.dataFile?.sync();
+			await this.file?.sync();
 		}
-		this.dataFile?.close();
-		this.dataFile = undefined;
+		this.file?.close();
+		this.file = undefined;
 	}
 
 	private async flushMemtable(): Promise<void> {
@@ -469,7 +471,7 @@ export class FixedKVStore<K, V> {
 	}
 
 	private async loadExistingData(): Promise<void> {
-		const stat = await this.dataFile!.stat();
+		const stat = await this.file!.stat();
 		if (stat.size === 0) {
 			this.fileOffset = 0;
 			return;
@@ -477,8 +479,8 @@ export class FixedKVStore<K, V> {
 
 		// Read the whole file to find metadata blocks
 		const fileData = new Uint8Array(stat.size);
-		await this.dataFile!.seek(0, Deno.SeekMode.Start);
-		await readFileFull(this.dataFile!, fileData);
+		await this.file!.seek(0, Deno.SeekMode.Start);
+		await readFileFull(this.file!, fileData);
 
 		// Find all magic numbers (0x524F434B) which marks metadata blocks
 		const magicValue = 0x524F434B;
