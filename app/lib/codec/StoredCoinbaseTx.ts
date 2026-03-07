@@ -1,6 +1,7 @@
-import { ArrayCodec, BytesCodec, Codec, u32LE } from "@nomadshiba/codec";
-import { bytes32, compactSize } from "~/lib/codec/primitives.ts";
-import { StoredTxOutput, storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import { ArrayCodec, BytesCodec, Codec, U32LE } from "@nomadshiba/codec";
+import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
+import { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import type { TxOutput } from "~/lib/chain/TxOutput.ts";
 
 // Per block optimizations like coinbase transaction, doesn't save that much space,
 // But its easy to implement so why not. Why store 0s randomly in the middle of the chunk?
@@ -10,17 +11,17 @@ export type StoredCoinbaseTx = {
 	lockTime: number;
 	sequence: number;
 	coinbase: Uint8Array;
-	vout: StoredTxOutput[];
+	vout: TxOutput[];
 };
 
 // Re-export for convenience
-export { storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+export { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
 
 // Bytes codecs
 const scriptBytes = new BytesCodec();
 
-// Array using compactSize for count
-const voutArray = new ArrayCodec(storedTxOutput, { countCodec: compactSize });
+// Array using CompactSize for count
+const voutArray = new ArrayCodec(StoredTxOutput, { countCodec: CompactSize });
 
 export class StoredCoinbaseTxCodec extends Codec<StoredCoinbaseTx> {
 	readonly stride = -1;
@@ -28,10 +29,10 @@ export class StoredCoinbaseTxCodec extends Codec<StoredCoinbaseTx> {
 	encode(value: StoredCoinbaseTx): Uint8Array {
 		const chunks: Uint8Array[] = [];
 
-		chunks.push(bytes32.encode(value.txId));
-		chunks.push(u32LE.encode(value.version));
-		chunks.push(u32LE.encode(value.lockTime));
-		chunks.push(u32LE.encode(value.sequence));
+		chunks.push(Bytes32.encode(value.txId));
+		chunks.push(U32LE.encode(value.version));
+		chunks.push(U32LE.encode(value.lockTime));
+		chunks.push(U32LE.encode(value.sequence));
 		chunks.push(scriptBytes.encode(value.coinbase));
 		chunks.push(voutArray.encode(value.vout));
 
@@ -52,16 +53,16 @@ export class StoredCoinbaseTxCodec extends Codec<StoredCoinbaseTx> {
 	decode(data: Uint8Array): [StoredCoinbaseTx, number] {
 		let offset = 0;
 
-		const [txId] = bytes32.decode(data.subarray(offset));
+		const [txId] = Bytes32.decode(data.subarray(offset));
 		offset += 32;
 
-		const [version] = u32LE.decode(data.subarray(offset));
+		const [version] = U32LE.decode(data.subarray(offset));
 		offset += 4;
 
-		const [lockTime] = u32LE.decode(data.subarray(offset));
+		const [lockTime] = U32LE.decode(data.subarray(offset));
 		offset += 4;
 
-		const [sequence] = u32LE.decode(data.subarray(offset));
+		const [sequence] = U32LE.decode(data.subarray(offset));
 		offset += 4;
 
 		const [coinbase, coinbaseBytes] = scriptBytes.decode(data.subarray(offset));
@@ -84,4 +85,4 @@ export class StoredCoinbaseTxCodec extends Codec<StoredCoinbaseTx> {
 	}
 }
 
-export const storedCoinbaseTx = new StoredCoinbaseTxCodec();
+export const StoredCoinbaseTx = new StoredCoinbaseTxCodec();

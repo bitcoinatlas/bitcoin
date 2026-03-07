@@ -1,5 +1,4 @@
-import { WireTxInput } from "../codec/WireTxInput.ts";
-import { SequenceLock } from "./utils/SequenceLock.ts";
+import { SequenceLock } from "../codec/SequenceLock.ts";
 
 export type OutPoint = {
 	txId:

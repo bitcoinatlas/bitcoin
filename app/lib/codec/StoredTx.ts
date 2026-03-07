@@ -1,11 +1,11 @@
-import { ArrayCodec, Codec, u32LE } from "@nomadshiba/codec";
-import { bytes32, compactSize } from "~/lib/codec/primitives.ts";
-import { storedTxInput } from "~/lib/codec/StoredTxInput.ts";
-import { storedTxOutput } from "~/lib/codec/StoredTxOutput.ts";
+import { ArrayCodec, Codec, U32LE } from "@nomadshiba/codec";
+import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
+import { StoredTxInput } from "~/lib/codec/StoredTxInput.ts";
+import { StoredTxOutput } from "~/lib/codec/StoredTxOutput.ts";
 import { Tx } from "~/lib/chain/Tx.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
 import { TxOutput } from "~/lib/chain/TxOutput.ts";
-import { TimeLock } from "~/lib/chain/utils/TimeLock.ts";
+import { TimeLockCodec } from "~/lib/codec/TimeLock.ts";
 
 // StoredTx binary layout (optimized for disk storage):
 // - txId: 32 bytes (full hash)
@@ -25,36 +25,36 @@ export class StoredTxCodec extends Codec<Tx> {
 		let offset = 0;
 
 		// txId (32 bytes)
-		const [txId] = bytes32.decode(bytes.subarray(offset));
+		const [txId] = Bytes32.decode(bytes.subarray(offset));
 		offset += 32;
 
 		// version (4 bytes)
-		const [version] = u32LE.decode(bytes.subarray(offset));
+		const [version] = U32LE.decode(bytes.subarray(offset));
 		offset += 4;
 
 		// lockTime (4 bytes) - convert to TimeLock
-		const [lockTimeRaw] = u32LE.decode(bytes.subarray(offset));
+		const [lockTimeRaw] = U32LE.decode(bytes.subarray(offset));
 		offset += 4;
-		const locktime = TimeLock.decode(lockTimeRaw);
+		const locktime = TimeLockCodec.fromU32(lockTimeRaw);
 
 		// vout[] - use StoredTxOutput which decodes to TxOutput
-		const [voutCount, voutCountBytes] = compactSize.decode(bytes.subarray(offset));
+		const [voutCount, voutCountBytes] = CompactSize.decode(bytes.subarray(offset));
 		offset += voutCountBytes;
 
 		const vout: TxOutput[] = [];
 		for (let i = 0; i < voutCount; i++) {
-			const [output, bytesRead] = storedTxOutput.decode(bytes.subarray(offset));
+			const [output, bytesRead] = StoredTxOutput.decode(bytes.subarray(offset));
 			vout.push(output);
 			offset += bytesRead;
 		}
 
 		// vin[] - use StoredTxInput which decodes to TxInput
-		const [vinCount, vinCountBytes] = compactSize.decode(bytes.subarray(offset));
+		const [vinCount, vinCountBytes] = CompactSize.decode(bytes.subarray(offset));
 		offset += vinCountBytes;
 
 		const vin: TxInput[] = [];
 		for (let i = 0; i < vinCount; i++) {
-			const [input, bytesRead] = storedTxInput.decode(bytes.subarray(offset));
+			const [input, bytesRead] = StoredTxInput.decode(bytes.subarray(offset));
 			vin.push(input);
 			offset += bytesRead;
 		}
@@ -75,4 +75,8 @@ export class StoredTxCodec extends Codec<Tx> {
 	}
 }
 
-export const storedTx = new StoredTxCodec();
+// Type alias for decoded data (the runtime Tx class instance)
+export type StoredTx = Tx;
+
+// Uppercase singleton export (codec convention)
+export const StoredTx = new StoredTxCodec();

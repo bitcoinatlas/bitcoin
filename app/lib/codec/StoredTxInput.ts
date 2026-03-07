@@ -1,17 +1,17 @@
-import { BytesCodec, Codec, StructCodec, u32LE } from "@nomadshiba/codec";
-import { bytes32, u24LE } from "~/lib/codec/primitives.ts";
-import { storedPointer } from "~/lib/codec/StoredPointer.ts";
+import { BytesCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { Bytes32, U24LE } from "~/lib/codec/primitives.ts";
+import { StoredPointer } from "~/lib/codec/StoredPointer.ts";
 import { storedWitness } from "~/lib/codec/StoredWitness.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
-import { SequenceLock } from "~/lib/chain/utils/SequenceLock.ts";
+import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
 
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();
 
 // Struct for resolved prevOut (fixed size: 6 bytes pointer + 3 bytes vout)
 const resolvedPrevOutCodec = new StructCodec({
-	tx: storedPointer,
-	vout: u24LE,
+	tx: StoredPointer,
+	vout: U24LE,
 });
 
 // Unresolved uses raw txId (32 bytes) + vout (3 bytes)
@@ -25,25 +25,25 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		const data = input.data;
 
 		let prevOutEncoded: Uint8Array;
-		if (data.txId.kind === "pointer") {
+		if (data.prevOut.txId.kind === "pointer") {
 			// Resolved - use struct codec
 			prevOutEncoded = new Uint8Array(1 + 6 + 3); // tag + tx + vout
 			prevOutEncoded[0] = 0; // resolved tag
 			const encoded = resolvedPrevOutCodec.encode({
-				tx: data.txId.value,
-				vout: data.vout,
+				tx: data.prevOut.txId.value,
+				vout: data.prevOut.vout,
 			});
 			prevOutEncoded.set(encoded, 1);
 		} else {
 			// Unresolved - raw txId + vout
 			prevOutEncoded = new Uint8Array(1 + 32 + 3); // tag + txId + vout
 			prevOutEncoded[0] = 1; // unresolved tag
-			prevOutEncoded.set(data.txId.value, 1);
-			const voutBytes = u24LE.encode(data.vout);
+			prevOutEncoded.set(data.prevOut.txId.value, 1);
+			const voutBytes = U24LE.encode(data.prevOut.vout);
 			prevOutEncoded.set(voutBytes, 33);
 		}
 
-		const sequenceEncoded = u32LE.encode(SequenceLock.toU32(data.sequence));
+		const sequenceEncoded = U32LE.encode(SequenceLockCodec.toU32(data.sequence));
 		const scriptSigEncoded = scriptSigCodec.encode(data.scriptSig);
 		const witnessEncoded = storedWitness.encode(data.witness);
 
@@ -81,12 +81,12 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		} else {
 			// Unresolved: manual decode
 			txId = { kind: "raw", value: data.subarray(1, 33) };
-			[vout] = u24LE.decode(data.subarray(33));
+			[vout] = U24LE.decode(data.subarray(33));
 			prevOutBytes = 1 + 32 + 3;
 		}
 		offset += prevOutBytes;
 
-		const [sequence] = u32LE.decode(data.subarray(offset));
+		const [sequence] = U32LE.decode(data.subarray(offset));
 		offset += 4;
 
 		const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data.subarray(offset));
@@ -96,10 +96,9 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		offset += witnessBytes;
 
 		const input = new TxInput({
-			txId,
-			vout,
+			prevOut: { txId, vout },
 			scriptSig,
-			sequence: SequenceLock.decode(sequence),
+			sequence: SequenceLockCodec.fromU32(sequence),
 			witness,
 		});
 
@@ -107,5 +106,4 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 	}
 }
 
-export const storedTxInput = new StoredTxInputCodec();
-fromU32;
+export const StoredTxInput = new StoredTxInputCodec();

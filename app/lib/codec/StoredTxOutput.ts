@@ -1,8 +1,8 @@
 import { Codec } from "@nomadshiba/codec";
 import { ScriptPubKey } from "../chain/utils/ScriptPubKey.ts";
 import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
-import { storedPointer } from "~/lib/codec/StoredPointer.ts";
-import { compactSize } from "~/lib/codec/primitives.ts";
+import { StoredPointer } from "~/lib/codec/StoredPointer.ts";
+import { CompactSize } from "~/lib/codec/primitives.ts";
 
 /**
  * StoredTxOutput binary layout
@@ -75,7 +75,7 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 
 		if (data.scriptPubKey.kind === "pointer") {
 			storeKind = "pointer";
-			payload = storedPointer.encode(data.scriptPubKey.value);
+			payload = StoredPointer.encode(data.scriptPubKey.value);
 		} else {
 			const normalized = ScriptPubKey.normalize(data.scriptPubKey);
 			storeKind = normalized.kind;
@@ -83,7 +83,7 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 			if (storeKind === "raw") {
 				// Raw scripts: CompactSize prefix + full script bytes
 				const script = ScriptPubKey.toRaw(normalized);
-				const len = compactSize.encode(script.length);
+				const len = CompactSize.encode(script.length);
 				payload = new Uint8Array(len.length + script.length);
 				payload.set(len, 0);
 				payload.set(script, len.length);
@@ -128,12 +128,12 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		const kind = ID_TO_KIND[typeId];
 
 		if (kind === "pointer") {
-			const [pointer, size] = storedPointer.decode(payload);
+			const [pointer, size] = StoredPointer.decode(payload);
 			bytesRead += size;
 			scriptPubKey = { kind: "pointer", value: pointer };
 		} else if (kind === "raw") {
 			// Raw scripts: CompactSize prefix + full script bytes
-			const [scriptLen, lenSize] = compactSize.decode(payload);
+			const [scriptLen, lenSize] = CompactSize.decode(payload);
 			if (payload.length < lenSize + scriptLen) {
 				throw new Error(
 					`Invalid raw script length: expected ${lenSize + scriptLen} bytes, got ${payload.length}`,
@@ -160,4 +160,4 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 	}
 }
 
-export const storedTxOutput = new StoredTxOutputCodec();
+export const StoredTxOutput = new StoredTxOutputCodec();

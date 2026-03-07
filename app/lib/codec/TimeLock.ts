@@ -13,32 +13,31 @@ export type TimeLock =
 export class TimeLockCodec extends Codec<TimeLock> {
 	readonly stride = 4;
 
-	encode(value: TimeLock): Uint8Array {
+	static toU32(value: TimeLock): number {
 		switch (value.kind) {
 			case "none":
-				return U32LE.encode(0);
-			case "block": {
-				if (value.height < 0 || value.height >= 500_000_000) {
-					throw new RangeError("block height must be 0 … 499,999,999");
-				}
-				return U32LE.encode(value.height >>> 0);
-			}
-			case "time": {
-				if (value.timestamp < 500_000_000 || value.timestamp > 0xffffffff) {
-					throw new RangeError("timestamp must be ≥ 500,000,000 and fit in 32 bits");
-				}
-				return U32LE.encode(value.timestamp >>> 0);
-			}
+				return 0;
+			case "block":
+				return value.height;
+			case "time":
+				return value.timestamp;
 		}
+	}
+
+	static fromU32(value: number): TimeLock {
+		if (value === 0) return { kind: "none" };
+		if (value < 500_000_000) return { kind: "block", height: value };
+		return { kind: "time", timestamp: value };
+	}
+
+	encode(value: TimeLock): Uint8Array {
+		return U32LE.encode(TimeLockCodec.toU32(value));
 	}
 
 	decode(data: Uint8Array): [TimeLock, number] {
 		const [locktime] = U32LE.decode(data);
 		const value = locktime >>> 0;
-
-		if (value === 0) return [{ kind: "none" }, 4];
-		if (value < 500_000_000) return [{ kind: "block", height: value }, 4];
-		return [{ kind: "time", timestamp: value }, 4];
+		return [TimeLockCodec.fromU32(value), 4];
 	}
 }
 

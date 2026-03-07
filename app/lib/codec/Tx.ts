@@ -1,8 +1,8 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { BytesCodec, Codec, u32LE, u64LE } from "@nomadshiba/codec";
-import { bytes32, compactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock } from "../chain/utils/TimeLock.ts";
-import { SequenceLock } from "../chain/utils/SequenceLock.ts";
+import { BytesCodec, Codec, U32LE, U64LE } from "@nomadshiba/codec";
+import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
+import { TimeLock, TimeLockCodec } from "./TimeLock.ts";
+import { SequenceLock, SequenceLockCodec } from "./SequenceLock.ts";
 export type TxData = {
 	version: number;
 	vin: TxInputData[];
@@ -25,8 +25,8 @@ export type TxOutputData = {
 	scriptPubKey: Uint8Array;
 };
 
-const scriptBytes = new BytesCodec(undefined, { lengthCodec: compactSize });
-const witnessItemBytes = new BytesCodec(undefined, { lengthCodec: compactSize });
+const scriptBytes = new BytesCodec({ lengthCodec: CompactSize });
+const witnessItemBytes = new BytesCodec({ lengthCodec: CompactSize });
 
 export class TxCodec extends Codec<TxData> {
 	readonly stride = -1;
@@ -34,37 +34,37 @@ export class TxCodec extends Codec<TxData> {
 	encode(tx: TxData): Uint8Array {
 		const chunks: Uint8Array[] = [];
 
-		chunks.push(u32LE.encode(tx.version));
+		chunks.push(U32LE.encode(tx.version));
 
 		const hasWitness = tx.witness && tx.vin.some((v) => v.witness.length > 0);
 		if (hasWitness) {
 			chunks.push(Uint8Array.of(0x00, 0x01));
 		}
 
-		chunks.push(compactSize.encode(tx.vin.length));
+		chunks.push(CompactSize.encode(tx.vin.length));
 		for (const vin of tx.vin) {
-			chunks.push(bytes32.encode(vin.txId));
-			chunks.push(u32LE.encode(vin.vout));
+			chunks.push(Bytes32.encode(vin.txId));
+			chunks.push(U32LE.encode(vin.vout));
 			chunks.push(scriptBytes.encode(vin.scriptSig));
-			chunks.push(u32LE.encode(SequenceLock.toU32(vin.sequenceLock)));
+			chunks.push(U32LE.encode(SequenceLockCodec.toU32(vin.sequenceLock)));
 		}
 
-		chunks.push(compactSize.encode(tx.vout.length));
+		chunks.push(CompactSize.encode(tx.vout.length));
 		for (const vout of tx.vout) {
-			chunks.push(u64LE.encode(vout.value));
+			chunks.push(U64LE.encode(vout.value));
 			chunks.push(scriptBytes.encode(vout.scriptPubKey));
 		}
 
 		if (hasWitness) {
 			for (const vin of tx.vin) {
-				chunks.push(compactSize.encode(vin.witness.length));
+				chunks.push(CompactSize.encode(vin.witness.length));
 				for (const item of vin.witness) {
 					chunks.push(witnessItemBytes.encode(item));
 				}
 			}
 		}
 
-		chunks.push(u32LE.encode(TimeLock.toU32(tx.lockTime)));
+		chunks.push(U32LE.encode(TimeLockCodec.toU32(tx.lockTime)));
 
 		let totalLength = 0;
 		for (const chunk of chunks) {
@@ -82,15 +82,15 @@ export class TxCodec extends Codec<TxData> {
 	decode(bytes: Uint8Array): [TxWithIdData, number] {
 		let offset = 0;
 
-		const [version] = u32LE.decode(bytes.subarray(offset));
+		const [version] = U32LE.decode(bytes.subarray(offset));
 		offset += 4;
 
 		let hasWitness = false;
 
-		let [vinCount] = compactSize.decode(bytes.subarray(offset));
+		let [vinCount] = CompactSize.decode(bytes.subarray(offset));
 		let vinCountBytes: number;
 		{
-			const [, br] = compactSize.decode(bytes.subarray(offset));
+			const [, br] = CompactSize.decode(bytes.subarray(offset));
 			vinCountBytes = br;
 		}
 
@@ -98,7 +98,7 @@ export class TxCodec extends Codec<TxData> {
 			const flags = bytes[offset + vinCountBytes] ?? 0;
 			offset += 1;
 			if (flags !== 0) {
-				const [vc, vcBytes] = compactSize.decode(bytes.subarray(offset));
+				const [vc, vcBytes] = CompactSize.decode(bytes.subarray(offset));
 				vinCount = vc;
 				offset += vcBytes;
 				hasWitness = (flags & 1) !== 0;
@@ -109,33 +109,33 @@ export class TxCodec extends Codec<TxData> {
 
 		const vin: TxInputData[] = [];
 		for (let i = 0; i < vinCount; i++) {
-			const [txId] = bytes32.decode(bytes.subarray(offset));
+			const [txId] = Bytes32.decode(bytes.subarray(offset));
 			offset += 32;
 
-			const [vout] = u32LE.decode(bytes.subarray(offset));
+			const [vout] = U32LE.decode(bytes.subarray(offset));
 			offset += 4;
 
 			const [scriptSig, scriptBytesRead] = scriptBytes.decode(bytes.subarray(offset));
 			offset += scriptBytesRead;
 
-			const [sequence] = u32LE.decode(bytes.subarray(offset));
+			const [sequence] = U32LE.decode(bytes.subarray(offset));
 			offset += 4;
 
 			vin.push({
 				txId,
 				vout,
 				scriptSig,
-				sequenceLock: SequenceLock.fromU32(sequence),
+				sequenceLock: SequenceLockCodec.fromU32(sequence),
 				witness: [],
 			});
 		}
 
-		const [voutCount, voutCountBytes] = compactSize.decode(bytes.subarray(offset));
+		const [voutCount, voutCountBytes] = CompactSize.decode(bytes.subarray(offset));
 		offset += voutCountBytes;
 
 		const vout: TxOutputData[] = [];
 		for (let i = 0; i < voutCount; i++) {
-			const [value] = u64LE.decode(bytes.subarray(offset));
+			const [value] = U64LE.decode(bytes.subarray(offset));
 			offset += 8;
 
 			const [scriptPubKey, pkBytesRead] = scriptBytes.decode(bytes.subarray(offset));
@@ -146,7 +146,7 @@ export class TxCodec extends Codec<TxData> {
 
 		if (hasWitness) {
 			for (let i = 0; i < vinCount; i++) {
-				const [nItems, nItemsBytes] = compactSize.decode(bytes.subarray(offset));
+				const [nItems, nItemsBytes] = CompactSize.decode(bytes.subarray(offset));
 				offset += nItemsBytes;
 
 				const witness = vin[i]!.witness as Uint8Array[];
@@ -158,7 +158,7 @@ export class TxCodec extends Codec<TxData> {
 			}
 		}
 
-		const [locktime] = u32LE.decode(bytes.subarray(offset));
+		const [locktime] = U32LE.decode(bytes.subarray(offset));
 		offset += 4;
 
 		const tx: TxWithIdData = {
@@ -166,7 +166,7 @@ export class TxCodec extends Codec<TxData> {
 			version,
 			vin,
 			vout,
-			lockTime: TimeLock.fromU32(locktime),
+		lockTime: TimeLockCodec.fromU32(locktime),
 			witness: hasWitness,
 		};
 

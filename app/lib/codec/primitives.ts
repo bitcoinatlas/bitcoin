@@ -46,7 +46,7 @@ export class CompactSizeCodec extends Codec<number> {
 	}
 }
 
-export const compactSize = new CompactSizeCodec();
+export const CompactSize = new CompactSizeCodec();
 
 export class U24LECodec extends Codec<number> {
 	readonly stride = 3;
@@ -69,7 +69,7 @@ export class U24LECodec extends Codec<number> {
 	}
 }
 
-export const u24LE = new U24LECodec();
+export const U24LE = new U24LECodec();
 
 const MAX_U48 = 2 ** 48 - 1;
 
@@ -99,7 +99,7 @@ export class U48LECodec extends Codec<number> {
 	}
 }
 
-export const u48LE = new U48LECodec();
+export const U48LE = new U48LECodec();
 
 export class U56LECodec extends Codec<bigint> {
 	readonly stride = 7;
@@ -125,7 +125,7 @@ export class U56LECodec extends Codec<bigint> {
 	}
 }
 
-export const u56LE = new U56LECodec();
+export const U56LE = new U56LECodec();
 
 export class Bytes32Codec extends Codec<Uint8Array> {
 	readonly stride = 32;
@@ -143,4 +143,4 @@ export class Bytes32Codec extends Codec<Uint8Array> {
 	}
 }
 
-export const bytes32 = new Bytes32Codec();
+export const Bytes32 = new Bytes32Codec();

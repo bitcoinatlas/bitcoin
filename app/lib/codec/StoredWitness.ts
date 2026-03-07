@@ -1,5 +1,5 @@
 import { Codec } from "@nomadshiba/codec";
-import { compactSize } from "~/lib/codec/primitives.ts";
+import { CompactSize } from "~/lib/codec/primitives.ts";
 
 // Internal enum representation for pattern detection
 type StoredWitnessEnum =
@@ -163,9 +163,9 @@ function detectPattern(items: Uint8Array[]): StoredWitnessEnum {
 	}
 
 	// Raw fallback - encode items to wire format
-	const chunks: Uint8Array[] = [compactSize.encode(items.length)];
+	const chunks: Uint8Array[] = [CompactSize.encode(items.length)];
 	for (const item of items) {
-		chunks.push(compactSize.encode(item.length));
+		chunks.push(CompactSize.encode(item.length));
 		chunks.push(item);
 	}
 	const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
@@ -439,11 +439,11 @@ function reconstructWitness(stored: StoredWitnessEnum): Uint8Array[] {
 			// Decode raw witness bytes back to items
 			const data = stored.value;
 			let offset = 0;
-			const [count] = compactSize.decode(data.subarray(offset));
-			offset += compactSize.encode(count).length;
+			const [count] = CompactSize.decode(data.subarray(offset));
+			offset += CompactSize.encode(count).length;
 			for (let i = 0; i < count; i++) {
-				const [len] = compactSize.decode(data.subarray(offset));
-				offset += compactSize.encode(len).length;
+				const [len] = CompactSize.decode(data.subarray(offset));
+				offset += CompactSize.encode(len).length;
 				items.push(data.subarray(offset, offset + len));
 				offset += len;
 			}

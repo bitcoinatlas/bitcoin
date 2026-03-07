@@ -1,8 +1,9 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
-import { compactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock, timeLock } from "./TimeLock.ts";
+import { CompactSize } from "~/lib/codec/primitives.ts";
+import { TimeLock } from "./TimeLock.ts";
 import { WireTxInput } from "./WireTxInput.ts";
 import { WireTxOutput } from "./WireTxOutput.ts";
+import { SegwitMarker } from "./SegwitMarker.ts";
 
 // WireTx = version + [segwit_marker] + inputs + outputs + [witness] + locktime
 // Note: witness is NOT inside inputs in wire format, it's at tx level
@@ -16,87 +17,18 @@ export type WireTx = {
 	witness: Uint8Array[][];
 };
 
-// Segwit marker codec: encodes 0x00 0x01, decodes by peeking
-class SegwitMarkerCodec extends Codec<boolean> {
-	readonly stride = -1;
-
-	encode(hasWitness: boolean): Uint8Array {
-		return hasWitness ? Uint8Array.of(0x00, 0x01) : new Uint8Array(0);
-	}
-
-	decode(data: Uint8Array): [boolean, number] {
-		if (data.length >= 2 && data[0] === 0x00 && data[1] === 0x01) {
-			return [true, 2];
-		}
-		return [false, 0];
-	}
-}
-
-const SegwitMarker = new SegwitMarkerCodec();
-
 // Part 1: Everything before witness (including marker detection)
 const WireTxPreWitness = new StructCodec({
 	version: U32LE,
 	hasWitness: SegwitMarker,
-	inputs: new ArrayCodec({ codec: WireTxInput, countCodec: compactSize }),
-	outputs: new ArrayCodec({ codec: WireTxOutput, countCodec: compactSize }),
+	inputs: new ArrayCodec(WireTxInput, { countCodec: CompactSize }),
+	outputs: new ArrayCodec(WireTxOutput, { countCodec: CompactSize }),
 });
 
 // Part 2: Everything after witness (just locktime)
 const WireTxPostWitness = new StructCodec({
-	locktime: timeLock,
+	locktime: TimeLock,
 });
-
-// Wire format witness: array of witness per input
-class WireWitnessCodec extends Codec<Uint8Array[][]> {
-	readonly stride = -1;
-
-	encode(witness: Uint8Array[][]): Uint8Array {
-		const chunks: Uint8Array[] = [];
-		for (const inputWitness of witness) {
-			chunks.push(compactSize.encode(inputWitness.length));
-			for (const item of inputWitness) {
-				chunks.push(compactSize.encode(item.length));
-				chunks.push(item);
-			}
-		}
-		return concatBytes(chunks);
-	}
-
-	decode(data: Uint8Array, inputCount: number): [Uint8Array[][], number] {
-		let offset = 0;
-		const witness: Uint8Array[][] = [];
-		for (let i = 0; i < inputCount; i++) {
-			const [nItems, nItemsBytes] = compactSize.decode(data.subarray(offset));
-			offset += nItemsBytes;
-			const items: Uint8Array[] = [];
-			for (let j = 0; j < nItems; j++) {
-				const [itemLen, itemLenBytes] = compactSize.decode(data.subarray(offset));
-				offset += itemLenBytes;
-				const item = data.subarray(offset, offset + itemLen);
-				offset += itemLen;
-				items.push(item);
-			}
-			witness.push(items);
-		}
-		return [witness, offset];
-	}
-}
-
-const wireWitness = new WireWitnessCodec();
-
-// Helper to concatenate Uint8Arrays
-function concatBytes(chunks: Uint8Array[]): Uint8Array {
-	let totalLength = 0;
-	for (const chunk of chunks) totalLength += chunk.length;
-	const result = new Uint8Array(totalLength);
-	let offset = 0;
-	for (const chunk of chunks) {
-		result.set(chunk, offset);
-		offset += chunk.length;
-	}
-	return result;
-}
 
 export class WireTxCodec extends Codec<WireTx> {
 	readonly stride = -1;
@@ -116,13 +48,15 @@ export class WireTxCodec extends Codec<WireTx> {
 
 		// Witness (if present)
 		if (hasWitness) {
-			chunks.push(wireWitness.encode(tx.witness));
+			chunks.push(encodeWitness(tx.witness));
 		}
 
 		// Locktime
-		chunks.push(WireTxPostWitness.encode({ locktime: tx.locktime }));
+		chunks.push(WireTxPostWitness.encode({
+			locktime: tx.locktime,
+		}));
 
-		return concatBytes(chunks);
+		return Uint8Array.from(chunks);
 	}
 
 	decode(bytes: Uint8Array): [WireTx, number] {
@@ -133,7 +67,7 @@ export class WireTxCodec extends Codec<WireTx> {
 		// Decode witness (if present)
 		let witness: Uint8Array[][] = [];
 		if (preWitness.hasWitness) {
-			const [w, witnessBytes] = wireWitness.decode(
+			const [w, witnessBytes] = decodeWitness(
 				bytes.subarray(offset),
 				preWitness.inputs.length,
 			);
@@ -155,4 +89,38 @@ export class WireTxCodec extends Codec<WireTx> {
 	}
 }
 
+// Uppercase singleton instance (codec convention)
 export const WireTx = new WireTxCodec();
+
+// Encode witness: array of witness per input
+function encodeWitness(witness: Uint8Array[][]): Uint8Array {
+	const chunks: Uint8Array[] = [];
+	for (const inputWitness of witness) {
+		chunks.push(CompactSize.encode(inputWitness.length));
+		for (const item of inputWitness) {
+			chunks.push(CompactSize.encode(item.length));
+			chunks.push(item);
+		}
+	}
+	return Uint8Array.from(chunks);
+}
+
+// Decode witness: array of witness per input
+function decodeWitness(data: Uint8Array, inputCount: number): [Uint8Array[][], number] {
+	let offset = 0;
+	const witness: Uint8Array[][] = [];
+	for (let i = 0; i < inputCount; i++) {
+		const [nItems, nItemsBytes] = CompactSize.decode(data.subarray(offset));
+		offset += nItemsBytes;
+		const items: Uint8Array[] = [];
+		for (let j = 0; j < nItems; j++) {
+			const [itemLen, itemLenBytes] = CompactSize.decode(data.subarray(offset));
+			offset += itemLenBytes;
+			const item = data.subarray(offset, offset + itemLen);
+			offset += itemLen;
+			items.push(item);
+		}
+		witness.push(items);
+	}
+	return [witness, offset];
+}

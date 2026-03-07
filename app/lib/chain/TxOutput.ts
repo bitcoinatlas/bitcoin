@@ -16,11 +16,12 @@ export class TxOutput {
 	}
 
 	async getScriptPubKey(): Promise<ScriptPubKey> {
-		if (this.data.scriptPubKey.kind !== "pointer") {
+		if (this.data.scriptPubKey.kind === "pointer") {
+			// In a real implementation, you would fetch the scriptPubKey from storage using the pointer value.
+			// For this example, we'll just throw an error to indicate that this is not implemented.
+			throw new Error("Pointer scriptPubKey not implemented");
+		} else {
 			return this.data.scriptPubKey;
 		}
-		// In a real implementation, you would fetch the scriptPubKey from storage using the pointer value.
-		// For this example, we'll just throw an error to indicate that this is not implemented.
-		throw new Error("Pointer scriptPubKey not implemented");
 	}
 }

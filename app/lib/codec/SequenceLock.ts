@@ -22,16 +22,16 @@ export type SequenceLock =
 export class SequenceLockCodec extends Codec<SequenceLock> {
 	readonly stride = 4;
 
-	encode(value: SequenceLock): Uint8Array {
+	static toU32(value: SequenceLock): number {
 		if (value.kind === "final") {
-			return U32LE.encode(0xffffffff);
+			return 0xffffffff;
 		}
 
 		if (value.kind === "disable") {
 			if (value.unused >>> 31 !== 0) {
 				throw new RangeError("disable.unused must fit in 31 bits");
 			}
-			return U32LE.encode((1 << 31) | (value.unused & 0x7fffffff));
+			return (1 << 31) | (value.unused & 0x7fffffff);
 		}
 
 		let sequence = 0;
@@ -68,22 +68,21 @@ export class SequenceLockCodec extends Codec<SequenceLock> {
 		sequence |= reservedLow << 16;
 		sequence |= reservedHigh << 23;
 
-		return U32LE.encode(sequence >>> 0);
+		return sequence >>> 0;
 	}
 
-	decode(data: Uint8Array): [SequenceLock, number] {
-		const [seq] = U32LE.decode(data);
+	static fromU32(seq: number): SequenceLock {
 		const sequence = seq >>> 0;
 
 		if (sequence === 0xffffffff) {
-			return [{ kind: "final" }, 4];
+			return { kind: "final" };
 		}
 
 		const disableFlag = !!(sequence & (1 << 31));
 
 		if (disableFlag) {
 			const unused = sequence & 0x7fffffff;
-			return [{ kind: "disable", unused }, 4];
+			return { kind: "disable", unused };
 		}
 
 		const typeFlag = !!(sequence & (1 << 22));
@@ -97,11 +96,20 @@ export class SequenceLockCodec extends Codec<SequenceLock> {
 			? { kind: "time" as const, seconds: value * 512 }
 			: { kind: "block" as const, blocks: value };
 
-		return [{
+		return {
 			kind: "enable",
 			relativeLock,
 			unused,
-		}, 4];
+		};
+	}
+
+	encode(value: SequenceLock): Uint8Array {
+		return U32LE.encode(SequenceLockCodec.toU32(value));
+	}
+
+	decode(data: Uint8Array): [SequenceLock, number] {
+		const [seq] = U32LE.decode(data);
+		return [SequenceLockCodec.fromU32(seq), 4];
 	}
 }
 
