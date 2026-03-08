@@ -33,8 +33,11 @@ export const SCRIPTPUBKEY_PATTERN = {
 } as const;
 
 export namespace ScriptPubKey {
-	/** Detect the script type from raw bytes. Returns undefined if no known pattern matches. */
-	function detectType(raw: Uint8Array): ScriptPubKey | undefined {
+	/** Normalize a ScriptPubKey: if kind is "raw", try to detect the actual type. */
+	export function normalize(parsed: ScriptPubKey): ScriptPubKey {
+		if (parsed.kind !== "raw") return parsed;
+		const { value: raw } = parsed;
+
 		// p2pkh
 		if (raw.length === SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen) {
 			let match = true;
@@ -127,13 +130,7 @@ export namespace ScriptPubKey {
 			}
 		}
 
-		return undefined;
-	}
-
-	/** Normalize a ScriptPubKey: if kind is "raw", try to detect the actual type. */
-	export function normalize(parsed: ScriptPubKey): ScriptPubKey {
-		if (parsed.kind !== "raw") return parsed;
-		return detectType(parsed.value) ?? parsed;
+		return parsed;
 	}
 
 	/** Encode a ScriptPubKey to raw script bytes. */
@@ -186,10 +183,6 @@ export namespace ScriptPubKey {
 
 	/** Decode raw script bytes to a ScriptPubKey. Tries to detect known types, falls back to "raw". */
 	export function fromRaw(raw: Uint8Array): ScriptPubKey {
-		const detected = detectType(raw);
-		if (detected) {
-			return detected;
-		}
-		return { kind: "raw", value: raw.slice() };
+		return normalize({ kind: "raw", value: raw });
 	}
 }

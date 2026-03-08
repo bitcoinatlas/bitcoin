@@ -3,6 +3,7 @@ import { resolve } from "@std/path";
 import { WireBlockHeader } from "./lib/chain/codec/wire/WireBlockHeader.ts";
 
 export const BASE_DATA_DIR = resolve("./data");
+export const TXID_PREFIX_INDEX_SPLIT_COUNT = 4; // Must be a power of 2, and determines how many subdirectories the txid index is split into. Higher means more directories but faster lookups.
 
 export const MAX_BLOCK_WEIGHT = 4 * 1024 * 1024;
 export const WITNESS_DATA_WEIGHT = 1;
