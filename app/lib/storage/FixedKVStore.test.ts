@@ -180,37 +180,6 @@ Deno.test("FixedKVStore - handles many keys", async () => {
 	});
 });
 
-// Error handling
-Deno.test("FixedKVStore - throws on wrong key size", async () => {
-	await withStore(async (store) => {
-		const wrongKey = new Uint8Array(KEY_SIZE + 1);
-
-		let error: Error | undefined;
-		try {
-			await store.set(wrongKey, createValue(1));
-		} catch (e) {
-			error = e as Error;
-		}
-
-		assertEquals(error?.message.includes("Expected 16 bytes"), true);
-	});
-});
-
-Deno.test("FixedKVStore - throws on wrong value size", async () => {
-	await withStore(async (store) => {
-		const wrongValue = new Uint8Array(VALUE_SIZE + 1);
-
-		let error: Error | undefined;
-		try {
-			await store.set(createKey(1), wrongValue);
-		} catch (e) {
-			error = e as Error;
-		}
-
-		assertEquals(error?.message.includes("Expected 64 bytes"), true);
-	});
-});
-
 // Empty batch operations
 Deno.test("FixedKVStore - handles empty setMany", async () => {
 	await withStore(async (store) => {

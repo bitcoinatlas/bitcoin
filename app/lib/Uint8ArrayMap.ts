@@ -35,7 +35,7 @@ export class Uint8ArrayMap<V> {
 
 		for (let i = 0; i < bucket.length; i++) {
 			const [bKey, bValue] = bucket[i]!;
-			if (!compare(bKey, key)) continue;
+			if (compare(bKey, key) !== 0) continue;
 			return bValue;
 		}
 		return undefined;
@@ -49,7 +49,7 @@ export class Uint8ArrayMap<V> {
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
 			const [bKey] = entry;
-			if (!compare(bKey, key)) continue;
+			if (compare(bKey, key) !== 0) continue;
 			entry[1] = value;
 			return;
 		}
@@ -64,7 +64,7 @@ export class Uint8ArrayMap<V> {
 
 		for (let i = 0; i < bucket.length; i++) {
 			const [bKey] = bucket[i]!;
-			if (!compare(bKey, key)) continue;
+			if (compare(bKey, key) !== 0) continue;
 			bucket.splice(i, 1);
 			this._size--;
 			return true;
