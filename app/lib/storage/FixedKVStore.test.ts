@@ -1,37 +1,13 @@
+import { BytesCodec } from "@nomadshiba/codec";
 import { assertEquals } from "@std/assert";
-import { FixedKVStore, FixedKVStoreOptions } from "~/lib/storage/FixedKVStore.ts";
-
-// Simple fixed-size codec for testing
-class FixedBytesCodec {
-	readonly stride: number;
-
-	constructor(size: number) {
-		this.stride = size;
-	}
-
-	encode(value: Uint8Array): Uint8Array {
-		if (value.length !== this.stride) {
-			throw new Error(`Expected ${this.stride} bytes, got ${value.length}`);
-		}
-		return value;
-	}
-
-	decode(data: Uint8Array): [Uint8Array, number] {
-		if (data.length < this.stride) {
-			throw new Error(`Expected at least ${this.stride} bytes, got ${data.length}`);
-		}
-		return [data.slice(0, this.stride), this.stride];
-	}
-}
+import { FixedKVStore } from "~/lib/storage/FixedKVStore.ts";
 
 const KEY_SIZE = 16;
 const VALUE_SIZE = 64;
-const KEY_CODEC = new FixedBytesCodec(KEY_SIZE);
-const VALUE_CODEC = new FixedBytesCodec(VALUE_SIZE);
+const KEY_CODEC = new BytesCodec({ size: KEY_SIZE });
+const VALUE_CODEC = new BytesCodec({ size: VALUE_SIZE });
 
-const DEFAULT_OPTIONS: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
-	codecs: [KEY_CODEC, VALUE_CODEC],
-};
+const DEFAULT_CODECS = [KEY_CODEC, VALUE_CODEC] as const;
 
 // Test helpers
 function createKey(n: number, size = KEY_SIZE): Uint8Array {
@@ -55,7 +31,7 @@ async function withStore<T>(
 ): Promise<T> {
 	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
 	const dataPath = `${testDir}/data.bin`;
-	const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
+	const store = new FixedKVStore(dataPath, DEFAULT_CODECS);
 
 	try {
 		await store.prepare();
@@ -150,14 +126,14 @@ Deno.test("FixedKVStore - persists data across reopen", async () => {
 
 	try {
 		// Phase 1: Write data
-		const store1 = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
+		const store1 = new FixedKVStore(dataPath, DEFAULT_CODECS);
 		await store1.prepare();
 		await store1.set(key1, value1);
 		await store1.set(key2, value2);
 		await store1.close();
 
 		// Phase 2: Read data after reopen
-		const store2 = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
+		const store2 = new FixedKVStore(dataPath, DEFAULT_CODECS);
 		await store2.prepare();
 
 		const got1 = await store2.get(key1);
@@ -202,32 +178,6 @@ Deno.test("FixedKVStore - handles many keys", async () => {
 			assertEquals(got, createValue(i), `Mismatch at key ${i}`);
 		}
 	});
-});
-
-// Custom sizes
-Deno.test("FixedKVStore - supports custom key/value sizes", async () => {
-	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
-	const dataPath = `${testDir}/data.bin`;
-
-	const customOptions: FixedKVStoreOptions<Uint8Array, Uint8Array> = {
-		codecs: [new FixedBytesCodec(32), new FixedBytesCodec(256)],
-	};
-
-	const store = new FixedKVStore(dataPath, customOptions);
-	await store.prepare();
-
-	try {
-		const key = createKey(1, 32);
-		const value = createValue(1, 256);
-
-		await store.set(key, value);
-		const got = await store.get(key);
-
-		assertEquals(got, value);
-	} finally {
-		await store.close();
-		await Deno.remove(testDir, { recursive: true });
-	}
 });
 
 // Error handling
@@ -326,7 +276,7 @@ Deno.test("FixedKVStore - handles double prepare", async () => {
 Deno.test("FixedKVStore - handles double close", async () => {
 	const testDir = await Deno.makeTempDir({ prefix: "fixedkvstore-test" });
 	const dataPath = `${testDir}/data.bin`;
-	const store = new FixedKVStore(dataPath, DEFAULT_OPTIONS);
+	const store = new FixedKVStore(dataPath, DEFAULT_CODECS);
 
 	try {
 		await store.prepare();

@@ -1,9 +1,11 @@
-import { readFileFull, writeFileFull } from "../utils/fs.ts";
 import { join } from "@std/path";
+import { readFileFull, writeFileFull } from "../utils/fs.ts";
+import { Mutex } from "../Mutex.ts";
+import { exists } from "@std/fs";
 
 type CurrentChunk = {
 	index: number;
-	file: Deno.FsFile;
+	path: string;
 	size: number;
 };
 
@@ -14,23 +16,24 @@ export type ChunkedBlobStoreOptions = {
 
 export class ChunkedBlobStore {
 	private readonly chunkByteSize: number;
-	private readonly directoryPath: string;
+	private readonly path: string;
+	private readonly mutex = new Mutex();
 
 	private currentChunk: CurrentChunk | null = null;
-	private preparePromise: Promise<CurrentChunk> | null = null;
-	private writeQueue: Promise<void> = Promise.resolve();
 
 	constructor(directoryPath: string, options: ChunkedBlobStoreOptions = {}) {
-		this.directoryPath = directoryPath;
+		this.path = directoryPath;
 		this.chunkByteSize = options.chunkByteSize ?? 1 * 1024 * 1024 * 1024;
 	}
 
+	private preparePromise: Promise<CurrentChunk> | null = null;
 	private prepare(): Promise<CurrentChunk> {
+		if (this.currentChunk) return Promise.resolve(this.currentChunk);
 		return this.preparePromise ??= (async () => {
 			try {
-				await Deno.mkdir(this.directoryPath, { recursive: true });
+				await Deno.mkdir(this.path, { recursive: true });
 
-				const entries = Deno.readDir(this.directoryPath);
+				const entries = Deno.readDir(this.path);
 				let maxIndex = -1;
 
 				for await (const entry of entries) {
@@ -43,17 +46,15 @@ export class ChunkedBlobStore {
 				}
 
 				const index = maxIndex === -1 ? 0 : maxIndex;
-				const filePath = join(this.directoryPath, `chunk_${index}`);
+				const path = join(this.path, `chunk_${index}`);
 
-				const file = await Deno.open(filePath, {
-					create: true,
-					write: true,
-					append: true,
-				});
+				if (await exists(path, { isFile: true })) {
+					const { size } = await Deno.stat(path);
+					this.currentChunk = { index, path, size };
+				} else {
+					this.currentChunk = { index, path, size: 0 };
+				}
 
-				const { size } = await file.stat();
-				await file.seek(size, Deno.SeekMode.Start);
-				this.currentChunk = { index, file, size };
 				return this.currentChunk;
 			} catch (err) {
 				this.preparePromise = null; // Allow retry if initialization failed
@@ -62,75 +63,78 @@ export class ChunkedBlobStore {
 		})();
 	}
 
-	private async nextChunk(): Promise<CurrentChunk> {
-		const index = await this.prepare().then((chunk) => chunk.index + 1);
-		const filePath = join(this.directoryPath, `chunk_${index}`);
-		const file = await Deno.open(filePath, {
-			create: true,
-			write: true,
-			append: true,
-		});
-		this.currentChunk = { index, file, size: 0 };
-		return this.currentChunk;
-	}
-
-	append(data: Uint8Array): Promise<number> {
+	async append(data: Uint8Array): Promise<number> {
 		if (data.length > this.chunkByteSize) {
 			throw new Error(`Data size (${data.length}) exceeds chunk limit (${this.chunkByteSize})`);
 		}
 
-		const operation = (async () => {
-			await this.writeQueue;
+		const unlock = await this.mutex.lock();
+		const current = await this.prepare();
 
-			let current = await this.prepare();
-
+		let file: Deno.FsFile | undefined;
+		try {
 			if (current.size + data.length > this.chunkByteSize) {
-				current.file.close();
-				current = await this.nextChunk();
+				const index = current.index + 1;
+				const path = join(this.path, `chunk_${index}`);
+				this.currentChunk = { index, path, size: 0 };
+				file = await Deno.create(path);
+			} else {
+				file = await Deno.open(current.path, { write: true });
 			}
 
 			const pointer = current.index * this.chunkByteSize + current.size;
-
-			await writeFileFull(current.file, data);
+			await file.seek(0, Deno.SeekMode.End);
+			await writeFileFull(file, data);
 			current.size += data.length;
-
-			return pointer;
-		})();
-
-		// Synchronously update the queue tail
-		this.writeQueue = operation.then(() => {}).catch(() => {});
-
-		return operation;
+			return pointer; // starting point of the newly appened data
+		} finally {
+			file?.close();
+			unlock();
+		}
 	}
 
 	async get(pointer: number, length: number): Promise<Uint8Array> {
-		const chunkIndex = Math.floor(pointer / this.chunkByteSize);
-		const chunkOffset = pointer % this.chunkByteSize;
-		const filePath = join(this.directoryPath, `chunk_${chunkIndex}`);
+		const index = Math.floor(pointer / this.chunkByteSize);
+		const offset = pointer % this.chunkByteSize;
+		const path = join(this.path, `chunk_${index}`);
+		const buffer = new Uint8Array(length);
 
-		// Note: Using Deno.open per read is fine for low volume,
-		// but consider a cache if you do thousands of reads/sec.
-		const file = await Deno.open(filePath, { read: true });
+		if (!await exists(path)) {
+			return buffer;
+		}
+
+		// Not locking is fine, because we only append data at the end.
+		using file = await Deno.open(path, { read: true });
 		try {
-			await file.seek(chunkOffset, Deno.SeekMode.Start);
-			const buffer = new Uint8Array(length);
-			const bytesRead = await readFileFull(file, buffer);
-
-			if (bytesRead !== length) {
-				throw new Error(`Underflow: requested ${length} bytes, but only read ${bytesRead}`);
-			}
+			await file.seek(offset, Deno.SeekMode.Start);
+			await readFileFull(file, buffer);
 			return buffer;
 		} finally {
 			file.close();
 		}
 	}
 
-	async close() {
-		await this.writeQueue;
-		if (this.currentChunk) {
-			this.currentChunk.file.close();
-			this.currentChunk = null;
-			this.preparePromise = null;
+	async truncate(pointerExclusive: number): Promise<void> {
+		const targetIndex = Math.floor(pointerExclusive / this.chunkByteSize);
+		const targetOffset = pointerExclusive % this.chunkByteSize;
+		const current = await this.prepare();
+		const unlock = await this.mutex.lock();
+		try {
+			for (let index = current.index; index > targetIndex; index--) {
+				const path = join(this.path, `chunk_${index}`);
+				await Deno.remove(path);
+			}
+
+			const path = join(this.path, `chunk_${targetIndex}`);
+			await Deno.truncate(path, targetOffset);
+
+			this.currentChunk = {
+				index: targetIndex,
+				path,
+				size: targetOffset,
+			};
+		} finally {
+			unlock();
 		}
 	}
 }

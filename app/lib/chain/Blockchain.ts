@@ -6,6 +6,7 @@ import { FixedKVStore } from "../storage/FixedKVStore.ts";
 import { Block } from "./Block.ts";
 import { StoredBlock } from "./codec/stored/StoredBlock.ts";
 import { WireBlockHeader } from "./codec/wire/WireBlockHeader.ts";
+import { StoredPointer } from "./codec/stored/StoredPointer.ts";
 
 export class Blockchain {
 	public readonly blockHeaders = new CachedArrayStore("./data/headers", WireBlockHeader);
@@ -15,6 +16,8 @@ export class Blockchain {
 	public readonly blockHeightToPointer = new FixedKVStore("./data/hashToHeight", [U32, U32LE]);
 
 	public readonly unorderedBlock = new FixedKVStore("./data/blocks", [Bytes32, StoredBlock]);
+
+	public readonly txIdToPointer = new FixedKVStore("./data/txs", [Bytes32, StoredPointer]);
 
 	async pushBlockHeader(headers: WireBlockHeader[]): Promise<void> {
 		const oldHeight = await this.blockHeaders.length();

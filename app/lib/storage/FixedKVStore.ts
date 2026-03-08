@@ -1,5 +1,6 @@
 import type { Codec } from "@nomadshiba/codec";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
+import { Uint8ArrayMap } from "../Uint8ArrayMap.ts";
 import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
 export interface FixedKVStoreOptions {
@@ -28,82 +29,6 @@ interface CachedBlock {
 	lastAccess: number;
 }
 
-// Fast Uint8Array hash map using value equality
-class Uint8ArrayMap {
-	private buckets: Array<Array<{ key: Uint8Array; value: Uint8Array }>>;
-	private size = 0;
-	private keySize: number;
-	private mask: number;
-
-	constructor(keySize: number, capacity = 16384) {
-		this.keySize = keySize;
-		const pow2 = Math.pow(2, Math.ceil(Math.log2(capacity)));
-		this.mask = pow2 - 1;
-		this.buckets = new Array(pow2);
-		for (let i = 0; i < pow2; i++) {
-			this.buckets[i] = [];
-		}
-	}
-
-	private hash(key: Uint8Array): number {
-		return ((key[0]! | (key[1]! << 8) | (key[2]! << 16) | (key[3]! << 24)) >>> 0);
-	}
-
-	private keysEqual(a: Uint8Array, b: Uint8Array): boolean {
-		for (let i = 0; i < this.keySize; i++) {
-			if (a[i] !== b[i]) return false;
-		}
-		return true;
-	}
-
-	get(key: Uint8Array): Uint8Array | undefined {
-		const hash = this.hash(key);
-		const bucket = this.buckets[hash & this.mask]!;
-
-		for (let i = 0; i < bucket.length; i++) {
-			if (this.keysEqual(bucket[i]!.key, key)) {
-				return bucket[i]!.value;
-			}
-		}
-		return undefined;
-	}
-
-	set(key: Uint8Array, value: Uint8Array): void {
-		const hash = this.hash(key);
-		const idx = hash & this.mask;
-		const bucket = this.buckets[idx]!;
-
-		for (let i = 0; i < bucket.length; i++) {
-			if (this.keysEqual(bucket[i]!.key, key)) {
-				bucket[i]!.value = value;
-				return;
-			}
-		}
-
-		bucket.push({ key: key.slice(), value });
-		this.size++;
-	}
-
-	clear(): void {
-		for (let i = 0; i < this.buckets.length; i++) {
-			this.buckets[i] = [];
-		}
-		this.size = 0;
-	}
-
-	getSize(): number {
-		return this.size;
-	}
-
-	*entries(): Generator<{ key: Uint8Array; value: Uint8Array }> {
-		for (const bucket of this.buckets) {
-			for (const entry of bucket) {
-				yield entry;
-			}
-		}
-	}
-}
-
 /**
  * FixedKVStore - Optimized LSM store for fixed-size KV using Codec pattern
  */
@@ -117,7 +42,7 @@ export class FixedKVStore<K, V> {
 	private blockSize: number;
 	private maxCacheSize: number;
 
-	private memtable: Uint8ArrayMap;
+	private memtable: Uint8ArrayMap<Uint8Array>;
 	private sstFiles: SSTMetadata[] = [];
 	private sstRanges: Array<{ startKey: Uint8Array; endKey: Uint8Array; sstIndex: number }> = [];
 	private fileOffset = 0;
@@ -129,7 +54,7 @@ export class FixedKVStore<K, V> {
 
 	constructor(
 		filepath: string,
-		codecs: [Codec<K>, Codec<V>],
+		codecs: readonly [Codec<K>, Codec<V>],
 		options: FixedKVStoreOptions = {},
 	) {
 		[this.keyCodec, this.valueCodec] = codecs;
@@ -146,7 +71,7 @@ export class FixedKVStore<K, V> {
 		this.blockSize = options.blockSize ?? 65536;
 		this.maxCacheSize = options.blockCacheSize ?? 1000;
 
-		this.memtable = new Uint8ArrayMap(this.keyCodec.stride, this.memtableSize * 2);
+		this.memtable = new Uint8ArrayMap(this.memtableSize * 2);
 		this.blockBuffer = new Uint8Array(this.blockSize);
 	}
 
@@ -341,8 +266,8 @@ export class FixedKVStore<K, V> {
 		this.memtable.set(keyBytes, valueBytes.slice());
 
 		// Flush if full
-		if (this.memtable.getSize() >= this.memtableSize) {
-			await this.flushMemtable();
+		if (this.memtable.size >= this.memtableSize) {
+			await this.flush();
 		}
 	}
 
@@ -361,27 +286,27 @@ export class FixedKVStore<K, V> {
 		}
 
 		// Flush if full
-		if (this.memtable.getSize() >= this.memtableSize) {
-			await this.flushMemtable();
+		if (this.memtable.size >= this.memtableSize) {
+			await this.flush();
 		}
 	}
 
 	async close(): Promise<void> {
-		if (this.memtable.getSize() > 0) {
-			await this.flushMemtable();
+		if (this.memtable.size > 0) {
+			await this.flush();
 			await this.file?.sync();
 		}
 		this.file?.close();
 		this.file = undefined;
 	}
 
-	private async flushMemtable(): Promise<void> {
-		if (this.memtable.getSize() === 0) return;
+	private async flush(): Promise<void> {
+		if (this.memtable.size === 0) return;
 		const file = await this.ensureFile();
 
 		// Collect entries
-		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = this.memtable.entries().toArray();
-		entries.sort((a, b) => this.compareKeys(a.key, b.key));
+		const entries: Array<[Uint8Array, Uint8Array]> = this.memtable.entries().toArray();
+		entries.sort(([aKey], [bKey]) => this.compareKeys(aKey, bKey));
 
 		// Build bloom filter
 		const bloomFilter = this.buildBloomFilter(entries);
@@ -397,15 +322,15 @@ export class FixedKVStore<K, V> {
 		let blockStartKey: Uint8Array | null = null;
 
 		for (let i = 0; i < entries.length; i++) {
-			const entry = entries[i]!;
+			const [key, value] = entries[i]!;
 
 			if (blockStartKey === null) {
-				blockStartKey = entry.key;
+				blockStartKey = key;
 			}
 
 			// Write to block buffer
-			this.blockBuffer.set(entry.key, blockBufferPos);
-			this.blockBuffer.set(entry.value, blockBufferPos + this.keyCodec.stride);
+			this.blockBuffer.set(key, blockBufferPos);
+			this.blockBuffer.set(value, blockBufferPos + this.keyCodec.stride);
 			blockBufferPos += this.keyCodec.stride + this.valueCodec.stride;
 			blockEntryCount++;
 
@@ -423,7 +348,7 @@ export class FixedKVStore<K, V> {
 				// Store offset relative to SST data start
 				blocks.push({
 					startKey: new Uint8Array(blockStartKey),
-					endKey: new Uint8Array(entry.key),
+					endKey: new Uint8Array(key),
 					offset: dataOffset - sstDataStart,
 					size: blockBufferPos,
 					entryCount: blockEntryCount,
@@ -618,14 +543,14 @@ export class FixedKVStore<K, V> {
 		return -1;
 	}
 
-	private buildBloomFilter(entries: Array<{ key: Uint8Array; value: Uint8Array }>): Uint8Array {
+	private buildBloomFilter(entries: Array<[Uint8Array, Uint8Array]>): Uint8Array {
 		const bits = entries.length * 8;
 		const bytes = Math.ceil(bits / 8);
 		const filter = new Uint8Array(bytes);
 
-		for (const entry of entries) {
-			const h1 = this.hashKey(entry.key, 0);
-			const h2 = this.hashKey(entry.key, 1);
+		for (const [key] of entries) {
+			const h1 = this.hashKey(key, 0);
+			const h2 = this.hashKey(key, 1);
 
 			const idx1 = h1 % bits;
 			const idx2 = h2 % bits;

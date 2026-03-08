@@ -28,3 +28,8 @@ export type Transaction = {
 	 */
 	finalize(): Promise<void>;
 };
+
+export type Transactionable = {
+	transaction(): Transaction;
+	flush(): Promise<void>;
+};

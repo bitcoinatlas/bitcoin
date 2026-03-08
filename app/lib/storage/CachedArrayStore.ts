@@ -9,7 +9,7 @@ import type { Codec } from "@nomadshiba/codec";
 import { readFileFull, writeFileFull } from "../utils/fs.ts";
 
 export class CachedArrayStore<T extends Codec<any>> {
-	private filePath: string;
+	private path: string;
 	private codec: T;
 
 	// Resident deserialized data
@@ -20,8 +20,8 @@ export class CachedArrayStore<T extends Codec<any>> {
 	private prepared = false;
 	private file: Deno.FsFile | null = null;
 
-	constructor(filePath: string, codec: T) {
-		this.filePath = filePath;
+	constructor(path: string, codec: T) {
+		this.path = path;
 		this.codec = codec;
 
 		if (codec.stride < 0) {
@@ -36,7 +36,7 @@ export class CachedArrayStore<T extends Codec<any>> {
 	async prepare(): Promise<void> {
 		if (this.prepared) return;
 
-		this.file = await Deno.open(this.filePath, { create: true, read: true, write: true });
+		this.file = await Deno.open(this.path, { create: true, read: true, write: true });
 
 		const stat = await this.file.stat();
 		if (stat.size > 0) {
