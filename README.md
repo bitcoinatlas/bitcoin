@@ -66,3 +66,7 @@ storage and less friction.
 - Let you do **everything Bitcoin-related** from this client, without needing to set up complex third-party software and
   manually glue everything together. Plugins + built-in features handle it.
 - So your **grandma** can run a useful node.
+
+## LICENSE
+
+[GPL v2](LICENSE)
