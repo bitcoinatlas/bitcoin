@@ -5,7 +5,7 @@ import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 export class CompactSizeCodec extends Codec<number> {
 	readonly stride = -1;
 
-	encode(n: number): Uint8Array {
+	encode(n: number): Uint8Array<ArrayBuffer> {
 		if (n < 0xfd) return Uint8Array.of(n);
 		if (n <= 0xffff) {
 			const buffer = new Uint8Array(3);
@@ -51,7 +51,7 @@ export const CompactSize = new CompactSizeCodec();
 export class U24LECodec extends Codec<number> {
 	readonly stride = 3;
 
-	encode(value: number): Uint8Array {
+	encode(value: number): Uint8Array<ArrayBuffer> {
 		if (value < 0 || value > 0xffffff || !Number.isInteger(value)) {
 			throw new RangeError("Value out of range for U24LE");
 		}
@@ -76,7 +76,7 @@ const MAX_U48 = 2 ** 48 - 1;
 export class U48LECodec extends Codec<number> {
 	readonly stride = 6;
 
-	encode(value: number): Uint8Array {
+	encode(value: number): Uint8Array<ArrayBuffer> {
 		if (value < 0 || value > MAX_U48 || !Number.isInteger(value)) {
 			throw new RangeError("Value out of range for U48LE");
 		}
@@ -104,7 +104,7 @@ export const U48LE = new U48LECodec();
 export class U56LECodec extends Codec<bigint> {
 	readonly stride = 7;
 
-	encode(value: bigint): Uint8Array {
+	encode(value: bigint): Uint8Array<ArrayBuffer> {
 		if (value < 0n || value > 0x00ffffffffffffffn) {
 			throw new RangeError("Value out of range for U56LE");
 		}
@@ -130,7 +130,7 @@ export const U56LE = new U56LECodec();
 export class Bytes32Codec extends Codec<Uint8Array> {
 	readonly stride = 32;
 
-	encode(value: Uint8Array): Uint8Array {
+	encode(value: Uint8Array): Uint8Array<ArrayBuffer> {
 		if (value.length !== 32) {
 			throw new RangeError(`Expected 32 bytes, got ${value.length}`);
 		}

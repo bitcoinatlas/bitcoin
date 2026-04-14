@@ -61,7 +61,7 @@ const EXPECTED_HASH_LEN: Record<Exclude<Kind, "raw" | "pointer">, number> = {
 export class StoredTxOutputCodec extends Codec<TxOutput> {
 	readonly stride = -1;
 
-	encode(output: TxOutput): Uint8Array {
+	encode(output: TxOutput): Uint8Array<ArrayBuffer> {
 		const { data } = output;
 
 		if (data.value < 0n || data.value >= (1n << 51n)) {

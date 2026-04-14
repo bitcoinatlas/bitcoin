@@ -52,9 +52,11 @@ export class Blockchain {
 	async pushBlockHeader(headers: WireBlockHeader[]): Promise<void> {
 		const oldHeight = await this.blockHeightToHeader.length();
 		await this.blockHeightToHeader.concat(headers);
-		await Promise.all([
-			Promise.all(headers.map((header, index) => this.blockHashToHeight.set(header.hash, oldHeight + index))),
-		]);
+		const tx = this.blockHashToHeight.transaction();
+		for (let index = 0; index < headers.length; index++) {
+			tx.set(headers[index]!.hash, oldHeight + index);
+		}
+		await tx.commit();
 	}
 
 	async getBlockByHeight(height: number): Promise<Block | undefined> {

@@ -5,7 +5,7 @@ import { Codec } from "@nomadshiba/codec";
 export class WireSegwitMarkerCodec extends Codec<boolean> {
 	readonly stride = -1;
 
-	encode(hasWitness: boolean): Uint8Array {
+	encode(hasWitness: boolean): Uint8Array<ArrayBuffer> {
 		return hasWitness ? Uint8Array.of(0x00, 0x01) : new Uint8Array(0);
 	}
 

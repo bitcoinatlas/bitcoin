@@ -21,7 +21,7 @@ const UNRESOLVED_SIZE = 32 + 3;
 export class StoredTxInputCodec extends Codec<TxInput> {
 	readonly stride = -1;
 
-	encode(input: TxInput): Uint8Array {
+	encode(input: TxInput): Uint8Array<ArrayBuffer> {
 		const data = input.data;
 
 		let prevOutEncoded: Uint8Array;

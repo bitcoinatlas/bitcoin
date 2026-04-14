@@ -103,8 +103,8 @@ export class SequenceLockCodec extends Codec<SequenceLock> {
 		};
 	}
 
-	encode(value: SequenceLock): Uint8Array {
-		return U32LE.encode(SequenceLockCodec.toU32(value));
+	encode(value: SequenceLock): Uint8Array<ArrayBuffer> {
+		return new Uint8Array(U32LE.encode(SequenceLockCodec.toU32(value)));
 	}
 
 	decode(data: Uint8Array): [SequenceLock, number] {

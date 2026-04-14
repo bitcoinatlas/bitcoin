@@ -17,9 +17,9 @@ type StoredWitnessEnum =
 export class StoredWitnessCodec extends Codec<Uint8Array[]> {
 	readonly stride = -1;
 
-	encode(data: Uint8Array[]): Uint8Array {
+	encode(data: Uint8Array[]): Uint8Array<ArrayBuffer> {
 		const enumValue = detectPattern(data);
-		return encodeStoredWitnessEnum(enumValue);
+		return new Uint8Array(encodeStoredWitnessEnum(enumValue));
 	}
 
 	decode(bytes: Uint8Array): [Uint8Array[], number] {

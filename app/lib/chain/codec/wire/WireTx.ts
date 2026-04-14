@@ -34,7 +34,7 @@ type T = {
 class WireTxCodec extends Codec<T> {
 	readonly stride = -1;
 
-	encode(tx: T): Uint8Array {
+	encode(tx: T): Uint8Array<ArrayBuffer> {
 		const hasWitness = tx.witness.length > 0;
 
 		// Encode pre-witness data

@@ -30,8 +30,8 @@ export class TimeLockCodec extends Codec<TimeLock> {
 		return { kind: "time", timestamp: value };
 	}
 
-	encode(value: TimeLock): Uint8Array {
-		return U32LE.encode(TimeLockCodec.toU32(value));
+	encode(value: TimeLock): Uint8Array<ArrayBuffer> {
+		return new Uint8Array(U32LE.encode(TimeLockCodec.toU32(value)));
 	}
 
 	decode(data: Uint8Array): [TimeLock, number] {
