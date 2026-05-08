@@ -17,26 +17,26 @@ import type { Store, Transaction, WAL } from "./Store.ts";
  * - Supports point lookups and batch lookups.
  * - Does not support deletes (append/update only).
  */
-export interface LookupStore<K, V> extends Store<LookupStoreTransaction<K, V>> {
+export interface KVStore<K, V> extends Store<KVStoreTransaction<K, V>> {
 	get(key: K): Promise<V | undefined>;
 	getMany(keys: K[]): Promise<(V | undefined)[]>;
 	close(): void;
 }
 
-export interface LookupStoreTransaction<K, V> extends Transaction {
+export interface KVStoreTransaction<K, V> extends Transaction {
 	get(key: K): Promise<V | undefined>;
 	getMany(keys: K[]): Promise<(V | undefined)[]>;
 	set(key: K, value: V): void;
 }
 
-export type LookupStoreOptions<K, V> = {
+export type KVStoreOptions<K, V> = {
 	name: string;
 	path: string;
 	keyCodec: Codec<K>;
 	valueCodec: Codec<V>;
 };
 
-export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>): Promise<LookupStore<K, V>> {
+export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	if (options.keyCodec.stride <= 0) {
 		throw new Error("Key codec must have a fixed byte length");
 	}
@@ -87,14 +87,14 @@ export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>)
 		return keys.map((k) => getByBytes(keyCodec.encode(k)));
 	}
 
-	let currentTransaction: LookupStoreTransaction<K, V> | null = null;
+	let currentTransaction: KVStoreTransaction<K, V> | null = null;
 	function assertNoTransaction(): void {
 		if (currentTransaction) {
 			throw new Error("Can't perform this operation while a transaction is in progress");
 		}
 	}
 
-	function transaction(): LookupStoreTransaction<K, V> {
+	function transaction(): KVStoreTransaction<K, V> {
 		assertNoTransaction();
 
 		const txChanges = new Uint8ArrayMap<Uint8Array>(256);

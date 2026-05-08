@@ -1,6 +1,6 @@
 import { BytesCodec } from "@nomadshiba/codec";
 import { assertEquals, assertThrows } from "@std/assert";
-import { createLookupStore, type LookupStore } from "~/lib/storage/LookupStore.ts";
+import { createKVStore, type KVStore } from "~/lib/storage/KVStore.ts";
 
 const KEY_SIZE = 16;
 const VALUE_SIZE = 32;
@@ -20,10 +20,10 @@ function makeValue(n: number): Uint8Array {
 }
 
 async function withStore<T>(
-	testFn: (store: LookupStore<Uint8Array, Uint8Array>) => Promise<T>,
+	testFn: (store: KVStore<Uint8Array, Uint8Array>) => Promise<T>,
 ): Promise<T> {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
-	const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+	const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 	try {
 		return await testFn(store);
 	} finally {
@@ -34,7 +34,7 @@ async function withStore<T>(
 
 // Basic operations
 
-Deno.test("LookupStore - set and get", async () => {
+Deno.test("KVStore - set and get", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -43,13 +43,13 @@ Deno.test("LookupStore - set and get", async () => {
 	});
 });
 
-Deno.test("LookupStore - get returns undefined for missing key", async () => {
+Deno.test("KVStore - get returns undefined for missing key", async () => {
 	await withStore(async (store) => {
 		assertEquals(await store.get(makeKey(999)), undefined);
 	});
 });
 
-Deno.test("LookupStore - getMany returns correct values", async () => {
+Deno.test("KVStore - getMany returns correct values", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -64,7 +64,7 @@ Deno.test("LookupStore - getMany returns correct values", async () => {
 	});
 });
 
-Deno.test("LookupStore - getMany with missing keys returns undefined", async () => {
+Deno.test("KVStore - getMany with missing keys returns undefined", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -76,7 +76,7 @@ Deno.test("LookupStore - getMany with missing keys returns undefined", async () 
 	});
 });
 
-Deno.test("LookupStore - overwrite returns latest value", async () => {
+Deno.test("KVStore - overwrite returns latest value", async () => {
 	await withStore(async (store) => {
 		const key = makeKey(1);
 		const tx1 = store.transaction();
@@ -91,7 +91,7 @@ Deno.test("LookupStore - overwrite returns latest value", async () => {
 	});
 });
 
-Deno.test("LookupStore - last write wins within same tx", async () => {
+Deno.test("KVStore - last write wins within same tx", async () => {
 	await withStore(async (store) => {
 		const key = makeKey(1);
 		const tx = store.transaction();
@@ -103,7 +103,7 @@ Deno.test("LookupStore - last write wins within same tx", async () => {
 	});
 });
 
-Deno.test("LookupStore - discard throws away staged changes", async () => {
+Deno.test("KVStore - discard throws away staged changes", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -112,7 +112,7 @@ Deno.test("LookupStore - discard throws away staged changes", async () => {
 	});
 });
 
-Deno.test("LookupStore - tx.get sees staged writes before apply", async () => {
+Deno.test("KVStore - tx.get sees staged writes before apply", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -123,7 +123,7 @@ Deno.test("LookupStore - tx.get sees staged writes before apply", async () => {
 	});
 });
 
-Deno.test("LookupStore - tx.getMany sees staged writes", async () => {
+Deno.test("KVStore - tx.getMany sees staged writes", async () => {
 	await withStore(async (store) => {
 		const tx1 = store.transaction();
 		tx1.set(makeKey(1), makeValue(1));
@@ -140,7 +140,7 @@ Deno.test("LookupStore - tx.getMany sees staged writes", async () => {
 	});
 });
 
-Deno.test("LookupStore - second transaction throws while one is open", async () => {
+Deno.test("KVStore - second transaction throws while one is open", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		assertThrows(() => store.transaction());
@@ -148,7 +148,7 @@ Deno.test("LookupStore - second transaction throws while one is open", async () 
 	});
 });
 
-Deno.test("LookupStore - handles many keys", async () => {
+Deno.test("KVStore - handles many keys", async () => {
 	await withStore(async (store) => {
 		const count = 500;
 		const tx = store.transaction();
@@ -163,10 +163,10 @@ Deno.test("LookupStore - handles many keys", async () => {
 
 // WAL + persistence
 
-Deno.test("LookupStore - WAL save and apply persists to disk", async () => {
+Deno.test("KVStore - WAL save and apply persists to disk", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store1 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx = store1.transaction();
 		tx.set(makeKey(1), makeValue(1));
 		tx.set(makeKey(2), makeValue(2));
@@ -176,7 +176,7 @@ Deno.test("LookupStore - WAL save and apply persists to disk", async () => {
 		await wal.save();
 		await wal.apply();
 
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		assertEquals(await store2.get(makeKey(1)), makeValue(1));
 		assertEquals(await store2.get(makeKey(2)), makeValue(2));
 		store1.close();
@@ -186,17 +186,17 @@ Deno.test("LookupStore - WAL save and apply persists to disk", async () => {
 	}
 });
 
-Deno.test("LookupStore - WAL lookup by id returns null if not found", async () => {
+Deno.test("KVStore - WAL lookup by id returns null if not found", async () => {
 	await withStore(async (store) => {
 		const wal = await store.WAL({ id: "nonexistent-id" });
 		assertEquals(wal, null);
 	});
 });
 
-Deno.test("LookupStore - WAL apply is idempotent (overwrite same key twice)", async () => {
+Deno.test("KVStore - WAL apply is idempotent (overwrite same key twice)", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store1 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx = store1.transaction();
 		tx.set(makeKey(1), makeValue(1));
 		tx.apply();
@@ -206,7 +206,7 @@ Deno.test("LookupStore - WAL apply is idempotent (overwrite same key twice)", as
 		await wal.apply();
 		await wal.apply(); // second apply — same key, same value, no error
 
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		assertEquals(await store2.get(makeKey(1)), makeValue(1));
 		store1.close();
 		store2.close();
@@ -215,10 +215,10 @@ Deno.test("LookupStore - WAL apply is idempotent (overwrite same key twice)", as
 	}
 });
 
-Deno.test("LookupStore - crash recovery: WAL apply replays changes", async () => {
+Deno.test("KVStore - crash recovery: WAL apply replays changes", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store1 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx = store1.transaction();
 		tx.set(makeKey(42), makeValue(42));
 		tx.apply();
@@ -228,7 +228,7 @@ Deno.test("LookupStore - crash recovery: WAL apply replays changes", async () =>
 		// crash before apply
 		store1.close();
 
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const recovered = await store2.WAL({ id: wal.id });
 		assertEquals(recovered !== null, true);
 		await recovered!.apply();
@@ -240,10 +240,10 @@ Deno.test("LookupStore - crash recovery: WAL apply replays changes", async () =>
 	}
 });
 
-Deno.test("LookupStore - persists data across reopen", async () => {
+Deno.test("KVStore - persists data across reopen", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store1 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx = store1.transaction();
 		tx.set(makeKey(1), makeValue(1));
 		tx.set(makeKey(2), makeValue(2));
@@ -254,7 +254,7 @@ Deno.test("LookupStore - persists data across reopen", async () => {
 		await wal.discard();
 		store1.close();
 
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		assertEquals(await store2.get(makeKey(1)), makeValue(1));
 		assertEquals(await store2.get(makeKey(2)), makeValue(2));
 		store2.close();
@@ -263,10 +263,10 @@ Deno.test("LookupStore - persists data across reopen", async () => {
 	}
 });
 
-Deno.test("LookupStore - WAL discard removes the file", async () => {
+Deno.test("KVStore - WAL discard removes the file", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
 		tx.apply();
@@ -286,10 +286,10 @@ Deno.test("LookupStore - WAL discard removes the file", async () => {
 	}
 });
 
-Deno.test("LookupStore - WAL empty save and apply is a no-op", async () => {
+Deno.test("KVStore - WAL empty save and apply is a no-op", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		// no transaction, nothing staged
 		const wal = await store.WAL();
 		await wal.save();
@@ -302,11 +302,11 @@ Deno.test("LookupStore - WAL empty save and apply is a no-op", async () => {
 	}
 });
 
-Deno.test("LookupStore - WAL apply updates existing key on disk", async () => {
+Deno.test("KVStore - WAL apply updates existing key on disk", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
 		// Write initial value and flush to disk
-		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store1 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx1 = store1.transaction();
 		tx1.set(makeKey(1), makeValue(1));
 		tx1.apply();
@@ -317,7 +317,7 @@ Deno.test("LookupStore - WAL apply updates existing key on disk", async () => {
 		store1.close();
 
 		// Reopen and overwrite via WAL
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		const tx2 = store2.transaction();
 		tx2.set(makeKey(1), makeValue(99));
 		tx2.apply();
@@ -328,7 +328,7 @@ Deno.test("LookupStore - WAL apply updates existing key on disk", async () => {
 		store2.close();
 
 		// Reopen again — should see updated value
-		const store3 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store3 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		assertEquals(await store3.get(makeKey(1)), makeValue(99));
 		store3.close();
 	} finally {
@@ -336,10 +336,10 @@ Deno.test("LookupStore - WAL apply updates existing key on disk", async () => {
 	}
 });
 
-Deno.test("LookupStore - multiple WAL cycles accumulate all keys", async () => {
+Deno.test("KVStore - multiple WAL cycles accumulate all keys", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 
 		for (let batch = 0; batch < 3; batch++) {
 			const tx = store.transaction();
@@ -352,7 +352,7 @@ Deno.test("LookupStore - multiple WAL cycles accumulate all keys", async () => {
 		}
 		store.close();
 
-		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		for (let i = 0; i < 30; i++) {
 			assertEquals(await store2.get(makeKey(i)), makeValue(i), `key ${i}`);
 		}
@@ -362,7 +362,7 @@ Deno.test("LookupStore - multiple WAL cycles accumulate all keys", async () => {
 	}
 });
 
-Deno.test("LookupStore - staged value visible after apply, cleared after WAL save", async () => {
+Deno.test("KVStore - staged value visible after apply, cleared after WAL save", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -380,7 +380,7 @@ Deno.test("LookupStore - staged value visible after apply, cleared after WAL sav
 	});
 });
 
-Deno.test("LookupStore - getMany with duplicate keys returns same value for each", async () => {
+Deno.test("KVStore - getMany with duplicate keys returns same value for each", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.set(makeKey(1), makeValue(1));
@@ -393,7 +393,7 @@ Deno.test("LookupStore - getMany with duplicate keys returns same value for each
 	});
 });
 
-Deno.test("LookupStore - tx.get sees store-staged value (not yet on disk)", async () => {
+Deno.test("KVStore - tx.get sees store-staged value (not yet on disk)", async () => {
 	await withStore(async (store) => {
 		// Stage key in outer store
 		const tx1 = store.transaction();
@@ -407,13 +407,13 @@ Deno.test("LookupStore - tx.get sees store-staged value (not yet on disk)", asyn
 	});
 });
 
-Deno.test("LookupStore - invalid key codec stride throws", async () => {
+Deno.test("KVStore - invalid key codec stride throws", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
 		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
 		let threw = false;
 		try {
-			await createLookupStore({ name: "test", path: dir, keyCodec: badCodec as never, valueCodec: VALUE_CODEC });
+			await createKVStore({ name: "test", path: dir, keyCodec: badCodec as never, valueCodec: VALUE_CODEC });
 		} catch {
 			threw = true;
 		}
@@ -423,13 +423,13 @@ Deno.test("LookupStore - invalid key codec stride throws", async () => {
 	}
 });
 
-Deno.test("LookupStore - invalid value codec stride throws", async () => {
+Deno.test("KVStore - invalid value codec stride throws", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
 		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
 		let threw = false;
 		try {
-			await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: badCodec as never });
+			await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: badCodec as never });
 		} catch {
 			threw = true;
 		}
@@ -439,7 +439,7 @@ Deno.test("LookupStore - invalid value codec stride throws", async () => {
 	}
 });
 
-Deno.test("LookupStore - WAL with transaction open throws", async () => {
+Deno.test("KVStore - WAL with transaction open throws", async () => {
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		let threw = false;
@@ -453,7 +453,7 @@ Deno.test("LookupStore - WAL with transaction open throws", async () => {
 	});
 });
 
-Deno.test("LookupStore - get with transaction open throws", async () => {
+Deno.test("KVStore - get with transaction open throws", async () => {
 	await withStore(async (store) => {
 		// get/getMany on store (not tx) are fine even during tx — no assertion
 		// but opening a second tx should throw

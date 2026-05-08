@@ -2,9 +2,9 @@ import { BytesCodec } from "@nomadshiba/codec";
 import { DatabaseSync } from "node:sqlite";
 import { createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { createBlobStore } from "~/lib/storage/BlobStore.ts";
-import { createLookupStore } from "~/lib/storage/LookupStore.ts";
+import { createKVStore } from "~/lib/storage/KVStore.ts";
 
-// ─── LookupStore constants ────────────────────────────────────────────────────
+// ─── KVStore constants ────────────────────────────────────────────────────────
 const KEY_SIZE = 32;
 const VALUE_SIZE = 128;
 const KV_TOTAL = 1_000_000;
@@ -31,12 +31,12 @@ function randomBytes(size: number): Uint8Array {
 	return buf;
 }
 
-// ─── LookupStore ─────────────────────────────────────────────────────────────
+// ─── KVStore ─────────────────────────────────────────────────────────────────
 
-async function benchmarkLookupStore(keys: Uint8Array[], values: Uint8Array[]) {
-	console.log("\n  LookupStore");
+async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
+	console.log("\n  KVStore");
 
-	const store = await createLookupStore({
+	const store = await createKVStore({
 		name: "bench_kv",
 		path: "data/bench_kv",
 		keyCodec: new BytesCodec({ size: KEY_SIZE }),
@@ -87,7 +87,7 @@ async function benchmarkLookupStore(keys: Uint8Array[], values: Uint8Array[]) {
 	}
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "LookupStore", writeOps, readOps, batchReadOps, fileSize };
+	return { name: "KVStore", writeOps, readOps, batchReadOps, fileSize };
 }
 
 // ─── SQLite ───────────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ async function main() {
 	}
 
 	const kvResults = [
-		await benchmarkLookupStore(keys, values),
+		await benchmarkKVStore(keys, values),
 		await benchmarkSQLite(keys, values),
 	];
 
