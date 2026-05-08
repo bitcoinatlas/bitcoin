@@ -3,14 +3,15 @@ import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { v7 } from "@std/uuid";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
-import { readFile, writeFile } from "~/lib/utils/fs.ts";
+import { writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "./Store.ts";
 
 /**
  * A persistent key-value store for fixed-size keys and values.
  *
  * Keys are kept sorted in a single flat file: [key|value][key|value]...
- * Reads use binary search. Writes are staged in memory and flushed via WAL.
+ * The entire file is cached in memory; reads are synchronous slices.
+ * Writes are staged in memory and flushed via WAL.
  *
  * - Keys and values must have a fixed codec stride (> 0).
  * - Supports point lookups and batch lookups.
@@ -54,29 +55,28 @@ export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>)
 		throw new Error("File size must be a multiple of entry size (keyStride + valueStride)");
 	}
 
-	// In-memory index: encoded key → file offset of the entry
+	// In-memory cache of entire data file — reads are synchronous slices
+	let dataBuf: Uint8Array = fileSize > 0 ? await Deno.readFile(dataPath) : new Uint8Array(0);
+
+	// In-memory index: encoded key → byte offset in dataBuf
 	const index = new Uint8ArrayMap<number>(Math.max(1024, Math.ceil(fileSize / entrySize) * 2));
 	let entryCount = fileSize / entrySize;
 
-	// Build index from existing data
+	// Build index from in-memory buffer (no async I/O per entry)
 	for (let i = 0; i < entryCount; i++) {
 		const offset = i * entrySize;
-		await file.seek(offset, Deno.SeekMode.Start);
-		const keyBytes = await readFile(file, keyCodec.stride);
-		index.set(new Uint8Array(keyBytes), offset);
+		index.set(dataBuf.subarray(offset, offset + keyCodec.stride), offset);
 	}
 
 	// Staged changes: encoded key → encoded value (not yet on disk)
 	const stagedChanges = new Uint8ArrayMap<Uint8Array>(1024);
 
-	async function getByBytes(keyBytes: Uint8Array): Promise<V | undefined> {
+	function getByBytes(keyBytes: Uint8Array): V | undefined {
 		const staged = stagedChanges.get(keyBytes);
 		if (staged !== undefined) return valueCodec.decode(staged)[0];
 		const offset = index.get(keyBytes);
 		if (offset === undefined) return undefined;
-		await file.seek(offset + keyCodec.stride, Deno.SeekMode.Start);
-		const valueBytes = await readFile(file, valueCodec.stride);
-		return valueCodec.decode(valueBytes)[0];
+		return valueCodec.decode(dataBuf.subarray(offset + keyCodec.stride, offset + entrySize))[0];
 	}
 
 	async function get(key: K): Promise<V | undefined> {
@@ -84,7 +84,7 @@ export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>)
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
-		return Promise.all(keys.map((k) => get(k)));
+		return keys.map((k) => getByBytes(keyCodec.encode(k)));
 	}
 
 	let currentTransaction: LookupStoreTransaction<K, V> | null = null;
@@ -162,6 +162,13 @@ export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>)
 				const buf = await Deno.readFile(walPath);
 				const view = new DataView(buf.buffer);
 				const count = view.getUint32(0, true);
+
+				// Split into updates (existing entries) and appends (new entries)
+				type UpdateEntry = { offset: number; valueBytes: Uint8Array };
+				const updates: UpdateEntry[] = [];
+				const appendBuf = new Uint8Array(count * entrySize); // upper bound
+				let appendCount = 0;
+
 				let pos = 4;
 				for (let i = 0; i < count; i++) {
 					const keyBytes = buf.subarray(pos, pos + keyCodec.stride);
@@ -171,18 +178,41 @@ export async function createLookupStore<K, V>(options: LookupStoreOptions<K, V>)
 
 					const existing = index.get(keyBytes);
 					if (existing !== undefined) {
-						// Update in place
-						await file.seek(existing + keyCodec.stride, Deno.SeekMode.Start);
-						await writeFile(file, valueBytes);
+						updates.push({ offset: existing, valueBytes });
 					} else {
-						// Append new entry
-						const offset = entryCount * entrySize;
-						await file.seek(offset, Deno.SeekMode.Start);
-						await writeFile(file, keyBytes);
-						await writeFile(file, valueBytes);
-						index.set(new Uint8Array(keyBytes), offset);
-						entryCount++;
+						const entryOffset = appendCount * entrySize;
+						appendBuf.set(keyBytes, entryOffset);
+						appendBuf.set(valueBytes, entryOffset + keyCodec.stride);
+						// Register in index (offset relative to file, resolved after append)
+						index.set(new Uint8Array(keyBytes), (entryCount + appendCount) * entrySize);
+						appendCount++;
 					}
+				}
+
+				// Apply updates to in-memory buffer and disk
+				updates.sort((a, b) => a.offset - b.offset);
+				for (const { offset, valueBytes } of updates) {
+					// Update in-memory cache
+					dataBuf.set(valueBytes, offset + keyCodec.stride);
+					// Update on disk
+					await file.seek(offset + keyCodec.stride, Deno.SeekMode.Start);
+					await writeFile(file, valueBytes);
+				}
+
+				// Batch append all new entries in one write
+				if (appendCount > 0) {
+					const appendSlice = appendBuf.subarray(0, appendCount * entrySize);
+
+					// Grow in-memory buffer
+					const newBuf = new Uint8Array(dataBuf.length + appendSlice.length);
+					newBuf.set(dataBuf);
+					newBuf.set(appendSlice, dataBuf.length);
+					dataBuf = newBuf;
+
+					// Append to disk
+					await file.seek(entryCount * entrySize, Deno.SeekMode.Start);
+					await writeFile(file, appendSlice);
+					entryCount += appendCount;
 				}
 			},
 			async discard(): Promise<void> {

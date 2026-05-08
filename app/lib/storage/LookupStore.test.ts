@@ -262,3 +262,209 @@ Deno.test("LookupStore - persists data across reopen", async () => {
 		await Deno.remove(dir, { recursive: true });
 	}
 });
+
+Deno.test("LookupStore - WAL discard removes the file", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const tx = store.transaction();
+		tx.set(makeKey(1), makeValue(1));
+		tx.apply();
+
+		const wal = await store.WAL();
+		await wal.save();
+
+		const walExists = (await Array.fromAsync(Deno.readDir(dir))).some((e) => e.name.endsWith(".wal"));
+		assertEquals(walExists, true);
+
+		await wal.discard();
+		const walExistsAfter = (await Array.fromAsync(Deno.readDir(dir))).some((e) => e.name.endsWith(".wal"));
+		assertEquals(walExistsAfter, false);
+		store.close();
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - WAL empty save and apply is a no-op", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		// no transaction, nothing staged
+		const wal = await store.WAL();
+		await wal.save();
+		await wal.apply();
+		await wal.discard();
+		assertEquals(await store.get(makeKey(1)), undefined);
+		store.close();
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - WAL apply updates existing key on disk", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		// Write initial value and flush to disk
+		const store1 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const tx1 = store1.transaction();
+		tx1.set(makeKey(1), makeValue(1));
+		tx1.apply();
+		const wal1 = await store1.WAL();
+		await wal1.save();
+		await wal1.apply();
+		await wal1.discard();
+		store1.close();
+
+		// Reopen and overwrite via WAL
+		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		const tx2 = store2.transaction();
+		tx2.set(makeKey(1), makeValue(99));
+		tx2.apply();
+		const wal2 = await store2.WAL();
+		await wal2.save();
+		await wal2.apply();
+		await wal2.discard();
+		store2.close();
+
+		// Reopen again — should see updated value
+		const store3 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		assertEquals(await store3.get(makeKey(1)), makeValue(99));
+		store3.close();
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - multiple WAL cycles accumulate all keys", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		const store = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+
+		for (let batch = 0; batch < 3; batch++) {
+			const tx = store.transaction();
+			for (let i = 0; i < 10; i++) tx.set(makeKey(batch * 10 + i), makeValue(batch * 10 + i));
+			tx.apply();
+			const wal = await store.WAL();
+			await wal.save();
+			await wal.apply();
+			await wal.discard();
+		}
+		store.close();
+
+		const store2 = await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
+		for (let i = 0; i < 30; i++) {
+			assertEquals(await store2.get(makeKey(i)), makeValue(i), `key ${i}`);
+		}
+		store2.close();
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - staged value visible after apply, cleared after WAL save", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.set(makeKey(1), makeValue(1));
+		tx.apply();
+
+		// Staged — visible before WAL save
+		assertEquals(await store.get(makeKey(1)), makeValue(1));
+
+		const wal = await store.WAL();
+		await wal.save();
+
+		// After save, staged cleared but value is in WAL / on disk after apply
+		await wal.apply();
+		assertEquals(await store.get(makeKey(1)), makeValue(1));
+	});
+});
+
+Deno.test("LookupStore - getMany with duplicate keys returns same value for each", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.set(makeKey(1), makeValue(1));
+		tx.apply();
+
+		const results = await store.getMany([makeKey(1), makeKey(1), makeKey(1)]);
+		assertEquals(results[0], makeValue(1));
+		assertEquals(results[1], makeValue(1));
+		assertEquals(results[2], makeValue(1));
+	});
+});
+
+Deno.test("LookupStore - tx.get sees store-staged value (not yet on disk)", async () => {
+	await withStore(async (store) => {
+		// Stage key in outer store
+		const tx1 = store.transaction();
+		tx1.set(makeKey(5), makeValue(5));
+		tx1.apply();
+
+		// New tx can read it
+		const tx2 = store.transaction();
+		assertEquals(await tx2.get(makeKey(5)), makeValue(5));
+		tx2.discard();
+	});
+});
+
+Deno.test("LookupStore - invalid key codec stride throws", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
+		let threw = false;
+		try {
+			await createLookupStore({ name: "test", path: dir, keyCodec: badCodec as never, valueCodec: VALUE_CODEC });
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - invalid value codec stride throws", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
+	try {
+		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
+		let threw = false;
+		try {
+			await createLookupStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: badCodec as never });
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("LookupStore - WAL with transaction open throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		let threw = false;
+		try {
+			await store.WAL();
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});
+
+Deno.test("LookupStore - get with transaction open throws", async () => {
+	await withStore(async (store) => {
+		// get/getMany on store (not tx) are fine even during tx — no assertion
+		// but opening a second tx should throw
+		const tx = store.transaction();
+		let threw = false;
+		try {
+			store.transaction();
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});

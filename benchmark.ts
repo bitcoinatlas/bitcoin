@@ -22,7 +22,6 @@ const ARRAY_BATCH_SIZE = 100_000;
 const BLOB_SIZE = 512;
 const BLOB_TOTAL = 100_000;
 const BLOB_READ_SAMPLES = 5_000;
-const BLOB_RANGE_SIZE = 100;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -184,11 +183,12 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 
 	// Reads (sequential range)
 	console.log(`    Reading (range/${ARRAY_RANGE_SIZE})...`);
+	const rangeIndices = new Array<number>(ARRAY_RANGE_SIZE);
 	const rangeStart = performance.now();
 	for (let i = 0; i < ARRAY_READ_SAMPLES; i += ARRAY_RANGE_SIZE) {
-		for (let j = i; j < Math.min(i + ARRAY_RANGE_SIZE, ARRAY_READ_SAMPLES); j++) {
-			await store.get(j);
-		}
+		const end = Math.min(i + ARRAY_RANGE_SIZE, ARRAY_READ_SAMPLES);
+		for (let k = 0; k < end - i; k++) rangeIndices[k] = i + k;
+		await store.getMany(rangeIndices.slice(0, end - i));
 	}
 	const rangeOps = ARRAY_READ_SAMPLES / ((performance.now() - rangeStart) / 1000);
 	console.log(`      ${rangeOps.toFixed(0)} ops/sec`);
@@ -225,26 +225,19 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 	await wal.save();
 	await wal.apply();
 	await wal.discard();
-	const writeOps = BLOB_TOTAL / ((performance.now() - writeStart) / 1000);
-	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
+	const writeElapsed = (performance.now() - writeStart) / 1000;
+	const writeOps = BLOB_TOTAL / writeElapsed;
+	const writeMBps = (BLOB_TOTAL * BLOB_SIZE) / 1024 / 1024 / writeElapsed;
+	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec  (${writeMBps.toFixed(1)} MB/s)`);
 
 	// Reads (single)
 	console.log("    Reading (single)...");
 	const readStart = performance.now();
 	for (let i = 0; i < BLOB_READ_SAMPLES; i++) await store.get(pointers[i]!, BLOB_SIZE);
-	const readOps = BLOB_READ_SAMPLES / ((performance.now() - readStart) / 1000);
-	console.log(`      ${readOps.toFixed(0)} ops/sec`);
-
-	// Reads (sequential range)
-	console.log(`    Reading (range/${BLOB_RANGE_SIZE})...`);
-	const rangeStart = performance.now();
-	for (let i = 0; i < BLOB_READ_SAMPLES; i += BLOB_RANGE_SIZE) {
-		for (let j = i; j < Math.min(i + BLOB_RANGE_SIZE, BLOB_READ_SAMPLES); j++) {
-			await store.get(pointers[j]!, BLOB_SIZE);
-		}
-	}
-	const rangeOps = BLOB_READ_SAMPLES / ((performance.now() - rangeStart) / 1000);
-	console.log(`      ${rangeOps.toFixed(0)} ops/sec`);
+	const readElapsed = (performance.now() - readStart) / 1000;
+	const readOps = BLOB_READ_SAMPLES / readElapsed;
+	const readMBps = (BLOB_READ_SAMPLES * BLOB_SIZE) / 1024 / 1024 / readElapsed;
+	console.log(`      ${readOps.toFixed(0)} ops/sec  (${readMBps.toFixed(1)} MB/s)`);
 
 	let fileSize = 0;
 	for await (const e of Deno.readDir("data/bench_blob")) {
@@ -254,7 +247,7 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 	}
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "BlobStore", writeOps, readOps, rangeOps, fileSize };
+	return { name: "BlobStore", writeOps, writeMBps, readOps, readMBps, fileSize };
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -321,15 +314,16 @@ async function main() {
 
 	const blobResult = await benchmarkBlobStore(blobItems);
 
-	console.log("\n" + "=".repeat(62));
+	console.log("\n" + "=".repeat(65));
 	console.log("BLOB RESULTS");
-	console.log("=".repeat(62));
-	console.log("Store              Writes      Single       Range      Size");
-	console.log("-".repeat(62));
+	console.log("=".repeat(65));
+	console.log("Store              Writes    Write MB/s    Single  Read MB/s  Size");
+	console.log("-".repeat(65));
 	console.log(
 		`${blobResult.name.padEnd(17)} ${blobResult.writeOps.toFixed(0).padStart(9)} ${
-			blobResult.readOps.toFixed(0).padStart(11)
-		} ${blobResult.rangeOps.toFixed(0).padStart(11)} ${(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
+			blobResult.writeMBps.toFixed(1).padStart(11)
+		} ${blobResult.readOps.toFixed(0).padStart(9)} ${blobResult.readMBps.toFixed(1).padStart(9)} ${
+			(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
 	);
 
 	await Deno.remove("data", { recursive: true }).catch(() => {});

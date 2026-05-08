@@ -241,3 +241,154 @@ Deno.test("BlobStore - blob exceeding chunk size throws", async () => {
 		tx.discard();
 	}, { chunkByteSize: 16 });
 });
+
+Deno.test("BlobStore - staged blob readable after apply but before WAL save", async () => {
+	await withStore(async (store) => {
+		const data = makeData(0xCC, 8);
+		const tx = store.transaction();
+		const pointer = tx.append(data);
+		tx.apply();
+
+		// Not yet on disk, but readable from staged
+		assertEquals(await store.get(pointer, 8), data);
+	});
+});
+
+Deno.test("BlobStore - blob straddling chunk boundary rolls to next chunk with gap", async () => {
+	// chunkByteSize = 16
+	// First blob: 10 bytes → pointer 0, occupies bytes 0-9 of chunk_0
+	// Second blob: 10 bytes → won't fit in remaining 6 bytes → rolls to chunk_1
+	// tx.append now uses the same roll logic as appendBlobToDisk, so pointer is canonical
+	const dir = await Deno.makeTempDir({ prefix: "blobstore-test-" });
+	try {
+		const store1 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
+		const tx1 = store1.transaction();
+		const p0 = tx1.append(makeData(0xAA, 10));
+		assertEquals(p0, 0);
+		tx1.apply();
+		const wal1 = await store1.WAL();
+		await wal1.save();
+		await wal1.apply();
+		await wal1.discard();
+
+		// Reopen so stagedLength reflects actual totalLength from disk
+		const store2 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
+		const tx2 = store2.transaction();
+		const p1 = tx2.append(makeData(0xBB, 10));
+		assertEquals(p1, 16); // correctly rolled to chunk_1 start
+		tx2.apply();
+		const wal2 = await store2.WAL();
+		await wal2.save();
+		await wal2.apply();
+		await wal2.discard();
+
+		const store3 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
+		assertEquals(await store3.get(0, 10), makeData(0xAA, 10));
+		assertEquals(await store3.get(16, 10), makeData(0xBB, 10));
+		assertEquals(store3.length(), 26); // 16 + 10
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("BlobStore - multiple chunks reopen recovers correct total length", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "blobstore-test-" });
+	try {
+		// chunkByteSize = 16, write 3 blobs of 8 bytes each → spans 2 chunks
+		const store1 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
+		const tx = store1.transaction();
+		tx.append(makeData(1, 8));  // chunk_0 bytes 0-7
+		tx.append(makeData(2, 8));  // chunk_0 bytes 8-15 (fills it)
+		tx.append(makeData(3, 8));  // chunk_1 bytes 0-7
+		tx.apply();
+		const wal = await store1.WAL();
+		await wal.save();
+		await wal.apply();
+		await wal.discard();
+
+		// Reopen — should recover length = 2*16 + 8 = 40? No.
+		// chunk_0 = 16 bytes, chunk_1 = 8 bytes → totalLength = 1*16 + 8 = 24
+		const store2 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
+		assertEquals(store2.length(), 24);
+		assertEquals(await store2.get(0, 8), makeData(1, 8));
+		assertEquals(await store2.get(8, 8), makeData(2, 8));
+		assertEquals(await store2.get(16, 8), makeData(3, 8));
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("BlobStore - get on pointer beyond committed length throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(makeData(1, 8));
+		tx.apply();
+		const wal = await store.WAL();
+		await wal.save();
+		await wal.apply();
+		await wal.discard();
+
+		// pointer 999 doesn't exist
+		await assertRejects(() => store.get(999, 8));
+	});
+});
+
+Deno.test("BlobStore - WAL with transaction open throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		let threw = false;
+		try {
+			await store.WAL();
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});
+
+Deno.test("BlobStore - length after discard stays at pre-tx value", async () => {
+	await withStore(async (store) => {
+		const tx1 = store.transaction();
+		tx1.append(makeData(1, 8));
+		tx1.apply();
+		assertEquals(store.length(), 8);
+
+		const tx2 = store.transaction();
+		tx2.append(makeData(2, 8));
+		assertEquals(tx2.length(), 16);
+		tx2.discard();
+
+		assertEquals(store.length(), 8);
+	});
+});
+
+Deno.test("BlobStore - zero-length blob append and read", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		const p = tx.append(new Uint8Array(0));
+		assertEquals(p, 0);
+		tx.apply();
+		const wal = await store.WAL();
+		await wal.save();
+		await wal.apply();
+		await wal.discard();
+
+		const result = await store.get(0, 0);
+		assertEquals(result.length, 0);
+	});
+});
+
+Deno.test("BlobStore - tx.get on staged value after outer apply", async () => {
+	await withStore(async (store) => {
+		// Stage blob in outer store
+		const tx1 = store.transaction();
+		const p = tx1.append(makeData(0xDE, 4));
+		tx1.apply();
+
+		// New tx can read it via store.get fallback
+		const tx2 = store.transaction();
+		assertEquals(await tx2.get(p, 4), makeData(0xDE, 4));
+		tx2.discard();
+	});
+});

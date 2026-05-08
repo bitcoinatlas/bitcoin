@@ -61,6 +61,21 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	const stagedAppends: Array<{ pointer: number; data: Uint8Array }> = [];
 	let stagedLength = totalLength;
 
+	/**
+	 * Compute the canonical pointer for a blob of `dataSize` bytes given the
+	 * current virtual stream position `pos`. Mirrors the roll-to-next-chunk
+	 * logic in appendBlobToDisk so tx.append and disk writes always agree.
+	 */
+	function nextPointer(pos: number, dataSize: number): number {
+		const offsetInChunk = pos % chunkByteSize;
+		if (offsetInChunk + dataSize > chunkByteSize) {
+			// Roll to start of next chunk
+			const chunkIndex = Math.floor(pos / chunkByteSize);
+			return (chunkIndex + 1) * chunkByteSize;
+		}
+		return pos;
+	}
+
 	async function getFromDisk(pointer: number, length: number): Promise<Uint8Array> {
 		const chunkIndex = Math.floor(pointer / chunkByteSize);
 		const offset = pointer % chunkByteSize;
@@ -112,9 +127,9 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				if (data.length > chunkByteSize) {
 					throw new Error(`Blob size (${data.length}) exceeds chunk limit (${chunkByteSize})`);
 				}
-				const pointer = txLength;
+				const pointer = nextPointer(txLength, data.length);
 				txAppends.push({ pointer, data: new Uint8Array(data) });
-				txLength += data.length;
+				txLength = pointer + data.length;
 				return pointer;
 			},
 			async get(pointer: number, length: number): Promise<Uint8Array> {
@@ -146,30 +161,9 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	async function appendBlobToDisk(data: Uint8Array): Promise<number> {
-		const chunkIndex = Math.floor(totalLength / chunkByteSize);
-		const offsetInChunk = totalLength % chunkByteSize;
+		const pointer = nextPointer(totalLength, data.length);
+		const chunkIndex = Math.floor(pointer / chunkByteSize);
 		const chunkPath = join(path, `chunk_${chunkIndex}`);
-
-		// Roll to next chunk if blob doesn't fit
-		if (offsetInChunk + data.length > chunkByteSize) {
-			// Write remainder of current chunk as padding? No — just roll over.
-			// BlobStore contract: a single blob must fit within one chunk.
-			if (data.length > chunkByteSize) {
-				throw new Error(`Blob size (${data.length}) exceeds chunk limit (${chunkByteSize})`);
-			}
-			const nextChunkIndex = chunkIndex + 1;
-			const nextChunkPath = join(path, `chunk_${nextChunkIndex}`);
-			// Advance totalLength to start of next chunk
-			totalLength = nextChunkIndex * chunkByteSize;
-			const file = await Deno.open(nextChunkPath, { create: true, write: true, append: true });
-			try {
-				await writeFile(file, data);
-			} finally {
-				file.close();
-			}
-			totalLength += data.length;
-			return nextChunkIndex * chunkByteSize;
-		}
 
 		const file = await Deno.open(chunkPath, { create: true, write: true, append: true });
 		try {
@@ -177,8 +171,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		} finally {
 			file.close();
 		}
-		const pointer = totalLength;
-		totalLength += data.length;
+		totalLength = pointer + data.length;
 		return pointer;
 	}
 

@@ -224,3 +224,201 @@ Deno.test("ArrayStore - empty transaction WAL saves and applies cleanly", async 
 		assertEquals(store.length(), 0);
 	});
 });
+
+Deno.test("ArrayStore - tx.set overwrites within-tx append before apply", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		const i = tx.append(10);
+		tx.set(i, 99);
+		tx.apply();
+		assertEquals(await store.get(0), 99);
+	});
+});
+
+Deno.test("ArrayStore - tx.set out of bounds throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(1);
+		let threw = false;
+		try {
+			tx.set(5, 99);
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});
+
+Deno.test("ArrayStore - tx.get negative index throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(1);
+		let threw = false;
+		try {
+			await tx.get(-1);
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});
+
+Deno.test("ArrayStore - get negative index throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(1);
+		tx.apply();
+		let threw = false;
+		try {
+			await store.get(-1);
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+	});
+});
+
+Deno.test("ArrayStore - getMany with duplicate indices returns correct values", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(42);
+		tx.append(7);
+		tx.apply();
+
+		const results = await store.getMany([0, 1, 0, 1]);
+		assertEquals(results[0], 42);
+		assertEquals(results[1], 7);
+		assertEquals(results[2], 42);
+		assertEquals(results[3], 7);
+	});
+});
+
+Deno.test("ArrayStore - getMany out of bounds throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		tx.append(1);
+		tx.apply();
+
+		let threw = false;
+		try {
+			await store.getMany([0, 5]);
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+	});
+});
+
+Deno.test("ArrayStore - getMany mixes staged sets, staged appends, and disk", async () => {
+	await withStore(async (store) => {
+		// Flush two items to disk
+		const tx1 = store.transaction();
+		tx1.append(10);
+		tx1.append(20);
+		tx1.apply();
+		const wal = await store.WAL();
+		await wal.save();
+		await wal.apply();
+		await wal.discard();
+
+		// Stage a set on index 0 and a new append
+		const tx2 = store.transaction();
+		tx2.set(0, 99);
+		tx2.append(30);
+		tx2.apply();
+
+		const results = await store.getMany([0, 1, 2]);
+		assertEquals(results[0], 99);  // staged set
+		assertEquals(results[1], 20);  // disk
+		assertEquals(results[2], 30);  // staged append
+	});
+});
+
+Deno.test("ArrayStore - WAL with both appends and sets persists correctly", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "arraystore-test-" });
+	try {
+		// Flush base items to disk
+		const store1 = await createArrayStore({ name: "test", path: dir, codec: CODEC });
+		const tx1 = store1.transaction();
+		tx1.append(1);
+		tx1.append(2);
+		tx1.append(3);
+		tx1.apply();
+		const wal1 = await store1.WAL();
+		await wal1.save();
+		await wal1.apply();
+		await wal1.discard();
+		store1.close();
+
+		// Reopen: append new item AND update existing
+		const store2 = await createArrayStore({ name: "test", path: dir, codec: CODEC });
+		const tx2 = store2.transaction();
+		tx2.append(4);
+		tx2.set(1, 99);
+		tx2.apply();
+		const wal2 = await store2.WAL();
+		await wal2.save();
+		await wal2.apply();
+		await wal2.discard();
+		store2.close();
+
+		// Verify all changes on reopen
+		const store3 = await createArrayStore({ name: "test", path: dir, codec: CODEC });
+		assertEquals(await store3.get(0), 1);
+		assertEquals(await store3.get(1), 99); // updated
+		assertEquals(await store3.get(2), 3);
+		assertEquals(await store3.get(3), 4);  // appended
+		assertEquals(store3.length(), 4);
+		store3.close();
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("ArrayStore - WAL with transaction open throws", async () => {
+	await withStore(async (store) => {
+		const tx = store.transaction();
+		let threw = false;
+		try {
+			await store.WAL();
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+		tx.discard();
+	});
+});
+
+Deno.test("ArrayStore - codec stride validation throws on create", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "arraystore-test-" });
+	try {
+		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [0, 0] as [number, number] };
+		let threw = false;
+		try {
+			await createArrayStore({ name: "test", path: dir, codec: badCodec as never });
+		} catch {
+			threw = true;
+		}
+		assertEquals(threw, true);
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("ArrayStore - set on staged (outer) append after tx apply", async () => {
+	await withStore(async (store) => {
+		// Append in tx1, apply → staged
+		const tx1 = store.transaction();
+		tx1.append(10);
+		tx1.apply();
+
+		// tx2 can set index 0 (it's in stagedAppends)
+		const tx2 = store.transaction();
+		tx2.set(0, 55);
+		tx2.apply();
+
+		assertEquals(await store.get(0), 55);
+	});
+});

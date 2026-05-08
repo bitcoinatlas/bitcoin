@@ -56,6 +56,25 @@ export class Uint8ArrayMap<V> {
 
 		bucket.push([key.slice(), value]);
 		this._size++;
+
+		// Rehash when load factor > 0.75
+		if (this._size > this.buckets.length * 0.75) {
+			this.rehash(this.buckets.length * 2);
+		}
+	}
+
+	private rehash(newCapacity: number): void {
+		const newBuckets: Array<Array<[Uint8Array, V]>> = new Array(newCapacity);
+		for (let i = 0; i < newCapacity; i++) newBuckets[i] = [];
+		const newMask = newCapacity - 1;
+		for (const bucket of this.buckets) {
+			for (const entry of bucket) {
+				const h = this.hash(entry[0]) & newMask;
+				newBuckets[h]!.push(entry);
+			}
+		}
+		this.buckets = newBuckets;
+		this.mask = newMask;
 	}
 
 	delete(key: Uint8Array): boolean {
