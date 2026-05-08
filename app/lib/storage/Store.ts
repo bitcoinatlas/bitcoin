@@ -1,5 +1,7 @@
-import { ArrayCodec, BytesCodec, Codec, Str, U8, UnionCodec } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, Str, StructCodec, U8, UnionCodec, Void } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
+import { join } from "@std/path";
+import { BASE_DATA_DIR } from "~/constants.ts";
 
 /**
  * An in-memory transaction for a store.
@@ -19,38 +21,36 @@ export type Transaction = {
  * A Write-Ahead Log entry for a single store.
  *
  * Represents a durable record of pending changes that can survive a crash.
- * `apply()` is replayable — safe to call multiple times; subsequent calls are no-ops
- * if the changes are already applied. This is required for crash recovery.
+ * `apply()` is replayable — safe to call multiple times; This is required for crash recovery.
  *
- * - `id` — UUID that identifies this WAL, used to correlate it with an atomic flush.
- * - `save()` — persist the WAL to disk.
+ * - `save()` — write the WAL to disk. This is a separate step from `apply()` to allow for atomic flushes across multiple stores.
  * - `apply()` — replay the WAL's changes onto the store. Never fails; a failure is a bug and should panic.
- * - `discard()` — delete the WAL file if it exists. Never fails.
+ * - `discard()` — delete the WAL file if it exists.
  */
 export type WAL = {
 	id: string;
+	save(): Promise<void>;
 	apply(): Promise<void>;
 	discard(): Promise<void>;
-	save(): Promise<void>;
 };
 
 /**
  * A persistent store that supports transactional writes and WAL-based crash recovery.
  *
+ * - `name` — unique identifier for the store, used for tracking pending atomic flushes.
  * - `transaction()` — create an in-memory transaction to stage changes.
- * - `getWAL()` — return the store's existing WAL if one is on disk, or null.
- * - `createWAL()` — create a new WAL from the store's current in-memory state.
+ * - `WAL()` — return the store's existing WAL if one is on disk, or null.
+ * - `WAL({ create: true })` — if WAL doesn't exist return a new one.
  */
-export type Store = {
-	transaction(): Transaction;
-	getWAL(): Promise<WAL | null>;
-	createWAL(): Promise<WAL>;
+export type Store<T extends Transaction = Transaction> = {
+	name: string;
+	transaction(): T;
+	WAL(options: { id: string }): Promise<WAL | null>;
+	WAL(options?: { id?: undefined }): Promise<WAL>;
 };
 
-const STATE_PATH = "";
-const IDS_PATH = "";
-
-const Void = new BytesCodec({ size: 0 });
+const STATE_PATH = join(BASE_DATA_DIR, "atomic", "state.bin");
+const IDS_PATH = join(BASE_DATA_DIR, "atomic", "ids.bin");
 
 type State = Codec.InferOutput<typeof State>["kind"];
 const State = new UnionCodec({
@@ -60,9 +60,15 @@ const State = new UnionCodec({
 	"discarded": Void,
 });
 
-const IDs = new ArrayCodec(Str, { countCodec: U8 });
+const AtomicWALs = new ArrayCodec(
+	new StructCodec({
+		store: Str,
+		wal: Str,
+	}),
+	{ countCodec: U8 },
+);
 
-const atomic = {
+const atomicMeta = {
 	state: {
 		async get(): Promise<State> {
 			const data = await Deno.readFile(STATE_PATH);
@@ -70,19 +76,19 @@ const atomic = {
 			return state["kind"];
 		},
 		async set(newState: State): Promise<void> {
-			const data = State.encode({ kind: newState, value: new Uint8Array() });
+			const data = State.encode({ kind: newState, value: null });
 			await Deno.writeFile(STATE_PATH, data, { create: true });
 		},
 	},
-	ids: {
-		async get(): Promise<string[]> {
+	wals: {
+		async get(): Promise<Codec.InferOutput<typeof AtomicWALs>> {
 			if (!await exists(IDS_PATH)) return [];
 			const data = await Deno.readFile(IDS_PATH);
-			const [ids] = IDs.decode(data);
-			return ids;
+			const [entries] = AtomicWALs.decode(data);
+			return entries;
 		},
-		async set(ids: string[]): Promise<void> {
-			const data = IDs.encode(ids);
+		async set(entries: Codec.InferInput<typeof AtomicWALs>): Promise<void> {
+			const data = AtomicWALs.encode(entries);
 			await Deno.writeFile(IDS_PATH, data, { create: true });
 		},
 		async delete(): Promise<void> {
@@ -115,87 +121,56 @@ const atomic = {
  * Throws if another atomic flush is already in progress (IDs file exists).
  * Call `recover()` first to clear a previous crashed flush before retrying.
  */
-export async function atomicFlush(stores: Store[]): Promise<void> {
-	if (await atomic.ids.has()) {
+export async function atomic(stores: Store[]): Promise<void> {
+	if (await atomicMeta.wals.has()) {
 		throw new Error("Can't have multiple atomic flushes in progress");
 	}
 
-	const wals = await Promise.all(stores.map((s) => s.createWAL()));
-	const ids = wals.map((wal) => wal.id);
-	await atomic.state.set("started");
-	await atomic.ids.set(ids);
-	await Promise.all(wals.map((wal) => wal.save()));
-	await atomic.state.set("saved");
-	await Promise.all(wals.map((wal) => wal.apply()));
-	await atomic.state.set("applied");
-	await Promise.all(wals.map((wal) => wal.discard()));
-	await atomic.state.set("discarded");
-	await atomic.ids.delete();
+	const wals = await Promise.all(stores.map(async (store) => ({ store, wal: await store.WAL() })));
+	await atomicMeta.state.set("started");
+	await atomicMeta.wals.set(wals.map(({ store, wal }) => ({ store: store.name, wal: wal.id })));
+	await Promise.all(wals.map(({ wal }) => wal.save()));
+	await atomicMeta.state.set("saved");
+	await Promise.all(wals.map(({ wal }) => wal.apply()));
+	await atomicMeta.state.set("applied");
+	await Promise.all(wals.map(({ wal }) => wal.discard()));
+	await atomicMeta.state.set("discarded");
+	await atomicMeta.wals.delete();
 }
 
 /**
  * Recover from a crash by replaying any WALs found on disk.
- *
- * Two cases are handled:
- *
- * 1. **Atomic flush in progress** (IDs file exists): delegate to
- *    `recoverAtomicFlush()` which resumes from the last recorded state.
- *    WALs that belong to the atomic flush are removed from the general pool
- *    so they are not double-applied below.
- *
- * 2. **Orphan WALs** (created outside of `atomicFlush`, e.g. individual store
- *    saves): apply and discard each one independently. These are not atomic
- *    with each other; they are simply replayed in iteration order.
- *
  * Should be called once at startup before any writes.
  */
 export async function recover(stores: Store[]): Promise<void> {
-	const walsById = new Map<string, WAL>();
-	for (const store of stores) {
-		const wal = await store.getWAL();
-		if (!wal) continue;
-		walsById.set(wal.id, wal);
+	if (!await atomicMeta.wals.has()) {
+		return;
 	}
+	const state = await atomicMeta.state.get();
 
-	if (await atomic.ids.has()) {
-		const wals: WAL[] = [];
-		const ids = await atomic.ids.get();
-		for (const id of ids) {
-			const wal = walsById.get(id);
-			if (wal) wals.push(wal);
-			walsById.delete(id);
+	const storesByName = new Map(stores.map((store) => [store.name, store]));
+	const atomicWALs = await atomicMeta.wals.get();
+	const wals: WAL[] = [];
+	for (const entry of atomicWALs) {
+		const store = storesByName.get(entry.store);
+		if (!store) {
+			throw new Error(`Store ${entry.store} not found for atomic WAL recovery`);
 		}
-		await recoverAtomicFlush(wals);
+		const wal = await store.WAL({ id: entry.wal });
+		if (!wal) {
+			if (state === "applied") continue;
+			if (state === "discarded") continue;
+			throw new Error(`WAL ${entry.wal} for store ${entry.store} not found during atomic WAL recovery`);
+		}
+		wals.push(wal);
 	}
-
-	for (const wal of walsById.values()) {
-		await wal.apply();
-		await wal.discard();
-	}
-}
-
-/**
- * Resume an atomic flush that was interrupted by a crash.
- *
- * Reads the last persisted state and continues from there. Because `apply()`
- * is replayable, it is always safe to re-apply WALs that may have already
- * been applied before the crash.
- *
- * State transitions on recovery:
- * - `started`   → WALs may not all be saved; discard all and abort.
- * - `saved`     → WALs are all on disk; apply all, then discard.
- * - `applied`   → Changes are live; just finish discarding WALs.
- * - `discarded` → WALs should all be gone; discard defensively and clean up.
- */
-async function recoverAtomicFlush(wals: WAL[]): Promise<void> {
-	const state = await atomic.state.get();
 
 	if (state === "started") {
 		// Most likely failed while saving WALs. Can't be sure which ones were saved, so just discard all of them.
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomic.ids.delete();
+		await atomicMeta.wals.delete();
 		return;
 	}
 
@@ -204,12 +179,12 @@ async function recoverAtomicFlush(wals: WAL[]): Promise<void> {
 		for (const wal of wals) {
 			await wal.apply();
 		}
-		await atomic.state.set("applied");
+		await atomicMeta.state.set("applied");
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomic.state.set("discarded");
-		await atomic.ids.delete();
+		await atomicMeta.state.set("discarded");
+		await atomicMeta.wals.delete();
 		return;
 	}
 
@@ -218,8 +193,8 @@ async function recoverAtomicFlush(wals: WAL[]): Promise<void> {
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomic.state.set("discarded");
-		await atomic.ids.delete();
+		await atomicMeta.state.set("discarded");
+		await atomicMeta.wals.delete();
 		return;
 	}
 
@@ -228,9 +203,11 @@ async function recoverAtomicFlush(wals: WAL[]): Promise<void> {
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomic.ids.delete();
+		await atomicMeta.wals.delete();
 		return;
 	}
 
 	throw new Error(`Invalid atomic flush state: ${state satisfies never}`);
 }
+
+

@@ -1,7 +1,7 @@
 import { U32LE } from "@nomadshiba/codec";
 import { ArrayStore } from "../storage/ArrayStore.ts";
 import { Bytes32 } from "../codec/primitives.ts";
-import { ChunkedBlobStore } from "../storage/ChunkedBlobStore.ts";
+import { BlobStore } from "../storage/BlobStore.ts";
 import { FixedKVStore } from "../storage/FixedKVStore.ts";
 import { Block } from "./Block.ts";
 import { StoredBlock } from "./codec/stored/StoredBlock.ts";
@@ -16,7 +16,7 @@ export class Blockchain {
 	public readonly blockHashToHeight = new FixedKVStore("./data/hashToHeight", [Bytes32, U32LE]);
 	public readonly blockHeightToHeader = new ArrayStore("./data/headers", WireBlockHeader);
 	public readonly blockHeightToPointer = new ArrayStore("./data/hashToHeight", U32LE);
-	public readonly orderedBlocks = new ChunkedBlobStore("./data/chain");
+	public readonly orderedBlocks = new BlobStore("./data/chain");
 	public readonly unorderedBlocks = new FixedKVStore("./data/blocks", [Bytes32, StoredBlock]);
 	public readonly txIdToPointer = new FixedKVStore("./data/txs", [Bytes32, StoredPointer]);
 
@@ -37,26 +37,32 @@ export class Blockchain {
 				return new PeerChainNode({ header, cumulativeWork, pointer });
 			}));
 		} else {
-			this.blockHeightToPointer.truncate(0);
-			this.orderedBlocks.truncate(0);
+			await this.blockHeightToPointer.truncate(0);
+			await this.orderedBlocks.truncate(0);
 			// TODO: we also should clear the kvs.
 			// also later reindexing on reorg can be weird. (reorg isnt handled here btw)
 			const [header] = WireBlockHeader.decode(GENESIS_BLOCK_HEADER);
 			const pointer = null;
 			const cumulativeWork = workFromHeader(header);
 			this.localChain.push(new PeerChainNode({ header, cumulativeWork, pointer }));
-			this.blockHeightToHeader.push(header);
+			const tx = this.blockHeightToHeader.transaction();
+			tx.push(header);
+			await tx.commit();
+			await this.blockHeightToHeader.finalize();
 		}
 	}
 
 	async pushBlockHeader(headers: WireBlockHeader[]): Promise<void> {
 		const oldHeight = await this.blockHeightToHeader.length();
-		await this.blockHeightToHeader.concat(headers);
-		const tx = this.blockHashToHeight.transaction();
-		for (let index = 0; index < headers.length; index++) {
-			tx.set(headers[index]!.hash, oldHeight + index);
-		}
+		const tx = this.blockHeightToHeader.transaction();
+		tx.concat(headers);
 		await tx.commit();
+		await this.blockHeightToHeader.finalize();
+		const kvTx = this.blockHashToHeight.transaction();
+		for (let index = 0; index < headers.length; index++) {
+			kvTx.set(headers[index]!.hash, oldHeight + index);
+		}
+		await kvTx.commit();
 	}
 
 	async getBlockByHeight(height: number): Promise<Block | undefined> {

@@ -1,296 +1,176 @@
-import type { Codec } from "@nomadshiba/codec";
+import { ArrayCodec, type Codec, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
-import { readFileFull, writeFileFull } from "../utils/fs.ts";
-import { Mutex } from "../Mutex.ts";
-import type { Transaction, Transactionable } from "./Transaction.ts";
+import { join } from "@std/path";
+import { v7 } from "@std/uuid";
+import { readFile, writeFile } from "~/lib/utils/fs.ts";
+import type { Store, Transaction, WAL } from "./Store.ts";
 
-// ---------------------------------------------------------------------------
-// Transaction
-// ---------------------------------------------------------------------------
-
-export class ArrayStoreTransaction<T extends Codec<any>> implements Transaction {
-	private readonly staged: Codec.Infer<T>[] = [];
-	private committed = false;
-
-	constructor(private readonly store: ArrayStore<T>) {}
-
-	push(item: Codec.Infer<T>): void {
-		this.staged.push(item);
-	}
-
-	concat(items: Codec.Infer<T>[]): void {
-		for (const item of items) this.staged.push(item);
-	}
-
-	async commit(): Promise<void> {
-		if (this.committed) throw new Error("Transaction already committed");
-		await this.store.writeWal(this.staged);
-		this.committed = true;
-	}
-
-	rollback(): void {
-		this.staged.length = 0;
-		this.store.releaseTransaction();
-	}
+export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>> {
+	get(index: number): Promise<T>;
+	length(): number;
+	close(): void;
 }
 
-// ---------------------------------------------------------------------------
-// Store
-// ---------------------------------------------------------------------------
+export interface ArrayStoreTransaction<T> extends Transaction {
+	get(index: number): Promise<T>;
+	set(index: number, value: T): void;
+	append(value: T): number;
+	length(): number;
+}
 
-/**
- * ArrayStore — append-only array of fixed-size items.
- *
- * Mutations only through transactions. Reads available directly on the store.
- *
- * Crash safety:
- *   commit()   — writes WAL atomically (temp file + rename).
- *   finalize() — appends WAL entries to the file, then deletes WAL.
- *                If power dies mid-finalize, WAL still exists → replayed on next start.
- */
-export class ArrayStore<T extends Codec<any>> implements Transactionable {
-	private readonly path: string;
-	readonly codec: T;
-	private readonly mutex = new Mutex();
-	private count = 0;
+export type ArrayStoreOptions<T> = {
+	name: string;
+	path: string;
+	codec: Codec<T>;
+	countCodec?: Codec<number>;
+};
 
-	private readonly walPath: string;
-	private readonly walTmpPath: string;
-
-	private activeTx: ArrayStoreTransaction<T> | null = null;
-
-	constructor(path: string, codec: T) {
-		this.path = path;
-		this.codec = codec;
-		this.walPath = path + ".wal";
-		this.walTmpPath = path + ".wal.tmp";
-		if (codec.stride < 0) throw new Error("Codec must have fixed stride");
+export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promise<ArrayStore<T>> {
+	if (options.codec.stride <= 0) {
+		throw new Error("Codec must have a fixed byte length");
 	}
 
-	// -------------------------------------------------------------------------
-	// Transactionable
-	// -------------------------------------------------------------------------
+	const { name, path, codec } = options;
+	const countCodec = options.countCodec ?? VarInt;
+	await Deno.mkdir(path, { recursive: true });
+	const dataPath = join(path, "data.bin");
+	const file = await Deno.open(dataPath, { read: true, write: true, create: true });
 
-	transaction(): ArrayStoreTransaction<T> {
-		if (this.activeTx !== null) throw new Error("A transaction is already open");
-		this.activeTx = new ArrayStoreTransaction(this);
-		return this.activeTx;
+	let length = (await file.stat()).size / codec.stride;
+	if (!Number.isInteger(length)) {
+		throw new Error("File size must be a multiple of codec stride");
 	}
 
-	/**
-	 * Apply any pending WAL to the file, then delete the WAL. Idempotent.
-	 * Always reads from disk — no in-memory shortcut.
-	 */
-	async finalize(): Promise<void> {
-		await this.prepare();
-		this.activeTx = null;
+	const stagedChanges = new Map<number, T>();
 
-		if (!await exists(this.walPath)) return;
-
-		const entries = await this.readWal();
-		if (entries.length > 0) await this.appendEntries(entries);
-		await this.deleteWal();
+	async function get(index: number): Promise<T> {
+		if (index < 0) {
+			throw new Error("Index must be non-negative");
+		}
+		if (index >= length) {
+			throw new Error("Index out of bounds");
+		}
+		if (stagedChanges.has(index)) {
+			return stagedChanges.get(index)!;
+		}
+		const offset = index * codec.stride;
+		await file.seek(offset, Deno.SeekMode.Start);
+		const data = await readFile(file, codec.stride);
+		const [value] = codec.decode(data);
+		return value;
 	}
 
-	// -------------------------------------------------------------------------
-	// Reads (public)
-	// -------------------------------------------------------------------------
-
-	async length(): Promise<number> {
-		await this.prepare();
-		return this.count;
-	}
-
-	async get(index: number): Promise<Codec.Infer<T> | undefined> {
-		await this.prepare();
-		if (index < 0 || index >= this.count) return undefined;
-
-		const buffer = new Uint8Array(this.codec.stride);
-		const file = await Deno.open(this.path, { read: true });
-		try {
-			await file.seek(BigInt(index * this.codec.stride), Deno.SeekMode.Start);
-			await readFileFull(file, buffer);
-			return this.codec.decode(buffer)[0];
-		} finally {
-			file.close();
+	let currentTransaction: ArrayStoreTransaction<T> | null = null;
+	function assertNoTransaction(): void {
+		if (currentTransaction) {
+			throw new Error("Can't perform this operation while a transaction is in progress");
 		}
 	}
+	function transaction(): ArrayStoreTransaction<T> {
+		assertNoTransaction();
 
-	async range(start: number, count: number): Promise<Codec.Infer<T>[]> {
-		await this.prepare();
-		if (start < 0) start = 0;
-		if (start >= this.count || count <= 0) return [];
+		const transactionChanges = new Map<number, T>();
+		let transactionLength = length;
 
-		const actualCount = Math.min(count, this.count - start);
-		const buffer = new Uint8Array(actualCount * this.codec.stride);
-		const file = await Deno.open(this.path, { read: true });
-		try {
-			await file.seek(BigInt(start * this.codec.stride), Deno.SeekMode.Start);
-			await readFileFull(file, buffer);
-		} finally {
-			file.close();
-		}
-
-		const result = new Array(actualCount);
-		for (let i = 0; i < actualCount; i++) {
-			const bytes = buffer.subarray(i * this.codec.stride, (i + 1) * this.codec.stride);
-			result[i] = this.codec.decode(bytes)[0];
-		}
-		return result;
-	}
-
-	// Legacy direct-mutation API (kept for backward compat with Blockchain.ts)
-	async push(item: Codec.Infer<T>): Promise<number> {
-		const encoded = this.codec.encode(item);
-		if (encoded.length !== this.codec.stride) {
-			throw new Error(`Encoded size ${encoded.length} != stride ${this.codec.stride}`);
-		}
-
-		const unlock = await this.mutex.lock();
-		try {
-			await this.prepare();
-			const file = await Deno.open(this.path, { append: true });
-			try {
-				await writeFileFull(file, encoded);
-			} finally {
-				file.close();
-			}
-			return ++this.count;
-		} finally {
-			unlock();
-		}
-	}
-
-	async concat(items: Codec.Infer<T>[]): Promise<number[]> {
-		if (items.length === 0) return [];
-
-		const totalSize = items.length * this.codec.stride;
-		const buffer = new Uint8Array(totalSize);
-		for (let i = 0; i < items.length; i++) {
-			const encoded = this.codec.encode(items[i]);
-			if (encoded.length !== this.codec.stride) {
-				throw new Error(`Encoded size ${encoded.length} != stride ${this.codec.stride}`);
-			}
-			buffer.set(encoded, i * this.codec.stride);
-		}
-
-		const unlock = await this.mutex.lock();
-		try {
-			await this.prepare();
-			const startIndex = this.count;
-			const file = await Deno.open(this.path, { append: true });
-			try {
-				await writeFileFull(file, buffer);
-			} finally {
-				file.close();
-			}
-			this.count += items.length;
-			return items.map((_, i) => startIndex + i);
-		} finally {
-			unlock();
-		}
-	}
-
-	async truncate(newLength: number): Promise<void> {
-		await this.prepare();
-		if (newLength < 0 || newLength > this.count) {
-			throw new Error(`Truncate newLength ${newLength} out of bounds`);
-		}
-		await Deno.truncate(this.path, newLength * this.codec.stride);
-		this.count = newLength;
-	}
-
-	// -------------------------------------------------------------------------
-	// Internal: WAL
-	// -------------------------------------------------------------------------
-
-	async writeWal(staged: Codec.Infer<T>[]): Promise<void> {
-		// 4 bytes count + N * stride
-		const buf = new Uint8Array(4 + staged.length * this.codec.stride);
-		const view = new DataView(buf.buffer);
-		view.setUint32(0, staged.length, true);
-
-		let pos = 4;
-		for (const item of staged) {
-			const encoded = this.codec.encode(item);
-			buf.set(encoded, pos);
-			pos += this.codec.stride;
-		}
-
-		await Deno.writeFile(this.walTmpPath, buf);
-		await Deno.rename(this.walTmpPath, this.walPath);
-	}
-
-	private async readWal(): Promise<Codec.Infer<T>[]> {
-		const buf = await Deno.readFile(this.walPath);
-		const view = new DataView(buf.buffer);
-		const count = view.getUint32(0, true);
-
-		const entries: Codec.Infer<T>[] = [];
-		let pos = 4;
-		for (let i = 0; i < count; i++) {
-			const bytes = buf.subarray(pos, pos + this.codec.stride);
-			entries.push(this.codec.decode(bytes)[0]);
-			pos += this.codec.stride;
-		}
-		return entries;
-	}
-
-	private async deleteWal(): Promise<void> {
-		await Deno.remove(this.walPath).catch(() => {});
-	}
-
-	// -------------------------------------------------------------------------
-	// Internal: append to file
-	// -------------------------------------------------------------------------
-
-	private async appendEntries(entries: Codec.Infer<T>[]): Promise<void> {
-		const buf = new Uint8Array(entries.length * this.codec.stride);
-		let pos = 0;
-		for (const item of entries) {
-			const encoded = this.codec.encode(item);
-			buf.set(encoded, pos);
-			pos += this.codec.stride;
-		}
-
-		const unlock = await this.mutex.lock();
-		try {
-			const file = await Deno.open(this.path, { append: true });
-			try {
-				await writeFileFull(file, buf);
-			} finally {
-				file.close();
-			}
-			this.count += entries.length;
-		} finally {
-			unlock();
-		}
-	}
-
-	// -------------------------------------------------------------------------
-	// Internal: init
-	// -------------------------------------------------------------------------
-
-	releaseTransaction(): void {
-		this.activeTx = null;
-	}
-
-	private preparePromise: Promise<void> | null = null;
-	private prepare(): Promise<void> {
-		if (this.preparePromise) return this.preparePromise;
-		return this.preparePromise = (async () => {
-			try {
-				const file = await Deno.open(this.path, { create: true, read: true, write: true });
-				const stat = await file.stat();
-				file.close();
-				if (stat.size % this.codec.stride !== 0) {
-					throw new Error(`Corrupt file: size ${stat.size} not divisible by stride ${this.codec.stride}`);
+		currentTransaction = {
+			async get(index: number): Promise<T> {
+				if (index < 0) {
+					throw new Error("Index must be non-negative");
 				}
-				this.count = stat.size / this.codec.stride;
-			} catch (err) {
-				this.preparePromise = null;
-				throw err;
-			}
-		})();
+				if (index >= transactionLength) {
+					throw new Error("Index out of bounds");
+				}
+				if (transactionChanges.has(index)) {
+					return transactionChanges.get(index)!;
+				}
+				return await get(index);
+			},
+			set(index: number, value: T): void {
+				if (index < 0) {
+					throw new Error("Index must be non-negative");
+				}
+				if (index >= transactionLength) {
+					throw new Error("Index out of bounds");
+				}
+				transactionChanges.set(index, value);
+			},
+			append(value: T): number {
+				const index = transactionLength;
+				transactionChanges.set(index, value);
+				transactionLength++;
+				return index;
+			},
+			length(): number {
+				return transactionLength;
+			},
+			apply(): void {
+				for (const [index, value] of transactionChanges.entries()) {
+					stagedChanges.set(index, value);
+				}
+				length = transactionLength;
+				transactionChanges.clear();
+				currentTransaction = null;
+			},
+			discard(): void {
+				transactionChanges.clear();
+				currentTransaction = null;
+			},
+		};
+
+		return currentTransaction;
 	}
+
+	async function WAL(options: { id: string }): Promise<WAL | null>;
+	async function WAL(options?: { id?: undefined }): Promise<WAL>;
+	async function WAL(options?: { id?: string }): Promise<WAL | null> {
+		assertNoTransaction();
+
+		const walId = options?.id ?? v7.generate();
+		const walPath = join(path, `${walId}.wal`);
+
+		if (options?.id && !await exists(walPath)) {
+			return null;
+		}
+
+		const walCodec = new ArrayCodec(new StructCodec({ index: countCodec, value: codec }));
+
+		return {
+			id: walId,
+			async apply(): Promise<void> {
+				const walFile = await Deno.open(walPath, { read: true });
+				const walData = await readFile(walFile, (await walFile.stat()).size);
+				const [entries] = walCodec.decode(walData);
+				for (const { index, value } of entries) {
+					const offset = index * codec.stride;
+					const data = codec.encode(value);
+					await file.seek(offset, Deno.SeekMode.Start);
+					await writeFile(file, data);
+					if (index >= length) length = index + 1;
+				}
+				walFile.close();
+			},
+			async discard() {
+				return await Deno.remove(walPath).catch(() => {/* ignore */});
+			},
+			async save() {
+				const entries = Array.from(stagedChanges.entries()).map(([index, value]) => ({ index, value }));
+				const walData = walCodec.encode(entries);
+				await Deno.writeFile(walPath, walData, { create: true });
+				stagedChanges.clear();
+			},
+		};
+	}
+
+	return {
+		name,
+		get,
+		transaction,
+		WAL,
+		length(): number {
+			return length;
+		},
+		close(): void {
+			file.close();
+		},
+	};
 }
