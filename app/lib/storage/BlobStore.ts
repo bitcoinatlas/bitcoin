@@ -1,7 +1,7 @@
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { writeFile } from "~/lib/utils/fs.ts";
-import type { Store, Transaction, WAL } from "./Store.ts";
+import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 
 /**
  * An append-only store for variable-size blobs, split across fixed-size chunk files.

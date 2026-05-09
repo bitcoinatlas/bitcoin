@@ -2,7 +2,7 @@ import { type Codec, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
-import type { Store, Transaction, WAL } from "./Store.ts";
+import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 
 export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>>, Disposable {
 	get(index: number): Promise<T>;

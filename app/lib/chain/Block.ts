@@ -1,9 +1,9 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { WireBlock } from "./codec/wire/WireBlock.ts";
-import { WireTx } from "./codec/wire/WireTx.ts";
-import type { StoredBlock } from "./codec/stored/StoredBlock.ts";
-import { Tx } from "./Tx.ts";
-import { WireBlockHeader } from "./codec/wire/WireBlockHeader.ts";
+import { WireBlock } from "~/lib/chain/codec/wire/WireBlock.ts";
+import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
+import type { StoredBlock } from "~/lib/chain/codec/stored/StoredBlock.ts";
+import { Tx } from "~/lib/chain/Tx.ts";
+import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
 
 export class Block {
 	public readonly header: WireBlockHeader;

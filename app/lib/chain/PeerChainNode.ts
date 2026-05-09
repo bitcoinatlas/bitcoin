@@ -1,4 +1,4 @@
-import { WireBlockHeader } from "./codec/wire/WireBlockHeader.ts";
+import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
 
 export type PeerChainNodeParams = {
 	header: WireBlockHeader;

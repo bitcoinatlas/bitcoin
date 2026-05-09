@@ -1,8 +1,8 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { StoredTxOutput } from "~/lib/chain/codec/stored/StoredTxOutput.ts";
 import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock } from "../TimeLock.ts";
-import { StoredTxInput } from "./StoredTxInput.ts";
+import { TimeLock } from "~/lib/chain/TimeLock.ts";
+import { StoredTxInput } from "~/lib/chain/codec/stored/StoredTxInput.ts";
 
 // Per block optimizations like coinbase transaction, doesn't save that much space,
 // But its easy to implement so why not. Why store 0s randomly in the middle of the chunk?

@@ -1,19 +1,19 @@
 import { U32LE } from "@nomadshiba/codec";
-import { type ArrayStore, createArrayStore } from "../storage/ArrayStore.ts";
-import { createKVStore, type KVStore } from "../storage/KVStore.ts";
-import { type BlobStore, createBlobStore } from "../storage/BlobStore.ts";
-import { Bytes32, U48LE } from "../codec/primitives.ts";
-import { Block } from "./Block.ts";
-import { StoredBlock } from "./codec/stored/StoredBlock.ts";
-import { StoredPointer } from "./codec/stored/StoredPointer.ts";
-import { WireBlockHeader } from "./codec/wire/WireBlockHeader.ts";
-import { PeerChain } from "./PeerChain.ts";
-import { verifyProofOfWork, workFromHeader } from "./utils/PoW.ts";
-import { GENESIS_BLOCK_HEADER } from "../../constants.ts";
-import { PeerChainNode } from "./PeerChainNode.ts";
-import { atomic } from "../storage/Store.ts";
+import { type ArrayStore, createArrayStore } from "~/lib/storage/ArrayStore.ts";
+import { createKVStore, type KVStore } from "~/lib/storage/KVStore.ts";
+import { type BlobStore, createBlobStore } from "~/lib/storage/BlobStore.ts";
+import { Bytes32, U48LE } from "~/lib/codec/primitives.ts";
+import { Block } from "~/lib/chain/Block.ts";
+import { StoredBlock } from "~/lib/chain/codec/stored/StoredBlock.ts";
+import { StoredPointer } from "~/lib/chain/codec/stored/StoredPointer.ts";
+import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
+import { PeerChain } from "~/lib/chain/PeerChain.ts";
+import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils/PoW.ts";
+import { GENESIS_BLOCK_HEADER } from "~/constants.ts";
+import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
+import { atomic } from "~/lib/storage/Store.ts";
 import { join } from "@std/path";
-import { BASE_DATA_DIR } from "../../constants.ts";
+import { BASE_DATA_DIR } from "~/constants.ts";
 
 export class Blockchain {
 	public blockHashToHeight!: KVStore<Uint8Array, number>;
