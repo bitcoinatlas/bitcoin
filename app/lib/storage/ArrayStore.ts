@@ -9,6 +9,8 @@ export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>> {
 	get(index: number): Promise<T>;
 	getMany(indices: number[]): Promise<T[]>;
 	length(): number;
+	/** Truncate the store to `newLength` entries. Drops staged appends and sets past the new boundary. */
+	truncate(newLength: number): Promise<void>;
 	close(): void;
 }
 
@@ -140,7 +142,45 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 				return await get(index);
 			},
 			async getMany(indices: number[]): Promise<T[]> {
-				return Promise.all(indices.map((i) => this.get(i)));
+				const results = new Array<T>(indices.length);
+				type DiskLookup = { resultIdx: number; fileIndex: number };
+				const diskLookups: DiskLookup[] = [];
+
+				for (let i = 0; i < indices.length; i++) {
+					const index = indices[i]!;
+					if (index < 0 || index >= txBaseLength + txAppends.length) {
+						throw new Error(`Index ${index} out of bounds`);
+					}
+					if (txSets.has(index)) {
+						results[i] = txSets.get(index)!;
+					} else if (index >= txBaseLength) {
+						results[i] = txAppends[index - txBaseLength]!;
+					} else {
+						diskLookups.push({ resultIdx: i, fileIndex: index });
+					}
+				}
+
+				// Sort → sequential reads, coalesce contiguous runs into bulk reads
+				diskLookups.sort((a, b) => a.fileIndex - b.fileIndex);
+				let i = 0;
+				while (i < diskLookups.length) {
+					let j = i + 1;
+					while (j < diskLookups.length && diskLookups[j]!.fileIndex === diskLookups[j - 1]!.fileIndex + 1) {
+						j++;
+					}
+
+					const runLen = j - i;
+					const startIndex = diskLookups[i]!.fileIndex;
+					await file.seek(startIndex * codec.stride, Deno.SeekMode.Start);
+					const bulk = await readFile(file, runLen * codec.stride);
+					for (let k = 0; k < runLen; k++) {
+						const { resultIdx } = diskLookups[i + k]!;
+						results[resultIdx] = codec.decode(bulk.subarray(k * codec.stride, (k + 1) * codec.stride))[0];
+					}
+					i = j;
+				}
+
+				return results;
 			},
 			set(index: number, value: T): void {
 				if (index < 0) throw new Error("Index must be non-negative");
@@ -208,24 +248,24 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 				const setEntries = Array.from(stagedSets.entries());
 				const setCount = setEntries.length;
 				const setCountBytes = VarInt.encode(setCount);
-				const setData: Uint8Array[] = setEntries.map(([index, value]) =>
-					setCodec.encode({ index, value })
-				);
+				const setData: Uint8Array[] = setEntries.map(([index, value]) => setCodec.encode({ index, value }));
 				const setDataSize = setData.reduce((s, b) => s + b.length, 0);
 
 				const buf = new Uint8Array(
 					appendCountBytes.length + appendDataSize +
-					setCountBytes.length + setDataSize,
+						setCountBytes.length + setDataSize,
 				);
 				let pos = 0;
 
-				buf.set(appendCountBytes, pos); pos += appendCountBytes.length;
+				buf.set(appendCountBytes, pos);
+				pos += appendCountBytes.length;
 				for (const value of stagedAppends) {
 					buf.set(codec.encode(value), pos);
 					pos += codec.stride;
 				}
 
-				buf.set(setCountBytes, pos); pos += setCountBytes.length;
+				buf.set(setCountBytes, pos);
+				pos += setCountBytes.length;
 				for (const chunk of setData) {
 					buf.set(chunk, pos);
 					pos += chunk.length;
@@ -270,12 +310,37 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		};
 	}
 
+	async function truncate(newLength: number): Promise<void> {
+		assertNoTransaction();
+		if (newLength < 0) throw new Error("newLength must be non-negative");
+		const totalLength = length + stagedAppends.length;
+		if (newLength > totalLength) {
+			throw new Error(`newLength (${newLength}) exceeds current length (${totalLength})`);
+		}
+
+		// Drop staged appends past newLength
+		const maxStagedAppends = Math.max(0, newLength - length);
+		stagedAppends.length = maxStagedAppends;
+
+		// Drop staged sets whose index no longer exists
+		for (const index of stagedSets.keys()) {
+			if (index >= newLength) stagedSets.delete(index);
+		}
+
+		// Truncate on-disk committed entries if newLength < length
+		if (newLength < length) {
+			await file.truncate(newLength * codec.stride);
+			length = newLength;
+		}
+	}
+
 	return {
 		name,
 		get,
 		getMany,
 		transaction,
 		WAL,
+		truncate,
 		length(): number {
 			return length + stagedAppends.length;
 		},

@@ -17,6 +17,8 @@ export interface BlobStore extends Store<BlobStoreTransaction> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
 	/** Current end-of-stream pointer (total bytes written). */
 	length(): number;
+	/** Truncate the virtual stream to `newLength` bytes. Drops staged appends past the new boundary. */
+	truncate(newLength: number): Promise<void>;
 }
 
 export interface BlobStoreTransaction extends Transaction {
@@ -106,7 +108,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				return entry.data;
 			}
 		}
-		return getFromDisk(pointer, length);
+		return await getFromDisk(pointer, length);
 	}
 
 	let currentTransaction: BlobStoreTransaction | null = null;
@@ -138,7 +140,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 						return entry.data;
 					}
 				}
-				return get(pointer, length);
+				return await get(pointer, length);
 			},
 			length(): number {
 				return txLength;
@@ -225,6 +227,49 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		};
 	}
 
+	async function truncate(newLength: number): Promise<void> {
+		assertNoTransaction();
+		if (newLength < 0) throw new Error("newLength must be non-negative");
+		if (newLength > stagedLength) {
+			throw new Error(`newLength (${newLength}) exceeds current length (${stagedLength})`);
+		}
+
+		// Drop staged appends whose pointer is >= newLength
+		const kept = stagedAppends.filter((e) => e.pointer < newLength);
+		stagedAppends.length = 0;
+		for (const e of kept) stagedAppends.push(e);
+		stagedLength = newLength;
+
+		// Truncate committed (disk) state
+		if (newLength < totalLength) {
+			const newChunkIndex = newLength === 0 ? 0 : Math.floor((newLength - 1) / chunkByteSize);
+			const newOffsetInChunk = newLength % chunkByteSize;
+
+			// Delete all chunk files past the new last chunk
+			for await (const entry of Deno.readDir(path)) {
+				if (entry.isFile && entry.name.startsWith("chunk_")) {
+					const i = parseInt(entry.name.slice(6), 10);
+					if (!isNaN(i) && i > newChunkIndex) {
+						await Deno.remove(join(path, entry.name));
+					}
+				}
+			}
+
+			// Truncate the last surviving chunk (or remove it entirely if newLength is on a chunk boundary)
+			if (newLength === 0) {
+				await Deno.remove(join(path, "chunk_0")).catch(() => {/* may not exist */});
+			} else {
+				const lastChunkPath = join(path, `chunk_${newChunkIndex}`);
+				if (await exists(lastChunkPath)) {
+					await Deno.truncate(lastChunkPath, newOffsetInChunk);
+				}
+			}
+
+			totalLength = newLength;
+			stagedLength = newLength;
+		}
+	}
+
 	return {
 		name,
 		get,
@@ -233,5 +278,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		},
 		transaction,
 		WAL,
+		truncate,
 	};
 }
