@@ -2,7 +2,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
 import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
 
-export const BASE_DIR = new URL("./data/", Deno.build.standalone ? Deno.execPath() : import.meta.url).pathname;
+export const BASE_DIR = new URL("./data/", Deno.build.standalone ? Deno.execPath() : Deno.cwd()).pathname;
 export const BASE_DATA_DIR = join(BASE_DIR, "data");
 
 export const MAX_BLOCK_WEIGHT = 4 * 1024 * 1024;

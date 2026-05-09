@@ -113,7 +113,7 @@ const atomicMeta = {
  * Throws if another atomic flush is already in progress (IDs file exists).
  * Call `recover()` first to clear a previous crashed flush before retrying.
  */
-export async function atomic(stores: Store[]): Promise<void> {
+export async function atomic(stores: readonly Store[]): Promise<void> {
 	if (await atomicMeta.stores.exists()) {
 		throw new Error("Can't have multiple atomic flushes in progress");
 	}
@@ -133,7 +133,7 @@ export async function atomic(stores: Store[]): Promise<void> {
  * Recover from a crash by replaying any WALs found on disk.
  * Should be called once at startup before any writes.
  */
-export async function recover(stores: Store[]): Promise<void> {
+export async function recover(stores: readonly Store[]): Promise<void> {
 	if (!await atomicMeta.stores.exists()) {
 		return;
 	}

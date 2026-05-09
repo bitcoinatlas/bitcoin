@@ -1,5 +1,6 @@
 import { exists } from "@std/fs";
 import { join } from "@std/path";
+import { Codec } from "@nomadshiba/codec";
 import { writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 
@@ -16,6 +17,7 @@ import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
  */
 export interface BlobStore extends Store<BlobStoreTransaction> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
+	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
 	/** Current end-of-stream pointer (total bytes written). */
 	length(): number;
 	truncate(newLength: number): Promise<void>;
@@ -25,6 +27,7 @@ export interface BlobStoreTransaction extends Transaction {
 	/** Stage a blob for append. Returns tentative pointer. */
 	append(data: Uint8Array): number;
 	get(pointer: number, length: number): Promise<Uint8Array>;
+	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
 	length(): number;
 }
 
@@ -100,16 +103,59 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		}
 	}
 
-	async function get(pointer: number, length: number): Promise<Uint8Array> {
+	async function getFromDiskWithCodec<T>(pointer: number, codec: Codec<T>, readAheadSize: number): Promise<T> {
+		const chunkIndex = Math.floor(pointer / chunkByteSize);
+		const offset = pointer % chunkByteSize;
+		const chunkPath = join(path, `chunk_${chunkIndex}`);
+		if (!await exists(chunkPath)) {
+			throw new Error(`Chunk ${chunkIndex} not found for pointer ${pointer}`);
+		}
+		const file = await Deno.open(chunkPath, { read: true });
+		try {
+			await file.seek(offset, Deno.SeekMode.Start);
+			const buf = new Uint8Array(readAheadSize);
+			let bytesRead = 0;
+			while (bytesRead < readAheadSize) {
+				const n = await file.read(buf.subarray(bytesRead));
+				if (n === null) break;
+				bytesRead += n;
+			}
+			const [value] = codec.decode(buf.subarray(0, bytesRead));
+			return value;
+		} finally {
+			file.close();
+		}
+	}
+
+	async function get(pointer: number, length: number): Promise<Uint8Array>;
+	async function get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
+	async function get<T>(
+		pointer: number,
+		lengthOrCodec: number | Codec<T>,
+		options?: { readAheadSize?: number },
+	): Promise<Uint8Array | T> {
 		if (self.wal) {
 			throw new Error("Can't perform this operation while a WAL is in progress");
 		}
-		for (const entry of stagedAppends) {
-			if (entry.pointer === pointer && entry.data.length === length) {
-				return entry.data;
+		if (typeof lengthOrCodec === "number") {
+			const length = lengthOrCodec;
+			for (const entry of stagedAppends) {
+				if (entry.pointer === pointer && entry.data.length === length) {
+					return entry.data;
+				}
 			}
+			return await getFromDisk(pointer, length);
+		} else {
+			const codec = lengthOrCodec;
+			const readAheadSize = options?.readAheadSize ?? (codec.stride > 0 ? codec.stride : 4096);
+			for (const entry of stagedAppends) {
+				if (entry.pointer === pointer) {
+					const [value] = codec.decode(entry.data);
+					return value;
+				}
+			}
+			return await getFromDiskWithCodec(pointer, codec, readAheadSize);
 		}
-		return await getFromDisk(pointer, length);
 	}
 
 	function length(): number {
@@ -137,13 +183,30 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				txLength = pointer + data.length;
 				return pointer;
 			},
-			async get(pointer: number, length: number): Promise<Uint8Array> {
-				for (const entry of txAppends) {
-					if (entry.pointer === pointer && entry.data.length === length) {
-						return entry.data;
+			// deno-lint-ignore no-explicit-any
+			async get(
+				pointer: number,
+				lengthOrCodec: number | Codec<any>,
+				options?: { readAheadSize?: number },
+			): Promise<any> {
+				if (typeof lengthOrCodec === "number") {
+					const length = lengthOrCodec;
+					for (const entry of txAppends) {
+						if (entry.pointer === pointer && entry.data.length === length) {
+							return entry.data;
+						}
 					}
+					return await get(pointer, length);
+				} else {
+					const codec = lengthOrCodec;
+					for (const entry of txAppends) {
+						if (entry.pointer === pointer) {
+							const [value] = codec.decode(entry.data);
+							return value;
+						}
+					}
+					return await get(pointer, codec, options);
 				}
-				return await get(pointer, length);
 			},
 			length(): number {
 				return txLength;
@@ -272,15 +335,13 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 
 	const self: BlobStore = {
 		name,
-		wal: null,
+		wal: await getWAL(),
 		get,
 		length,
 		transaction,
 		createWAL,
 		truncate,
 	};
-
-	self.wal = await getWAL();
 
 	return self;
 }

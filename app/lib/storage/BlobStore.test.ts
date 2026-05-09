@@ -1,4 +1,5 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { Codec } from "@nomadshiba/codec";
 import { createBlobStore, type BlobStore } from "~/lib/storage/BlobStore.ts";
 
 function makeData(byte: number, length: number): Uint8Array {
@@ -28,9 +29,9 @@ Deno.test("BlobStore - append and get", async () => {
 		assertEquals(pointer, 0);
 		tx.apply();
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
+		await wal.discard();
 
 		assertEquals(await store.get(0, 16), data);
 	});
@@ -47,9 +48,9 @@ Deno.test("BlobStore - append returns sequential pointers", async () => {
 		assertEquals(p2, 30);
 		tx.apply();
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
+		await wal.discard();
 
 		assertEquals(await store.get(0, 10), makeData(1, 10));
 		assertEquals(await store.get(10, 20), makeData(2, 20));
@@ -107,9 +108,9 @@ Deno.test("BlobStore - multiple sequential transactions accumulate", async () =>
 			tx.apply();
 		}
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
+		await wal.discard();
 
 		assertEquals(await store.get(0, 4), blobs[0]);
 		assertEquals(await store.get(4, 8), blobs[1]);
@@ -119,10 +120,9 @@ Deno.test("BlobStore - multiple sequential transactions accumulate", async () =>
 
 // WAL + persistence
 
-Deno.test("BlobStore - WAL lookup by id returns null if not found", async () => {
+Deno.test("BlobStore - WAL is null when no WAL on disk", async () => {
 	await withStore(async (store) => {
-		const wal = await store.WAL({ id: "nonexistent-id" });
-		assertEquals(wal, null);
+		assertEquals(store.wal, null);
 	});
 });
 
@@ -134,8 +134,7 @@ Deno.test("BlobStore - WAL discard removes the file", async () => {
 		tx.append(makeData(1, 4));
 		tx.apply();
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 
 		const walExists = (await Array.fromAsync(Deno.readDir(dir))).some((e) => e.name.endsWith(".wal"));
 		assertEquals(walExists, true);
@@ -157,14 +156,14 @@ Deno.test("BlobStore - crash recovery: WAL apply replays changes", async () => {
 		tx.append(data);
 		tx.apply();
 
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
 		// crash before apply
 
 		const store2 = await createBlobStore({ name: "test", path: dir });
-		const recovered = await store2.WAL({ id: wal.id });
+		const recovered = store2.wal;
 		assertEquals(recovered !== null, true);
 		await recovered!.apply();
+		await recovered!.discard();
 
 		assertEquals(await store2.get(0, 32), data);
 	} finally {
@@ -180,8 +179,7 @@ Deno.test("BlobStore - persists data across reopen", async () => {
 		const tx = store1.transaction();
 		tx.append(data);
 		tx.apply();
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -200,8 +198,7 @@ Deno.test("BlobStore - pointers continue correctly across chunk boundary", async
 		assertEquals(p0, 0);
 		tx1.apply();
 
-		const wal1 = await store.WAL();
-		await wal1.save();
+		const wal1 = await store.createWAL();
 		await wal1.apply();
 		await wal1.discard();
 
@@ -211,8 +208,7 @@ Deno.test("BlobStore - pointers continue correctly across chunk boundary", async
 		assertEquals(p1, 16);
 		tx2.apply();
 
-		const wal2 = await store.WAL();
-		await wal2.save();
+		const wal2 = await store.createWAL();
 		await wal2.apply();
 		await wal2.discard();
 
@@ -225,9 +221,9 @@ Deno.test("BlobStore - empty transaction WAL saves and applies cleanly", async (
 	await withStore(async (store) => {
 		const tx = store.transaction();
 		tx.apply();
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
+		await wal.discard();
 		assertEquals(store.length(), 0);
 	});
 });
@@ -266,8 +262,7 @@ Deno.test("BlobStore - blob straddling chunk boundary rolls to next chunk with g
 		const p0 = tx1.append(makeData(0xAA, 10));
 		assertEquals(p0, 0);
 		tx1.apply();
-		const wal1 = await store1.WAL();
-		await wal1.save();
+		const wal1 = await store1.createWAL();
 		await wal1.apply();
 		await wal1.discard();
 
@@ -277,8 +272,7 @@ Deno.test("BlobStore - blob straddling chunk boundary rolls to next chunk with g
 		const p1 = tx2.append(makeData(0xBB, 10));
 		assertEquals(p1, 16); // correctly rolled to chunk_1 start
 		tx2.apply();
-		const wal2 = await store2.WAL();
-		await wal2.save();
+		const wal2 = await store2.createWAL();
 		await wal2.apply();
 		await wal2.discard();
 
@@ -301,8 +295,7 @@ Deno.test("BlobStore - multiple chunks reopen recovers correct total length", as
 		tx.append(makeData(2, 8));  // chunk_0 bytes 8-15 (fills it)
 		tx.append(makeData(3, 8));  // chunk_1 bytes 0-7
 		tx.apply();
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -323,8 +316,7 @@ Deno.test("BlobStore - get on pointer beyond committed length throws", async () 
 		const tx = store.transaction();
 		tx.append(makeData(1, 8));
 		tx.apply();
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -338,7 +330,7 @@ Deno.test("BlobStore - WAL with transaction open throws", async () => {
 		const tx = store.transaction();
 		let threw = false;
 		try {
-			await store.WAL();
+			await store.createWAL();
 		} catch {
 			threw = true;
 		}
@@ -369,8 +361,7 @@ Deno.test("BlobStore - zero-length blob append and read", async () => {
 		const p = tx.append(new Uint8Array(0));
 		assertEquals(p, 0);
 		tx.apply();
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -390,5 +381,82 @@ Deno.test("BlobStore - tx.get on staged value after outer apply", async () => {
 		const tx2 = store.transaction();
 		assertEquals(await tx2.get(p, 4), makeData(0xDE, 4));
 		tx2.discard();
+	});
+});
+
+// Codec-based get
+
+/** Simple variable-length codec: [u8 length][bytes] */
+class LengthPrefixedCodec extends Codec<Uint8Array> {
+	readonly stride = -1;
+	encode(value: Uint8Array): Uint8Array<ArrayBuffer> {
+		const out = new Uint8Array(1 + value.length);
+		out[0] = value.length;
+		out.set(value, 1);
+		return out as Uint8Array<ArrayBuffer>;
+	}
+	decode(data: Uint8Array): [Uint8Array, number] {
+		const len = data[0]!;
+		return [data.slice(1, 1 + len), 1 + len];
+	}
+}
+
+const lpCodec = new LengthPrefixedCodec();
+
+Deno.test("BlobStore - get with variable codec reads staged blob", async () => {
+	await withStore(async (store) => {
+		const payload = makeData(0xAB, 8);
+		const encoded = lpCodec.encode(payload);
+		const tx = store.transaction();
+		const pointer = tx.append(encoded);
+		tx.apply();
+
+		const result = await store.get(pointer, lpCodec);
+		assertEquals(result, payload);
+	});
+});
+
+Deno.test("BlobStore - get with variable codec reads from disk", async () => {
+	await withStore(async (store) => {
+		const payload = makeData(0xCD, 12);
+		const encoded = lpCodec.encode(payload);
+		const tx = store.transaction();
+		const pointer = tx.append(encoded);
+		tx.apply();
+		const wal = await store.createWAL();
+		await wal.apply();
+		await wal.discard();
+
+		const result = await store.get(pointer, lpCodec);
+		assertEquals(result, payload);
+	});
+});
+
+Deno.test("BlobStore - get with codec respects custom readAheadSize", async () => {
+	await withStore(async (store) => {
+		const payload = makeData(0xEF, 4);
+		const encoded = lpCodec.encode(payload);
+		const tx = store.transaction();
+		const pointer = tx.append(encoded);
+		tx.apply();
+		const wal = await store.createWAL();
+		await wal.apply();
+		await wal.discard();
+
+		const result = await store.get(pointer, lpCodec, { readAheadSize: 16 });
+		assertEquals(result, payload);
+	});
+});
+
+Deno.test("BlobStore - tx.get with codec sees tx-staged blob", async () => {
+	await withStore(async (store) => {
+		const payload = makeData(0x77, 6);
+		const encoded = lpCodec.encode(payload);
+		const tx = store.transaction();
+		const pointer = tx.append(encoded);
+
+		const result = await tx.get(pointer, lpCodec);
+		assertEquals(result, payload);
+		tx.discard();
 	});
 });

@@ -54,7 +54,7 @@ export class Tx {
 		return { txId, version, locktime, inputs, outputs, witness };
 	}
 
-	static fromWire(wireTx: WireTx): Promise<Tx> {
+	static fromWire(wireTx: WireTx): Tx {
 		const inputs: TxInput[] = [];
 
 		for (let i = 0; i < wireTx.inputs.length; i++) {
@@ -94,29 +94,27 @@ export class Tx {
 			outputs,
 		});
 
-		return Promise.resolve(tx);
+		return tx;
 	}
 
-	toStore(): Promise<StoredTx> {
-		return Promise.resolve({
+	toStore(): StoredTx {
+		return {
 			txId: this.data.txId,
 			version: this.data.version,
 			lockTime: this.data.locktime,
 			vout: this.data.outputs,
 			vin: this.data.inputs,
-		});
+		};
 	}
 
-	static fromStore(storedTx: StoredTx): Promise<Tx> {
-		return Promise.resolve(
-			new Tx({
-				txId: storedTx.txId,
-				version: storedTx.version,
-				locktime: storedTx.lockTime,
-				witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
-				inputs: storedTx.vin,
-				outputs: storedTx.vout,
-			}),
-		);
+	static fromStore(storedTx: StoredTx): Tx {
+		return new Tx({
+			txId: storedTx.txId,
+			version: storedTx.version,
+			locktime: storedTx.lockTime,
+			witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
+			inputs: storedTx.vin,
+			outputs: storedTx.vout,
+		});
 	}
 }

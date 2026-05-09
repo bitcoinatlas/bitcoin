@@ -21,6 +21,7 @@ import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 export interface KVStore<K, V> extends Store<KVStoreTransaction<K, V>> {
 	get(key: K): Promise<V | undefined>;
 	getMany(keys: K[]): Promise<(V | undefined)[]>;
+	clear(): Promise<void>;
 	close(): void;
 }
 
@@ -94,6 +95,16 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	function close(): void {
 		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
 		file.close();
+	}
+
+	async function clear(): Promise<void> {
+		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
+		if (tx) throw new Error("Can't clear while a transaction is in progress");
+		await file.truncate(0);
+		dataBuf = new Uint8Array(0);
+		index.clear();
+		stagedChanges.clear();
+		entryCount = 0;
 	}
 
 	let tx: KVStoreTransaction<K, V> | null = null;
@@ -224,15 +235,14 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	const self: KVStore<K, V> = {
 		name,
-		wal: null,
+		wal: await getWAL(),
 		get,
 		getMany,
+		clear,
 		transaction,
 		createWAL,
 		close,
 	};
-
-	self.wal = await getWAL();
 
 	return self;
 }

@@ -336,7 +336,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		get,
 		slice,
 		transaction,
-		wal: null,
+		wal: await getWAL(),
 		createWAL,
 		truncate,
 		length,
@@ -345,8 +345,6 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 			self.close();
 		},
 	};
-
-	self.wal = await getWAL();
 
 	return self;
 }
