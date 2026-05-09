@@ -1,22 +1,19 @@
 import { type Codec, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { v7 } from "@std/uuid";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "./Store.ts";
 
-export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>> {
+export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>>, Disposable {
 	get(index: number): Promise<T>;
-	getMany(indices: number[]): Promise<T[]>;
+	slice(start: number, length: number): Promise<T[]>;
 	length(): number;
-	/** Truncate the store to `newLength` entries. Drops staged appends and sets past the new boundary. */
 	truncate(newLength: number): Promise<void>;
 	close(): void;
 }
 
 export interface ArrayStoreTransaction<T> extends Transaction {
 	get(index: number): Promise<T>;
-	getMany(indices: number[]): Promise<T[]>;
 	set(index: number, value: T): void;
 	append(value: T): number;
 	length(): number;
@@ -44,12 +41,16 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	}
 
 	const { name, path, codec } = options;
-	await Deno.mkdir(path, { recursive: true });
-	const dataPath = join(path, "data.bin");
-	const file = await Deno.open(dataPath, { read: true, write: true, create: true });
+	const countCodec = options.countCodec ?? VarInt;
 
-	let length = (await file.stat()).size / codec.stride;
-	if (!Number.isInteger(length)) {
+	const binPath = join(path, "data.bin");
+	const walPath = join(path, `data.wal`);
+
+	await Deno.mkdir(path, { recursive: true });
+	const file = await Deno.open(binPath, { read: true, write: true, create: true });
+
+	let diskLengthCache = (await file.stat()).size / codec.stride;
+	if (!Number.isInteger(diskLengthCache)) {
 		throw new Error("File size must be a multiple of codec stride");
 	}
 
@@ -58,18 +59,37 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	// Staged sets: in-place updates to existing indices
 	const stagedSets = new Map<number, T>();
 
+	function length(): number {
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
+
+		return diskLengthCache + stagedAppends.length;
+	}
+
+	function close(): void {
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
+		file.close();
+	}
+
 	async function get(index: number): Promise<T> {
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
+
 		if (index < 0) {
 			throw new Error("Index must be non-negative");
 		}
-		const totalLength = length + stagedAppends.length;
+		const totalLength = diskLengthCache + stagedAppends.length;
 		if (index >= totalLength) {
 			throw new Error("Index out of bounds");
 		}
 		// Check sets first
 		if (stagedSets.has(index)) return stagedSets.get(index)!;
 		// Check staged appends
-		if (index >= length) return stagedAppends[index - length]!;
+		if (index >= diskLengthCache) return stagedAppends[index - diskLengthCache]!;
 		const offset = index * codec.stride;
 		await file.seek(offset, Deno.SeekMode.Start);
 		const data = await readFile(file, codec.stride);
@@ -77,110 +97,103 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		return value;
 	}
 
-	async function getMany(indices: number[]): Promise<T[]> {
-		const results = new Array<T>(indices.length);
-		type DiskLookup = { resultIdx: number; fileIndex: number };
-		const diskLookups: DiskLookup[] = [];
+	async function slice(start: number, length: number): Promise<T[]> {
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
+		if (start < 0) throw new Error("start must be non-negative");
+		if (length < 0) throw new Error("length must be non-negative");
 
-		for (let i = 0; i < indices.length; i++) {
-			const index = indices[i]!;
-			if (index < 0 || index >= length + stagedAppends.length) {
-				throw new Error(`Index ${index} out of bounds`);
-			}
-			if (stagedSets.has(index)) {
-				results[i] = stagedSets.get(index)!;
-			} else if (index >= length) {
-				results[i] = stagedAppends[index - length]!;
-			} else {
-				diskLookups.push({ resultIdx: i, fileIndex: index });
+		const totalLength = diskLengthCache + stagedAppends.length;
+		const size = Math.min(length, totalLength - start);
+		if (size <= 0) return [];
+
+		const results = new Array<T>(size);
+
+		// How many entries of this slice come from disk vs staged
+		const diskEnd = Math.min(start + size, diskLengthCache);
+		const diskCount = Math.max(0, diskEnd - start);
+
+		// Bulk read contiguous disk entries in one seek
+		if (diskCount > 0) {
+			await file.seek(start * codec.stride, Deno.SeekMode.Start);
+			const bulk = await readFile(file, diskCount * codec.stride);
+			for (let i = 0; i < diskCount; i++) {
+				const index = start + i;
+				// stagedSets overrides disk
+				if (stagedSets.has(index)) {
+					results[i] = stagedSets.get(index)!;
+				} else {
+					results[i] = codec.decode(bulk.subarray(i * codec.stride, (i + 1) * codec.stride))[0];
+				}
 			}
 		}
 
-		// Sort by file index → sequential reads, then coalesce contiguous runs into bulk reads
-		diskLookups.sort((a, b) => a.fileIndex - b.fileIndex);
-		let i = 0;
-		while (i < diskLookups.length) {
-			// Find end of contiguous run
-			let j = i + 1;
-			while (j < diskLookups.length && diskLookups[j]!.fileIndex === diskLookups[j - 1]!.fileIndex + 1) j++;
-
-			const runLen = j - i;
-			const startIndex = diskLookups[i]!.fileIndex;
-			await file.seek(startIndex * codec.stride, Deno.SeekMode.Start);
-			const bulk = await readFile(file, runLen * codec.stride);
-			for (let k = 0; k < runLen; k++) {
-				const { resultIdx } = diskLookups[i + k]!;
-				results[resultIdx] = codec.decode(bulk.subarray(k * codec.stride, (k + 1) * codec.stride))[0];
+		// Staged appends fill the remainder
+		for (let i = diskCount; i < size; i++) {
+			const index = start + i;
+			// stagedSets can also override staged appends
+			if (stagedSets.has(index)) {
+				results[i] = stagedSets.get(index)!;
+			} else {
+				results[i] = stagedAppends[index - diskLengthCache]!;
 			}
-			i = j;
 		}
 
 		return results;
 	}
 
-	let currentTransaction: ArrayStoreTransaction<T> | null = null;
-	function assertNoTransaction(): void {
-		if (currentTransaction) {
+	async function truncate(newLength: number): Promise<void> {
+		if (tx) {
 			throw new Error("Can't perform this operation while a transaction is in progress");
+		}
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
+
+		if (newLength < 0) throw new Error("newLength must be non-negative");
+		const totalLength = diskLengthCache + stagedAppends.length;
+		if (newLength > totalLength) {
+			throw new Error(`newLength (${newLength}) exceeds current length (${totalLength})`);
+		}
+
+		// Drop staged appends past newLength
+		const maxStagedAppends = Math.max(0, newLength - diskLengthCache);
+		stagedAppends.length = maxStagedAppends;
+
+		// Drop staged sets whose index no longer exists
+		for (const index of stagedSets.keys()) {
+			if (index >= newLength) stagedSets.delete(index);
+		}
+
+		// Truncate on-disk committed entries if newLength < length
+		if (newLength < diskLengthCache) {
+			await file.truncate(newLength * codec.stride);
+			diskLengthCache = newLength;
 		}
 	}
 
+	let tx: ArrayStoreTransaction<T> | null = null;
 	function transaction(): ArrayStoreTransaction<T> {
-		assertNoTransaction();
+		if (tx) {
+			throw new Error("Transaction already in progress");
+		}
+		if (self.wal) {
+			throw new Error("Can't start a transaction while a WAL is in progress");
+		}
 
 		const txSets = new Map<number, T>();
 		const txAppends: T[] = [];
 		// snapshot of length at tx open (includes already-staged appends)
-		const txBaseLength = length + stagedAppends.length;
+		const txBaseLength = diskLengthCache + stagedAppends.length;
 
-		currentTransaction = {
+		tx = {
 			async get(index: number): Promise<T> {
 				if (index < 0) throw new Error("Index must be non-negative");
 				if (index >= txBaseLength + txAppends.length) throw new Error("Index out of bounds");
 				if (txSets.has(index)) return txSets.get(index)!;
 				if (index >= txBaseLength) return txAppends[index - txBaseLength]!;
 				return await get(index);
-			},
-			async getMany(indices: number[]): Promise<T[]> {
-				const results = new Array<T>(indices.length);
-				type DiskLookup = { resultIdx: number; fileIndex: number };
-				const diskLookups: DiskLookup[] = [];
-
-				for (let i = 0; i < indices.length; i++) {
-					const index = indices[i]!;
-					if (index < 0 || index >= txBaseLength + txAppends.length) {
-						throw new Error(`Index ${index} out of bounds`);
-					}
-					if (txSets.has(index)) {
-						results[i] = txSets.get(index)!;
-					} else if (index >= txBaseLength) {
-						results[i] = txAppends[index - txBaseLength]!;
-					} else {
-						diskLookups.push({ resultIdx: i, fileIndex: index });
-					}
-				}
-
-				// Sort → sequential reads, coalesce contiguous runs into bulk reads
-				diskLookups.sort((a, b) => a.fileIndex - b.fileIndex);
-				let i = 0;
-				while (i < diskLookups.length) {
-					let j = i + 1;
-					while (j < diskLookups.length && diskLookups[j]!.fileIndex === diskLookups[j - 1]!.fileIndex + 1) {
-						j++;
-					}
-
-					const runLen = j - i;
-					const startIndex = diskLookups[i]!.fileIndex;
-					await file.seek(startIndex * codec.stride, Deno.SeekMode.Start);
-					const bulk = await readFile(file, runLen * codec.stride);
-					for (let k = 0; k < runLen; k++) {
-						const { resultIdx } = diskLookups[i + k]!;
-						results[resultIdx] = codec.decode(bulk.subarray(k * codec.stride, (k + 1) * codec.stride))[0];
-					}
-					i = j;
-				}
-
-				return results;
 			},
 			set(index: number, value: T): void {
 				if (index < 0) throw new Error("Index must be non-negative");
@@ -210,89 +223,96 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 				// length stays as on-disk count; stagedAppends tracks the rest
 				txSets.clear();
 				txAppends.length = 0;
-				currentTransaction = null;
+				tx = null;
 			},
 			discard(): void {
 				txSets.clear();
 				txAppends.length = 0;
-				currentTransaction = null;
+				tx = null;
 			},
 		};
 
-		return currentTransaction;
+		return tx;
 	}
 
-	const setCodec = new StructCodec({ index: VarInt, value: codec });
+	const setCodec = new StructCodec({ index: countCodec, value: codec });
 
-	async function WAL(options: { id: string }): Promise<WAL | null>;
-	async function WAL(options?: { id?: undefined }): Promise<WAL>;
-	async function WAL(options?: { id?: string }): Promise<WAL | null> {
-		assertNoTransaction();
+	async function createWAL(): Promise<WAL> {
+		if (self.wal) {
+			throw new Error("WAL already exists");
+		}
+		if (tx) {
+			throw new Error("Can't create a WAL while a transaction is in progress");
+		}
 
-		const walId = options?.id ?? v7.generate();
-		const walPath = join(path, `${walId}.wal`);
+		// Section 1: appends — count + packed raw bytes
+		const appendCount = stagedAppends.length;
+		const appendCountBytes = countCodec.encode(appendCount);
+		const appendDataSize = appendCount * codec.stride;
 
-		if (options?.id && !await exists(walPath)) {
+		// Section 2: sets — count + [{index, value}...]
+		const setEntries = Array.from(stagedSets.entries());
+		const setCount = setEntries.length;
+		const setCountBytes = countCodec.encode(setCount);
+		const setData: Uint8Array[] = setEntries.map(([index, value]) => setCodec.encode({ index, value }));
+		const setDataSize = setData.reduce((s, b) => s + b.length, 0);
+
+		const buf = new Uint8Array(
+			appendCountBytes.length + appendDataSize +
+				setCountBytes.length + setDataSize,
+		);
+		let pos = 0;
+
+		buf.set(appendCountBytes, pos);
+		pos += appendCountBytes.length;
+		for (const value of stagedAppends) {
+			buf.set(codec.encode(value), pos);
+			pos += codec.stride;
+		}
+
+		buf.set(setCountBytes, pos);
+		pos += setCountBytes.length;
+		for (const chunk of setData) {
+			buf.set(chunk, pos);
+			pos += chunk.length;
+		}
+
+		await Deno.writeFile(walPath, buf, { create: true });
+		stagedAppends.length = 0;
+		stagedSets.clear();
+
+		const wal = await getWAL();
+		if (!wal) {
+			throw new Error("Failed to create WAL");
+		}
+		self.wal = wal;
+		return wal;
+	}
+
+	async function getWAL(): Promise<WAL | null> {
+		if (!await exists(walPath)) {
 			return null;
 		}
 
 		return {
-			id: walId,
-			async save(): Promise<void> {
-				// Section 1: appends — count + packed raw bytes
-				const appendCount = stagedAppends.length;
-				const appendCountBytes = VarInt.encode(appendCount);
-				const appendDataSize = appendCount * codec.stride;
-
-				// Section 2: sets — count + [{index, value}...]
-				const setEntries = Array.from(stagedSets.entries());
-				const setCount = setEntries.length;
-				const setCountBytes = VarInt.encode(setCount);
-				const setData: Uint8Array[] = setEntries.map(([index, value]) => setCodec.encode({ index, value }));
-				const setDataSize = setData.reduce((s, b) => s + b.length, 0);
-
-				const buf = new Uint8Array(
-					appendCountBytes.length + appendDataSize +
-						setCountBytes.length + setDataSize,
-				);
-				let pos = 0;
-
-				buf.set(appendCountBytes, pos);
-				pos += appendCountBytes.length;
-				for (const value of stagedAppends) {
-					buf.set(codec.encode(value), pos);
-					pos += codec.stride;
-				}
-
-				buf.set(setCountBytes, pos);
-				pos += setCountBytes.length;
-				for (const chunk of setData) {
-					buf.set(chunk, pos);
-					pos += chunk.length;
-				}
-
-				await Deno.writeFile(walPath, buf, { create: true });
-				stagedAppends.length = 0;
-				stagedSets.clear();
-			},
 			async apply(): Promise<void> {
 				const buf = await Deno.readFile(walPath);
 				let pos = 0;
 
 				// Section 1: appends
-				const [appendCount, appendCountLen] = VarInt.decode(buf.subarray(pos));
+				const [appendCount, appendCountLen] = countCodec.decode(buf.subarray(pos));
 				pos += appendCountLen;
 
 				if (appendCount > 0) {
 					const appendBytes = buf.subarray(pos, pos + appendCount * codec.stride);
-					await file.seek(length * codec.stride, Deno.SeekMode.Start);
+					await file.seek(diskLengthCache * codec.stride, Deno.SeekMode.Start);
 					await writeFile(file, appendBytes);
-					length += appendCount;
+					diskLengthCache += appendCount;
 					pos += appendCount * codec.stride;
 				}
 
 				// Section 2: sets
-				const [setCount, setCountLen] = VarInt.decode(buf.subarray(pos));
+				const [setCount, setCountLen] = countCodec.decode(buf.subarray(pos));
 				pos += setCountLen;
 
 				for (let i = 0; i < setCount; i++) {
@@ -301,51 +321,32 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 					const offset = entry.index * codec.stride;
 					await file.seek(offset, Deno.SeekMode.Start);
 					await writeFile(file, codec.encode(entry.value));
-					if (entry.index >= length) length = entry.index + 1;
+					if (entry.index >= diskLengthCache) diskLengthCache = entry.index + 1;
 				}
 			},
 			async discard() {
+				self.wal = null;
 				return await Deno.remove(walPath).catch(() => {/* ignore */});
 			},
 		};
 	}
 
-	async function truncate(newLength: number): Promise<void> {
-		assertNoTransaction();
-		if (newLength < 0) throw new Error("newLength must be non-negative");
-		const totalLength = length + stagedAppends.length;
-		if (newLength > totalLength) {
-			throw new Error(`newLength (${newLength}) exceeds current length (${totalLength})`);
-		}
-
-		// Drop staged appends past newLength
-		const maxStagedAppends = Math.max(0, newLength - length);
-		stagedAppends.length = maxStagedAppends;
-
-		// Drop staged sets whose index no longer exists
-		for (const index of stagedSets.keys()) {
-			if (index >= newLength) stagedSets.delete(index);
-		}
-
-		// Truncate on-disk committed entries if newLength < length
-		if (newLength < length) {
-			await file.truncate(newLength * codec.stride);
-			length = newLength;
-		}
-	}
-
-	return {
+	const self: ArrayStore<T> = {
 		name,
 		get,
-		getMany,
+		slice,
 		transaction,
-		WAL,
+		wal: null,
+		createWAL,
 		truncate,
-		length(): number {
-			return length + stagedAppends.length;
-		},
-		close(): void {
-			file.close();
+		length,
+		close,
+		[Symbol.dispose]() {
+			self.close();
 		},
 	};
+
+	self.wal = await getWAL();
+
+	return self;
 }

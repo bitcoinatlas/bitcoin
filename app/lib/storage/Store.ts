@@ -1,4 +1,4 @@
-import { ArrayCodec, Codec, Str, StructCodec, U8, UnionCodec, Void } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, Str, U8, UnionCodec, Void } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { BASE_DATA_DIR } from "~/constants.ts";
@@ -28,8 +28,6 @@ export type Transaction = {
  * - `discard()` — delete the WAL file if it exists.
  */
 export type WAL = {
-	id: string;
-	save(): Promise<void>;
 	apply(): Promise<void>;
 	discard(): Promise<void>;
 };
@@ -44,60 +42,54 @@ export type WAL = {
  */
 export type Store<T extends Transaction = Transaction> = {
 	name: string;
+	wal: WAL | null;
+	createWAL(): Promise<WAL>;
 	transaction(): T;
-	WAL(options: { id: string }): Promise<WAL | null>;
-	WAL(options?: { id?: undefined }): Promise<WAL>;
 };
 
-const STATE_PATH = join(BASE_DATA_DIR, "atomic", "state.bin");
-const IDS_PATH = join(BASE_DATA_DIR, "atomic", "ids.bin");
+const ATOMIC_STATE_PATH = join(BASE_DATA_DIR, "atomic", "state.bin");
+const ATOMIC_STORE_NAMES_PATH = join(BASE_DATA_DIR, "atomic", "ids.bin");
 
-type State = Codec.InferOutput<typeof State>["kind"];
-const State = new UnionCodec({
+type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
+const AtomicState = new UnionCodec({
 	"started": Void,
 	"saved": Void,
 	"applied": Void,
 	"discarded": Void,
 });
 
-const AtomicWALs = new ArrayCodec(
-	new StructCodec({
-		store: Str,
-		wal: Str,
-	}),
-	{ countCodec: U8 },
-);
+const StoreNames = new ArrayCodec(Str, { countCodec: U8 });
 
 const atomicMeta = {
 	state: {
-		async get(): Promise<State> {
-			const data = await Deno.readFile(STATE_PATH);
-			const [state] = State.decode(data);
+		async get(): Promise<AtomicState> {
+			const data = await Deno.readFile(ATOMIC_STATE_PATH);
+			const [state] = AtomicState.decode(data);
 			return state["kind"];
 		},
-		async set(newState: State): Promise<void> {
-			const data = State.encode({ kind: newState, value: null });
-			await Deno.writeFile(STATE_PATH, data, { create: true });
+		async set(newState: AtomicState): Promise<void> {
+			const data = AtomicState.encode({ kind: newState, value: null });
+			await Deno.writeFile(ATOMIC_STATE_PATH, data, { create: true });
 		},
 	},
-	wals: {
-		async get(): Promise<Codec.InferOutput<typeof AtomicWALs>> {
-			if (!await exists(IDS_PATH)) return [];
-			const data = await Deno.readFile(IDS_PATH);
-			const [entries] = AtomicWALs.decode(data);
+	stores: {
+		async get(): Promise<Codec.InferOutput<typeof StoreNames>> {
+			if (!await exists(ATOMIC_STORE_NAMES_PATH)) return [];
+			const data = await Deno.readFile(ATOMIC_STORE_NAMES_PATH);
+			const [entries] = StoreNames.decode(data);
 			return entries;
 		},
-		async set(entries: Codec.InferInput<typeof AtomicWALs>): Promise<void> {
-			const data = AtomicWALs.encode(entries);
-			await Deno.writeFile(IDS_PATH, data, { create: true });
+		async set(entries: Codec.InferInput<typeof StoreNames>): Promise<void> {
+			const data = StoreNames.encode(entries);
+			await Deno.writeFile(ATOMIC_STORE_NAMES_PATH, data, { create: true });
 		},
 		async delete(): Promise<void> {
-			if (await exists(IDS_PATH)) {
-				await Deno.remove(IDS_PATH);
+			if (await exists(ATOMIC_STORE_NAMES_PATH)) {
+				await Deno.remove(ATOMIC_STORE_NAMES_PATH);
 			}
 		},
-		async has(): Promise<boolean> {
-			return await exists(IDS_PATH);
+		async exists(): Promise<boolean> {
+			return await exists(ATOMIC_STORE_NAMES_PATH);
 		},
 	},
 };
@@ -122,20 +114,19 @@ const atomicMeta = {
  * Call `recover()` first to clear a previous crashed flush before retrying.
  */
 export async function atomic(stores: Store[]): Promise<void> {
-	if (await atomicMeta.wals.has()) {
+	if (await atomicMeta.stores.exists()) {
 		throw new Error("Can't have multiple atomic flushes in progress");
 	}
 
-	const wals = await Promise.all(stores.map(async (store) => ({ store, wal: await store.WAL() })));
 	await atomicMeta.state.set("started");
-	await atomicMeta.wals.set(wals.map(({ store, wal }) => ({ store: store.name, wal: wal.id })));
-	await Promise.all(wals.map(({ wal }) => wal.save()));
+	await atomicMeta.stores.set(stores.map(({ name }) => name));
+	const wals = await Promise.all(stores.map((store) => store.createWAL()));
 	await atomicMeta.state.set("saved");
-	await Promise.all(wals.map(({ wal }) => wal.apply()));
+	await Promise.all(wals.map((wal) => wal.apply()));
 	await atomicMeta.state.set("applied");
-	await Promise.all(wals.map(({ wal }) => wal.discard()));
+	await Promise.all(wals.map((wal) => wal.discard()));
 	await atomicMeta.state.set("discarded");
-	await atomicMeta.wals.delete();
+	await atomicMeta.stores.delete();
 }
 
 /**
@@ -143,24 +134,25 @@ export async function atomic(stores: Store[]): Promise<void> {
  * Should be called once at startup before any writes.
  */
 export async function recover(stores: Store[]): Promise<void> {
-	if (!await atomicMeta.wals.has()) {
+	if (!await atomicMeta.stores.exists()) {
 		return;
 	}
 	const state = await atomicMeta.state.get();
 
 	const storesByName = new Map(stores.map((store) => [store.name, store]));
-	const atomicWALs = await atomicMeta.wals.get();
+	const storeNames = await atomicMeta.stores.get();
 	const wals: WAL[] = [];
-	for (const entry of atomicWALs) {
-		const store = storesByName.get(entry.store);
+	for (const name of storeNames) {
+		const store = storesByName.get(name);
 		if (!store) {
-			throw new Error(`Store ${entry.store} not found for atomic WAL recovery`);
+			throw new Error(`Store ${name} not found for atomic WAL recovery`);
 		}
-		const wal = await store.WAL({ id: entry.wal });
+		const { wal } = store;
 		if (!wal) {
+			if (state === "started") continue;
 			if (state === "applied") continue;
 			if (state === "discarded") continue;
-			throw new Error(`WAL ${entry.wal} for store ${entry.store} not found during atomic WAL recovery`);
+			throw new Error(`WAL for store ${name} not found during atomic WAL recovery`);
 		}
 		wals.push(wal);
 	}
@@ -170,7 +162,7 @@ export async function recover(stores: Store[]): Promise<void> {
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomicMeta.wals.delete();
+		await atomicMeta.stores.delete();
 		return;
 	}
 
@@ -184,7 +176,7 @@ export async function recover(stores: Store[]): Promise<void> {
 			await wal.discard();
 		}
 		await atomicMeta.state.set("discarded");
-		await atomicMeta.wals.delete();
+		await atomicMeta.stores.delete();
 		return;
 	}
 
@@ -194,7 +186,7 @@ export async function recover(stores: Store[]): Promise<void> {
 			await wal.discard();
 		}
 		await atomicMeta.state.set("discarded");
-		await atomicMeta.wals.delete();
+		await atomicMeta.stores.delete();
 		return;
 	}
 
@@ -203,11 +195,9 @@ export async function recover(stores: Store[]): Promise<void> {
 		for (const wal of wals) {
 			await wal.discard();
 		}
-		await atomicMeta.wals.delete();
+		await atomicMeta.stores.delete();
 		return;
 	}
 
 	throw new Error(`Invalid atomic flush state: ${state satisfies never}`);
 }
-
-

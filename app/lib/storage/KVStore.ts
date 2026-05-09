@@ -1,7 +1,6 @@
 import { type Codec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { v7 } from "@std/uuid";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "./Store.ts";
@@ -16,6 +15,8 @@ import type { Store, Transaction, WAL } from "./Store.ts";
  * - Keys and values must have a fixed codec stride (> 0).
  * - Supports point lookups and batch lookups.
  * - Does not support deletes (append/update only).
+ *
+ * WAL format: [u32 count LE][key|value]...
  */
 export interface KVStore<K, V> extends Store<KVStoreTransaction<K, V>> {
 	get(key: K): Promise<V | undefined>;
@@ -46,6 +47,8 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	const { name, path, keyCodec, valueCodec } = options;
 	const entrySize = keyCodec.stride + valueCodec.stride;
+	const walPath = join(path, "data.wal");
+
 	await Deno.mkdir(path, { recursive: true });
 	const dataPath = join(path, "data.bin");
 	const file = await Deno.open(dataPath, { read: true, write: true, create: true });
@@ -62,7 +65,6 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	const index = new Uint8ArrayMap<number>(Math.max(1024, Math.ceil(fileSize / entrySize) * 2));
 	let entryCount = fileSize / entrySize;
 
-	// Build index from in-memory buffer (no async I/O per entry)
 	for (let i = 0; i < entryCount; i++) {
 		const offset = i * entrySize;
 		index.set(dataBuf.subarray(offset, offset + keyCodec.stride), offset);
@@ -80,26 +82,28 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	}
 
 	async function get(key: K): Promise<V | undefined> {
+		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
 		return getByBytes(keyCodec.encode(key));
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
+		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
 		return keys.map((k) => getByBytes(keyCodec.encode(k)));
 	}
 
-	let currentTransaction: KVStoreTransaction<K, V> | null = null;
-	function assertNoTransaction(): void {
-		if (currentTransaction) {
-			throw new Error("Can't perform this operation while a transaction is in progress");
-		}
+	function close(): void {
+		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
+		file.close();
 	}
 
+	let tx: KVStoreTransaction<K, V> | null = null;
 	function transaction(): KVStoreTransaction<K, V> {
-		assertNoTransaction();
+		if (tx) throw new Error("Transaction already in progress");
+		if (self.wal) throw new Error("Can't start a transaction while a WAL is in progress");
 
 		const txChanges = new Uint8ArrayMap<Uint8Array>(256);
 
-		currentTransaction = {
+		tx = {
 			async get(key: K): Promise<V | undefined> {
 				const keyBytes = keyCodec.encode(key);
 				const txVal = txChanges.get(keyBytes);
@@ -107,7 +111,12 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 				return getByBytes(keyBytes);
 			},
 			async getMany(keys: K[]): Promise<(V | undefined)[]> {
-				return Promise.all(keys.map((k) => this.get(k)));
+				return keys.map((k) => {
+					const keyBytes = keyCodec.encode(k);
+					const txVal = txChanges.get(keyBytes);
+					if (txVal !== undefined) return valueCodec.decode(txVal)[0];
+					return getByBytes(keyBytes);
+				});
 			},
 			set(key: K, value: V): void {
 				txChanges.set(keyCodec.encode(key), valueCodec.encode(value));
@@ -117,56 +126,54 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 					stagedChanges.set(new Uint8Array(k), new Uint8Array(v));
 				}
 				txChanges.clear();
-				currentTransaction = null;
+				tx = null;
 			},
 			discard(): void {
 				txChanges.clear();
-				currentTransaction = null;
+				tx = null;
 			},
 		};
 
-		return currentTransaction;
+		return tx;
 	}
 
-	async function WAL(options: { id: string }): Promise<WAL | null>;
-	async function WAL(options?: { id?: undefined }): Promise<WAL>;
-	async function WAL(options?: { id?: string }): Promise<WAL | null> {
-		assertNoTransaction();
+	async function createWAL(): Promise<WAL> {
+		if (self.wal) throw new Error("WAL already exists");
+		if (tx) throw new Error("Can't create a WAL while a transaction is in progress");
 
-		const walId = options?.id ?? v7.generate();
-		const walPath = join(path, `${walId}.wal`);
-
-		if (options?.id && !await exists(walPath)) {
-			return null;
+		// WAL format: [u32 count LE][key|value]...
+		const entries = stagedChanges.entries().toArray();
+		const buf = new Uint8Array(4 + entries.length * entrySize);
+		const view = new DataView(buf.buffer);
+		view.setUint32(0, entries.length, true);
+		let pos = 4;
+		for (const [k, v] of entries) {
+			buf.set(k, pos);
+			pos += keyCodec.stride;
+			buf.set(v, pos);
+			pos += valueCodec.stride;
 		}
+		await Deno.writeFile(walPath, buf, { create: true });
+		stagedChanges.clear();
+
+		const wal = await getWAL();
+		if (!wal) throw new Error("Failed to create WAL");
+		self.wal = wal;
+		return wal;
+	}
+
+	async function getWAL(): Promise<WAL | null> {
+		if (!await exists(walPath)) return null;
 
 		return {
-			id: walId,
-			async save(): Promise<void> {
-				// WAL format: [u32 count][key|value]...
-				const entries = stagedChanges.entries().toArray();
-				const buf = new Uint8Array(4 + entries.length * entrySize);
-				const view = new DataView(buf.buffer);
-				view.setUint32(0, entries.length, true);
-				let pos = 4;
-				for (const [k, v] of entries) {
-					buf.set(k, pos);
-					pos += keyCodec.stride;
-					buf.set(v, pos);
-					pos += valueCodec.stride;
-				}
-				await Deno.writeFile(walPath, buf, { create: true });
-				stagedChanges.clear();
-			},
 			async apply(): Promise<void> {
 				const buf = await Deno.readFile(walPath);
 				const view = new DataView(buf.buffer);
 				const count = view.getUint32(0, true);
 
-				// Split into updates (existing entries) and appends (new entries)
 				type UpdateEntry = { offset: number; valueBytes: Uint8Array };
 				const updates: UpdateEntry[] = [];
-				const appendBuf = new Uint8Array(count * entrySize); // upper bound
+				const appendBuf = new Uint8Array(count * entrySize);
 				let appendCount = 0;
 
 				let pos = 4;
@@ -183,52 +190,49 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 						const entryOffset = appendCount * entrySize;
 						appendBuf.set(keyBytes, entryOffset);
 						appendBuf.set(valueBytes, entryOffset + keyCodec.stride);
-						// Register in index (offset relative to file, resolved after append)
 						index.set(new Uint8Array(keyBytes), (entryCount + appendCount) * entrySize);
 						appendCount++;
 					}
 				}
 
-				// Apply updates to in-memory buffer and disk
+				// Apply updates to in-memory buffer and disk (sorted for sequential I/O)
 				updates.sort((a, b) => a.offset - b.offset);
 				for (const { offset, valueBytes } of updates) {
-					// Update in-memory cache
 					dataBuf.set(valueBytes, offset + keyCodec.stride);
-					// Update on disk
 					await file.seek(offset + keyCodec.stride, Deno.SeekMode.Start);
 					await writeFile(file, valueBytes);
 				}
 
-				// Batch append all new entries in one write
+				// Batch append new entries
 				if (appendCount > 0) {
 					const appendSlice = appendBuf.subarray(0, appendCount * entrySize);
-
-					// Grow in-memory buffer
 					const newBuf = new Uint8Array(dataBuf.length + appendSlice.length);
 					newBuf.set(dataBuf);
 					newBuf.set(appendSlice, dataBuf.length);
 					dataBuf = newBuf;
-
-					// Append to disk
 					await file.seek(entryCount * entrySize, Deno.SeekMode.Start);
 					await writeFile(file, appendSlice);
 					entryCount += appendCount;
 				}
 			},
 			async discard(): Promise<void> {
+				self.wal = null;
 				await Deno.remove(walPath).catch(() => {/* ignore */});
 			},
 		};
 	}
 
-	return {
+	const self: KVStore<K, V> = {
 		name,
+		wal: null,
 		get,
 		getMany,
 		transaction,
-		WAL,
-		close(): void {
-			file.close();
-		},
+		createWAL,
+		close,
 	};
+
+	self.wal = await getWAL();
+
+	return self;
 }

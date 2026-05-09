@@ -1,6 +1,5 @@
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { v7 } from "@std/uuid";
 import { writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "./Store.ts";
 
@@ -10,14 +9,15 @@ import type { Store, Transaction, WAL } from "./Store.ts";
  * Each blob is addressed by a logical byte pointer (its offset in the virtual stream).
  * Reads reconstruct the blob from the appropriate chunk file.
  *
- * Staged appends are held in memory. On WAL save, blobs are written to a WAL file.
- * On WAL apply, blobs are appended to chunk files in order.
+ * Staged appends are held in memory. On WAL create, blobs are written to a WAL file
+ * and staged is cleared. On WAL apply, blobs are appended to chunk files in order.
+ *
+ * WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
  */
 export interface BlobStore extends Store<BlobStoreTransaction> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
 	/** Current end-of-stream pointer (total bytes written). */
 	length(): number;
-	/** Truncate the virtual stream to `newLength` bytes. Drops staged appends past the new boundary. */
 	truncate(newLength: number): Promise<void>;
 }
 
@@ -38,6 +38,7 @@ export type BlobStoreOptions = {
 export async function createBlobStore(options: BlobStoreOptions): Promise<BlobStore> {
 	const { name, path } = options;
 	const chunkByteSize = options.chunkByteSize ?? 1 * 1024 * 1024 * 1024;
+	const walPath = join(path, "data.wal");
 
 	await Deno.mkdir(path, { recursive: true });
 
@@ -52,7 +53,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			}
 		}
 		if (maxIndex >= 0) {
-			// Full chunks before last + last chunk size
 			const lastChunkPath = join(path, `chunk_${maxIndex}`);
 			const lastSize = (await Deno.stat(lastChunkPath)).size;
 			totalLength = maxIndex * chunkByteSize + lastSize;
@@ -71,7 +71,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	function nextPointer(pos: number, dataSize: number): number {
 		const offsetInChunk = pos % chunkByteSize;
 		if (offsetInChunk + dataSize > chunkByteSize) {
-			// Roll to start of next chunk
 			const chunkIndex = Math.floor(pos / chunkByteSize);
 			return (chunkIndex + 1) * chunkByteSize;
 		}
@@ -102,7 +101,9 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	async function get(pointer: number, length: number): Promise<Uint8Array> {
-		// Check staged appends first
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
+		}
 		for (const entry of stagedAppends) {
 			if (entry.pointer === pointer && entry.data.length === length) {
 				return entry.data;
@@ -111,20 +112,22 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		return await getFromDisk(pointer, length);
 	}
 
-	let currentTransaction: BlobStoreTransaction | null = null;
-	function assertNoTransaction(): void {
-		if (currentTransaction) {
-			throw new Error("Can't perform this operation while a transaction is in progress");
+	function length(): number {
+		if (self.wal) {
+			throw new Error("Can't perform this operation while a WAL is in progress");
 		}
+		return stagedLength;
 	}
 
+	let tx: BlobStoreTransaction | null = null;
 	function transaction(): BlobStoreTransaction {
-		assertNoTransaction();
+		if (tx) throw new Error("Transaction already in progress");
+		if (self.wal) throw new Error("Can't start a transaction while a WAL is in progress");
 
 		const txAppends: Array<{ pointer: number; data: Uint8Array }> = [];
 		let txLength = stagedLength;
 
-		currentTransaction = {
+		tx = {
 			append(data: Uint8Array): number {
 				if (data.length > chunkByteSize) {
 					throw new Error(`Blob size (${data.length}) exceeds chunk limit (${chunkByteSize})`);
@@ -151,22 +154,21 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				}
 				stagedLength = txLength;
 				txAppends.length = 0;
-				currentTransaction = null;
+				tx = null;
 			},
 			discard(): void {
 				txAppends.length = 0;
-				currentTransaction = null;
+				tx = null;
 			},
 		};
 
-		return currentTransaction;
+		return tx;
 	}
 
-	async function appendBlobToDisk(data: Uint8Array): Promise<number> {
+	async function appendBlobToDisk(data: Uint8Array): Promise<void> {
 		const pointer = nextPointer(totalLength, data.length);
 		const chunkIndex = Math.floor(pointer / chunkByteSize);
 		const chunkPath = join(path, `chunk_${chunkIndex}`);
-
 		const file = await Deno.open(chunkPath, { create: true, write: true, append: true });
 		try {
 			await writeFile(file, data);
@@ -174,40 +176,38 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			file.close();
 		}
 		totalLength = pointer + data.length;
-		return pointer;
 	}
 
-	async function WAL(options: { id: string }): Promise<WAL | null>;
-	async function WAL(options?: { id?: undefined }): Promise<WAL>;
-	async function WAL(options?: { id?: string }): Promise<WAL | null> {
-		assertNoTransaction();
+	async function createWAL(): Promise<WAL> {
+		if (self.wal) throw new Error("WAL already exists");
+		if (tx) throw new Error("Can't create a WAL while a transaction is in progress");
 
-		const walId = options?.id ?? v7.generate();
-		const walPath = join(path, `${walId}.wal`);
-
-		if (options?.id && !await exists(walPath)) {
-			return null;
+		// WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
+		let totalSize = 4;
+		for (const { data } of stagedAppends) totalSize += 4 + data.length;
+		const buf = new Uint8Array(totalSize);
+		const view = new DataView(buf.buffer);
+		view.setUint32(0, stagedAppends.length, true);
+		let pos = 4;
+		for (const { data } of stagedAppends) {
+			view.setUint32(pos, data.length, true);
+			pos += 4;
+			buf.set(data, pos);
+			pos += data.length;
 		}
+		await Deno.writeFile(walPath, buf, { create: true });
+		stagedAppends.length = 0;
+
+		const wal = await getWAL();
+		if (!wal) throw new Error("Failed to create WAL");
+		self.wal = wal;
+		return wal;
+	}
+
+	async function getWAL(): Promise<WAL | null> {
+		if (!await exists(walPath)) return null;
 
 		return {
-			id: walId,
-			async save(): Promise<void> {
-				// WAL format: [u32 count]([u32 length][bytes])...
-				let totalSize = 4;
-				for (const { data } of stagedAppends) totalSize += 4 + data.length;
-				const buf = new Uint8Array(totalSize);
-				const view = new DataView(buf.buffer);
-				view.setUint32(0, stagedAppends.length, true);
-				let pos = 4;
-				for (const { data } of stagedAppends) {
-					view.setUint32(pos, data.length, true);
-					pos += 4;
-					buf.set(data, pos);
-					pos += data.length;
-				}
-				await Deno.writeFile(walPath, buf, { create: true });
-				stagedAppends.length = 0;
-			},
 			async apply(): Promise<void> {
 				const buf = await Deno.readFile(walPath);
 				const view = new DataView(buf.buffer);
@@ -220,15 +220,18 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 					pos += len;
 					await appendBlobToDisk(data);
 				}
+				stagedLength = totalLength;
 			},
 			async discard(): Promise<void> {
+				self.wal = null;
 				await Deno.remove(walPath).catch(() => {/* ignore */});
 			},
 		};
 	}
 
 	async function truncate(newLength: number): Promise<void> {
-		assertNoTransaction();
+		if (tx) throw new Error("Can't perform this operation while a transaction is in progress");
+		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
 		if (newLength < 0) throw new Error("newLength must be non-negative");
 		if (newLength > stagedLength) {
 			throw new Error(`newLength (${newLength}) exceeds current length (${stagedLength})`);
@@ -240,12 +243,10 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		for (const e of kept) stagedAppends.push(e);
 		stagedLength = newLength;
 
-		// Truncate committed (disk) state
 		if (newLength < totalLength) {
 			const newChunkIndex = newLength === 0 ? 0 : Math.floor((newLength - 1) / chunkByteSize);
 			const newOffsetInChunk = newLength % chunkByteSize;
 
-			// Delete all chunk files past the new last chunk
 			for await (const entry of Deno.readDir(path)) {
 				if (entry.isFile && entry.name.startsWith("chunk_")) {
 					const i = parseInt(entry.name.slice(6), 10);
@@ -255,7 +256,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				}
 			}
 
-			// Truncate the last surviving chunk (or remove it entirely if newLength is on a chunk boundary)
 			if (newLength === 0) {
 				await Deno.remove(join(path, "chunk_0")).catch(() => {/* may not exist */});
 			} else {
@@ -270,14 +270,17 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		}
 	}
 
-	return {
+	const self: BlobStore = {
 		name,
+		wal: null,
 		get,
-		length(): number {
-			return stagedLength;
-		},
+		length,
 		transaction,
-		WAL,
+		createWAL,
 		truncate,
 	};
+
+	self.wal = await getWAL();
+
+	return self;
 }

@@ -51,8 +51,7 @@ async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 		const tx = store.transaction();
 		for (let j = i; j < end; j++) tx.set(keys[j]!, values[j]!);
 		tx.apply();
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -162,8 +161,7 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 		const tx = store.transaction();
 		for (let j = i; j < end; j++) tx.append(items[j]!);
 		tx.apply();
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
 
@@ -183,12 +181,9 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 
 	// Reads (sequential range)
 	console.log(`    Reading (range/${ARRAY_RANGE_SIZE})...`);
-	const rangeIndices = new Array<number>(ARRAY_RANGE_SIZE);
 	const rangeStart = performance.now();
 	for (let i = 0; i < ARRAY_READ_SAMPLES; i += ARRAY_RANGE_SIZE) {
-		const end = Math.min(i + ARRAY_RANGE_SIZE, ARRAY_READ_SAMPLES);
-		for (let k = 0; k < end - i; k++) rangeIndices[k] = i + k;
-		await store.getMany(rangeIndices.slice(0, end - i));
+		await store.slice(i, Math.min(ARRAY_RANGE_SIZE, ARRAY_READ_SAMPLES - i));
 	}
 	const rangeOps = ARRAY_READ_SAMPLES / ((performance.now() - rangeStart) / 1000);
 	console.log(`      ${rangeOps.toFixed(0)} ops/sec`);
@@ -221,8 +216,7 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 	const tx = store.transaction();
 	for (let i = 0; i < BLOB_TOTAL; i++) pointers.push(tx.append(blobs[i]!));
 	tx.apply();
-	const wal = await store.WAL();
-	await wal.save();
+	const wal = await store.createWAL();
 	await wal.apply();
 	await wal.discard();
 	const writeElapsed = (performance.now() - writeStart) / 1000;
