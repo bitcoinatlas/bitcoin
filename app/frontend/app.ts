@@ -1,8 +1,7 @@
+import { bytesToHex } from "@noble/hashes/utils";
+import { tags, toChild } from "@purifyjs/core";
 import { api } from "~/frontend/api.ts";
 import appCss from "./app.css" with { type: "text" };
-import { tags, toChild } from "@purifyjs/core";
-import { sha256 } from "@noble/hashes/sha2";
-import { bytesToHex } from "@noble/hashes/utils";
 
 const appSheet = new CSSStyleSheet();
 appSheet.replaceSync(appCss);
