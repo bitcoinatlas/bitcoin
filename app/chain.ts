@@ -67,11 +67,7 @@ const stores: readonly Store[] = [
 
 await recover(stores);
 
-export async function atomicFlush() {
-	await atomic(stores);
-}
-
-const localChain = new PeerChain([]);
+export const localChain = new PeerChain([]);
 
 const headerLength = blockHeightToHeader.length();
 const headers = await blockHeightToHeader.slice(0, headerLength);
@@ -102,6 +98,10 @@ if (headers.length > 0) {
 	tx.append(header);
 	tx.apply();
 	await atomic([blockHeightToHeader]);
+}
+
+export async function atomicFlush() {
+	await atomic(stores);
 }
 
 export function appendBlockHeader(headers: WireBlockHeader[]): { height: number } {
@@ -199,4 +199,36 @@ export async function getBlockBodyByHash(hash: Uint8Array): Promise<Tx[] | undef
 	const height = await blockHashToHeight.get(hash);
 	if (height === undefined) return undefined;
 	return await getBlockBodyByHeight(height);
+}
+
+export async function getHeightByHash(hash: Uint8Array): Promise<number | undefined> {
+	return await blockHashToHeight.get(hash);
+}
+
+export async function getHashByHeight(height: number): Promise<Uint8Array | undefined> {
+	const header = await getBlockHeaderByHeight(height);
+	if (!header) return undefined;
+	return header.hash;
+}
+
+export async function getTxPointerById(txId: Uint8Array): Promise<StoredPointer | undefined> {
+	return await txIdToPointer.get(txId);
+}
+
+export async function getBlockPointerByHeight(height: number): Promise<StoredPointer | undefined> {
+	return await blockHeightToPointer.get(height);
+}
+
+export async function getBlockPointerByHash(hash: Uint8Array): Promise<StoredPointer | undefined> {
+	const height = await blockHashToHeight.get(hash);
+	if (height === undefined) return undefined;
+	return await blockHeightToPointer.get(height);
+}
+
+export async function getChainTip(): Promise<{ height: number; hash: Uint8Array } | null> {
+	const height = blockHeightToHeader.length() - 1;
+	if (height < 0) return null;
+	const header = await getBlockHeaderByHeight(height);
+	if (!header) return null;
+	return { height, hash: header.hash };
 }
