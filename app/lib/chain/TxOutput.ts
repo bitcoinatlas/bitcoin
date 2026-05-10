@@ -1,4 +1,4 @@
-import { ScriptPubKey } from "~/lib/chain/utils/ScriptPubKey.ts";
+import { ScriptPubKey } from "./ScriptPubKey.ts";
 
 export type TxOutputData = {
 	value: bigint;

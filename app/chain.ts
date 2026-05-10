@@ -3,18 +3,18 @@ import { join } from "@std/path";
 import { BASE_DATA_DIR, GENESIS_BLOCK_HEADER } from "~/constants.ts";
 import { StoredBlock } from "~/lib/chain/codec/stored/StoredBlock.ts";
 import { StoredPointer } from "~/lib/chain/codec/stored/StoredPointer.ts";
+import { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
 import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
+import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
 import { PeerChain } from "~/lib/chain/PeerChain.ts";
 import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
-import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils/PoW.ts";
+import { Tx } from "~/lib/chain/Tx.ts";
+import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
 import { Bytes32, U48LE } from "~/lib/codec/primitives.ts";
 import { createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { createBlobStore } from "~/lib/storage/BlobStore.ts";
 import { createKVStore } from "~/lib/storage/KVStore.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
-import { StoredTx } from "./codec/stored/StoredTx.ts";
-import { Tx } from "./Tx.ts";
-import { WireTx } from "./codec/wire/WireTx.ts";
 
 const blockHashToHeight = await createKVStore<Uint8Array, number>({
 	name: "hashToHeight",

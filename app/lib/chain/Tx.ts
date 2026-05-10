@@ -4,7 +4,7 @@ import type { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
 import type { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
 import { TxOutput } from "~/lib/chain/TxOutput.ts";
-import { ScriptPubKey } from "~/lib/chain/utils/ScriptPubKey.ts";
+import { ScriptPubKey } from "./ScriptPubKey.ts";
 import type { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
 
 export type TxData = {
