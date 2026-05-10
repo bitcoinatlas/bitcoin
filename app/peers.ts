@@ -1,4 +1,6 @@
 import { Peer, type PeerMessage, type PeerMessageEvent } from "~/lib/peer/Peer.ts";
+import { type Codec } from "@nomadshiba/codec";
+import { handshake } from "~/lib/peer/handshake.ts";
 
 // ---- state ----
 
@@ -88,6 +90,7 @@ export async function addPeer(host: string, port: number, magic: Uint8Array): Pr
 
 	try {
 		await peer.connect();
+		await handshake(peer);
 		connected.set(k, peer);
 		failed.delete(k);
 		return peer;
@@ -142,7 +145,7 @@ export function onMessage(listener: (peer: Peer, msg: PeerMessageEvent) => void)
 }
 
 /** Send to all connected peers, ignoring individual failures. */
-export async function broadcast<T>(message: PeerMessage<T>, data: T): Promise<void> {
+export async function broadcast<T extends Codec<any>>(message: PeerMessage<T>, data: Codec.InferInput<T>): Promise<void> {
 	await Promise.allSettled(
 		[...connected.values()].map((p) => p.send(message, data)),
 	);

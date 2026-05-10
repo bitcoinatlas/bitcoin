@@ -42,13 +42,6 @@ const blocks = await createBlobStore({
 	path: join(BASE_DATA_DIR, "blocks"),
 });
 
-const unorderedBlocks = await createKVStore<Uint8Array, StoredBlock>({
-	name: "unorderedBlocks",
-	path: join(BASE_DATA_DIR, "unorderedBlocks"),
-	keyCodec: Bytes32,
-	valueCodec: StoredBlock,
-});
-
 const txIdToPointer = await createKVStore<Uint8Array, StoredPointer>({
 	name: "txIdToPointer",
 	path: join(BASE_DATA_DIR, "txIdToPointer"),
@@ -61,7 +54,6 @@ const stores: readonly Store[] = [
 	blockHeightToHeader,
 	blockHeightToPointer,
 	blocks,
-	unorderedBlocks,
 	txIdToPointer,
 ];
 
@@ -87,7 +79,6 @@ if (headers.length > 0) {
 	await blockHeightToPointer.truncate(0);
 	await blockHeightToHeader.truncate(0);
 	await blocks.truncate(0);
-	await unorderedBlocks.clear();
 	await txIdToPointer.clear();
 	await blockHashToHeight.clear();
 	const [header] = WireBlockHeader.decode(GENESIS_BLOCK_HEADER);

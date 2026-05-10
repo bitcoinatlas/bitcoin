@@ -47,8 +47,11 @@ export type Store<T extends Transaction = Transaction> = {
 	transaction(): T;
 };
 
-const ATOMIC_STATE_PATH = join(BASE_DATA_DIR, "atomic", "state.bin");
-const ATOMIC_STORE_NAMES_PATH = join(BASE_DATA_DIR, "atomic", "ids.bin");
+const ATOMIC_DIR = join(BASE_DATA_DIR, "atomic");
+const ATOMIC_STATE_PATH = join(ATOMIC_DIR, "state.bin");
+const ATOMIC_STORE_NAMES_PATH = join(ATOMIC_DIR, "ids.bin");
+
+await Deno.mkdir(ATOMIC_DIR, { recursive: true });
 
 type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
 const AtomicState = new UnionCodec({

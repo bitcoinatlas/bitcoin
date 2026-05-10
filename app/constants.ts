@@ -2,7 +2,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
 import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
 
-export const BASE_DIR = new URL("./data/", Deno.build.standalone ? Deno.execPath() : Deno.cwd()).pathname;
+export const BASE_DIR = Deno.build.standalone ? Deno.execPath() : Deno.cwd();
 export const BASE_DATA_DIR = join(BASE_DIR, "data");
 
 export const MAX_BLOCK_WEIGHT = 4 * 1024 * 1024;
@@ -83,7 +83,7 @@ GENESIS_BLOCK.set([
 	// locktime
 	...[0x00, 0x00, 0x00, 0x00],
 ]);
-export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, WireBlockHeader.inner.stride);
+export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, WireBlockHeader.stride);
 export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 	WireBlockHeader.inner.shape.version!.stride,
 	WireBlockHeader.inner.shape.version!.stride + WireBlockHeader.inner.shape.prevHash!.stride,

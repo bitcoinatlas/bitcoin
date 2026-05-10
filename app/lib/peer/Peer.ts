@@ -1,4 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2";
+import { Codec } from "@nomadshiba/codec";
 
 const MAGIC_LEN = 4;
 const CMD_LEN = 12;
@@ -34,12 +35,9 @@ export type DisconnectReason =
 	| { type: "connection_closed" }
 	| { type: "write_timeout" };
 
-export type PeerMessage<T> = {
+export type PeerMessage<T extends Codec<any>> = {
 	command: string;
-	codec: {
-		encode(value: T): Uint8Array<ArrayBuffer>;
-		decode(data: Uint8Array): [T, number];
-	};
+	codec: T;
 };
 
 function makePeerMessage(command: string, payload: Uint8Array): PeerMessageEvent {
@@ -113,7 +111,7 @@ export class Peer {
 		return () => this.#listeners.delete(listener);
 	}
 
-	async send<T>(def: PeerMessage<T>, data: T, timeoutMs = 10_000): Promise<void> {
+	async send<T extends Codec<any>>(def: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = 10_000): Promise<void> {
 		const conn = this.#conn;
 		if (!this.#connected || !conn) throw new Error("not connected");
 
@@ -154,7 +152,7 @@ export class Peer {
 		}
 	}
 
-	expect<T>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<T> {
+	expect<T extends Codec<any>>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.Infer<T>> {
 		return new Promise((resolve, reject) => {
 			const tid = setTimeout(() => {
 				unlisten();

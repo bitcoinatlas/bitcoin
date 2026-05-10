@@ -98,10 +98,13 @@ function applyHeaders(peer: Peer, headers: WireBlockHeader[]): number {
 		cumulativeWork += workFromHeader(header);
 		const node = new PeerChainNode({ header, cumulativeWork, pointer: null });
 		localChain.push(node);
-		appendBlockHeader([header]);
 
 		prevHash = header.hash;
 		count++;
+	}
+
+	if (count > 0) {
+		appendBlockHeader(headers.slice(0, count));
 	}
 
 	return count;
