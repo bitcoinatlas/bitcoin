@@ -1,5 +1,5 @@
 import { bytesToNumberLE } from "@noble/curves/abstract/utils";
-import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 
 const TWO256 = 1n << 256n;
 

@@ -1,5 +1,5 @@
 import { appendBlockHeader, localChain } from "~/chain.ts";
-import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils/pow.ts";
 import { type Peer } from "~/lib/peer/Peer.ts";
 import { GetHeadersMessage } from "~/lib/peer/messages/GetHeaders.ts";

@@ -1,9 +1,9 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { CompactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
-import { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
-import { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
-import { WireSegwitMarker } from "~/lib/chain/codec/wire/WireSegwitMarker.ts";
+import { TimeLock } from "~/lib/codec/TimeLock.ts";
+import { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
+import { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
+import { WireSegwitMarker } from "~/lib/codec/wire/WireSegwitMarker.ts";
 import { sha256 } from "@noble/hashes/sha2";
 
 // WireTx = version + [segwit_marker] + inputs + outputs + [witness] + locktime

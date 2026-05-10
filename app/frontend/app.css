@@ -1,0 +1,12 @@
+:root {
+    font-size: 1em;
+    font-family: system;
+    line-height: 1.1;
+    color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}

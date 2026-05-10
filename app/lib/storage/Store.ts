@@ -1,7 +1,7 @@
 import { ArrayCodec, Codec, Str, U8, UnionCodec, Void } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { BASE_DATA_DIR } from "~/constants.ts";
+import { BASE_DATA_DIR } from "~/config.ts";
 
 /**
  * An in-memory transaction for a store.

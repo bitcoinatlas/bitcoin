@@ -5,22 +5,33 @@
     "jsr:@noble/hashes@1.8.0": "1.8.0",
     "jsr:@noble/secp256k1@2.3.0": "2.3.0",
     "jsr:@nomadshiba/codec@~0.2.5": "0.2.5",
+    "jsr:@purifyjs/core@0.4": "0.4.0",
     "jsr:@std/assert@*": "1.0.18",
     "jsr:@std/assert@^1.0.17": "1.0.19",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/async@^1.3.0": "1.3.0",
     "jsr:@std/bytes@1.0.6": "1.0.6",
     "jsr:@std/bytes@^1.0.6": "1.0.6",
+    "jsr:@std/cli@^1.0.29": "1.0.29",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/data-structures@^1.0.11": "1.0.11",
     "jsr:@std/encoding@1.0.10": "1.0.10",
+    "jsr:@std/encoding@^1.0.10": "1.0.10",
+    "jsr:@std/fmt@^1.0.10": "1.0.10",
     "jsr:@std/fs@1.0.19": "1.0.19",
+    "jsr:@std/fs@^1.0.23": "1.0.23",
+    "jsr:@std/html@^1.0.6": "1.0.6",
+    "jsr:@std/http@^1.1.0": "1.1.0",
     "jsr:@std/internal@^1.0.10": "1.0.12",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/internal@^1.0.9": "1.0.12",
+    "jsr:@std/media-types@^1.1.0": "1.1.0",
+    "jsr:@std/net@^1.0.6": "1.0.6",
     "jsr:@std/path@1.1.2": "1.1.2",
     "jsr:@std/path@^1.1.1": "1.1.4",
+    "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/streams@1.0.12": "1.0.12",
+    "jsr:@std/streams@^1.1.0": "1.1.0",
     "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/uuid@^1.1.1": "1.1.1",
     "npm:@jsr/nomadshiba__codec@0.2.0": "0.2.0"
@@ -40,6 +51,9 @@
     },
     "@nomadshiba/codec@0.2.5": {
       "integrity": "b9492b16779212fa58c68cb98334fd9192582130ca96e55b8b3c8628e5b650e6"
+    },
+    "@purifyjs/core@0.4.0": {
+      "integrity": "b5495df887c85e0f7c17ebf37e021c79972ace33f8bd6f30cb76a88324814847"
     },
     "@std/assert@1.0.18": {
       "integrity": "270245e9c2c13b446286de475131dc688ca9abcd94fc5db41d43a219b34d1c78",
@@ -62,6 +76,9 @@
     "@std/bytes@1.0.6": {
       "integrity": "f6ac6adbd8ccd99314045f5703e23af0a68d7f7e58364b47d2c7f408aeb5820a"
     },
+    "@std/cli@1.0.29": {
+      "integrity": "fa4ef29130baa834d8a13b7d138240c3a2fcfba740bfb7afa646a360a15ec84f"
+    },
     "@std/crypto@1.1.0": {
       "integrity": "b8d6d0a6377a32b213af2661ed7bf1062d94feac0c57def5526a8e74a95c3ec8"
     },
@@ -71,6 +88,9 @@
     "@std/encoding@1.0.10": {
       "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
     },
+    "@std/fmt@1.0.10": {
+      "integrity": "90dfba288802ac6de82fb31d0917eb9e4450b9925b954d5e51fc29ac07419db5"
+    },
     "@std/fs@1.0.19": {
       "integrity": "051968c2b1eae4d2ea9f79a08a3845740ef6af10356aff43d3e2ef11ed09fb06",
       "dependencies": [
@@ -78,8 +98,34 @@
         "jsr:@std/path@^1.1.1"
       ]
     },
+    "@std/fs@1.0.23": {
+      "integrity": "3ecbae4ce4fee03b180fa710caff36bb5adb66631c46a6460aaad49515565a37"
+    },
+    "@std/html@1.0.6": {
+      "integrity": "eaf759c8141e0733ca30eb49e4c08d8e6ca442b85c4d51f9894a56f502993e08"
+    },
+    "@std/http@1.1.0": {
+      "integrity": "265cd9a589fea924c5bb0bbed8bebb4bb2fa19129f760bd014e78dbd7a365a51",
+      "dependencies": [
+        "jsr:@std/cli",
+        "jsr:@std/encoding@^1.0.10",
+        "jsr:@std/fmt",
+        "jsr:@std/fs@^1.0.23",
+        "jsr:@std/html",
+        "jsr:@std/media-types",
+        "jsr:@std/net",
+        "jsr:@std/path@^1.1.4",
+        "jsr:@std/streams@^1.1.0"
+      ]
+    },
     "@std/internal@1.0.12": {
       "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
+    },
+    "@std/media-types@1.1.0": {
+      "integrity": "c9d093f0c05c3512932b330e3cc1fe1d627b301db33a4c2c2185c02471d6eaa4"
+    },
+    "@std/net@1.0.6": {
+      "integrity": "110735f93e95bb9feb95790a8b1d1bf69ec0dc74f3f97a00a76ea5efea25500c"
     },
     "@std/path@1.1.2": {
       "integrity": "c0b13b97dfe06546d5e16bf3966b1cadf92e1cc83e56ba5476ad8b498d9e3038",
@@ -98,6 +144,9 @@
       "dependencies": [
         "jsr:@std/bytes@^1.0.6"
       ]
+    },
+    "@std/streams@1.1.0": {
+      "integrity": "2f7024d841f343fd478afe0c958a3f0f068ef2a0d2bcc954f550f97ac1fa22e3"
     },
     "@std/testing@1.0.17": {
       "integrity": "87bdc2700fa98249d48a17cd72413352d3d3680dcfbdb64947fd0982d6bbf681",
@@ -137,11 +186,13 @@
       "jsr:@noble/hashes@1.8.0",
       "jsr:@noble/secp256k1@2.3.0",
       "jsr:@nomadshiba/codec@~0.2.5",
+      "jsr:@purifyjs/core@0.4",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/async@^1.3.0",
       "jsr:@std/bytes@1.0.6",
       "jsr:@std/encoding@1.0.10",
       "jsr:@std/fs@1.0.19",
+      "jsr:@std/http@^1.1.0",
       "jsr:@std/path@1.1.2",
       "jsr:@std/streams@1.0.12",
       "jsr:@std/uuid@^1.1.1"

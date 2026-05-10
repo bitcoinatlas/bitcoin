@@ -1,11 +1,11 @@
-import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
-import { WireTx } from "~/lib/chain/codec/wire/WireTx.ts";
-import type { WireTxInput } from "~/lib/chain/codec/wire/WireTxInput.ts";
-import type { WireTxOutput } from "~/lib/chain/codec/wire/WireTxOutput.ts";
+import { TimeLock } from "~/lib/codec/TimeLock.ts";
+import { WireTx } from "~/lib/codec/wire/WireTx.ts";
+import type { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
+import type { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
 import { TxInput } from "~/lib/chain/TxInput.ts";
 import { TxOutput } from "~/lib/chain/TxOutput.ts";
 import { ScriptPubKey } from "./ScriptPubKey.ts";
-import type { StoredTx } from "~/lib/chain/codec/stored/StoredTx.ts";
+import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 
 export type TxData = {
 	txId: Uint8Array;

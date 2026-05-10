@@ -1,5 +1,5 @@
 import { Codec } from "@nomadshiba/codec";
-import { WireBlockHeader } from "~/lib/chain/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 

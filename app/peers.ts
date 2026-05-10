@@ -1,6 +1,11 @@
-import { Peer, type PeerMessage, type PeerMessageEvent } from "~/lib/peer/Peer.ts";
 import { type Codec } from "@nomadshiba/codec";
-import { handshake } from "~/lib/peer/handshake.ts";
+import { VerackMessage } from "~/lib/peer/messages/Verack.ts";
+import { VersionMessage, VersionPayload } from "~/lib/peer/messages/Version.ts";
+import { Peer, type PeerMessage, type PeerMessageEvent } from "~/lib/peer/Peer.ts";
+
+const USER_AGENT = "/BitcoinAtlas:0.0.1/";
+const PROTOCOL_VERSION = 70015;
+const SERVICES = 0n;
 
 // ---- state ----
 
@@ -79,8 +84,10 @@ export async function addPeer(host: string, port: number, magic: Uint8Array): Pr
 		connected.delete(k);
 		if (reason.type !== "manual") {
 			const f = failed.get(k);
-			if (f) { f.count++; f.lastFailed = Date.now(); }
-			else failed.set(k, { count: 1, lastFailed: Date.now() });
+			if (f) {
+				f.count++;
+				f.lastFailed = Date.now();
+			} else failed.set(k, { count: 1, lastFailed: Date.now() });
 		}
 	});
 
@@ -96,8 +103,10 @@ export async function addPeer(host: string, port: number, magic: Uint8Array): Pr
 		return peer;
 	} catch (e) {
 		const f = failed.get(k);
-		if (f) { f.count++; f.lastFailed = Date.now(); }
-		else failed.set(k, { count: 1, lastFailed: Date.now() });
+		if (f) {
+			f.count++;
+			f.lastFailed = Date.now();
+		} else failed.set(k, { count: 1, lastFailed: Date.now() });
 		console.error(`[peers] failed to connect ${k}:`, e);
 		return null;
 	}
@@ -113,8 +122,10 @@ export function removePeer(peer: Peer): void {
 export function markFailed(host: string, port: number): void {
 	const k = key(host, port);
 	const f = failed.get(k);
-	if (f) { f.count++; f.lastFailed = Date.now(); }
-	else failed.set(k, { count: 1, lastFailed: Date.now() });
+	if (f) {
+		f.count++;
+		f.lastFailed = Date.now();
+	} else failed.set(k, { count: 1, lastFailed: Date.now() });
 }
 
 /** Expire failed peers older than retryAfterMs. */
@@ -145,7 +156,10 @@ export function onMessage(listener: (peer: Peer, msg: PeerMessageEvent) => void)
 }
 
 /** Send to all connected peers, ignoring individual failures. */
-export async function broadcast<T extends Codec<any>>(message: PeerMessage<T>, data: Codec.InferInput<T>): Promise<void> {
+export async function broadcast<T extends Codec<any>>(
+	message: PeerMessage<T>,
+	data: Codec.InferInput<T>,
+): Promise<void> {
 	await Promise.allSettled(
 		[...connected.values()].map((p) => p.send(message, data)),
 	);
@@ -163,4 +177,44 @@ export async function addPeersFromDNS(seedHost: string, port: number): Promise<n
 		console.error(`[peers] DNS seed ${seedHost} failed:`, e);
 	}
 	return added;
+}
+
+/**
+ * Initiate outbound handshake:
+ * 1. Send our version
+ * 2. Wait for verack from remote
+ * Also installs a one-shot handler to reply verack if the remote sends version first.
+ */
+export async function handshake(peer: Peer): Promise<void> {
+	// Handle inbound version — reply with verack
+	const unlisten = peer.onMessage((msg) => {
+		if (msg.command !== "version") return;
+		unlisten();
+		peer.send(VerackMessage, null).catch(() => {});
+	});
+
+	const localIp = "0.0.0.0";
+	const localPort = 0;
+
+	const versionPayload: VersionPayload = {
+		version: PROTOCOL_VERSION,
+		services: SERVICES,
+		timestamp: BigInt(Math.floor(Date.now() / 1000)),
+		recvServices: SERVICES,
+		recvIP: peer.host,
+		recvPort: peer.port,
+		transServices: SERVICES,
+		transIP: localIp,
+		transPort: localPort,
+		nonce: BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+		userAgent: USER_AGENT,
+		startHeight: 0,
+		relay: false,
+	};
+
+	await peer.send(VersionMessage, versionPayload);
+	console.log(`[handshake] sent version → ${peer.host}:${peer.port}`);
+
+	await peer.expect(VerackMessage);
+	console.log(`[handshake] complete ✓ ${peer.host}:${peer.port}`);
 }

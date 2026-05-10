@@ -54,6 +54,14 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		throw new Error("File size must be a multiple of codec stride");
 	}
 
+	// Mutex for seek+read/write operations on the shared file handle
+	let ioLock: Promise<void> = Promise.resolve();
+	function withLock<T>(fn: () => Promise<T>): Promise<T> {
+		const next = ioLock.then(fn);
+		ioLock = next.then(() => {}, () => {});
+		return next;
+	}
+
 	// Staged appends: new entries in order (index = length + i)
 	const stagedAppends: T[] = [];
 	// Staged sets: in-place updates to existing indices
@@ -91,10 +99,12 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		// Check staged appends
 		if (index >= diskLengthCache) return stagedAppends[index - diskLengthCache]!;
 		const offset = index * codec.stride;
-		await file.seek(offset, Deno.SeekMode.Start);
-		const data = await readFile(file, codec.stride);
-		const [value] = codec.decode(data);
-		return value;
+		return await withLock(async () => {
+			await file.seek(offset, Deno.SeekMode.Start);
+			const data = await readFile(file, codec.stride);
+			const [value] = codec.decode(data);
+			return value;
+		});
 	}
 
 	async function slice(start: number, length: number): Promise<T[]> {
@@ -116,8 +126,10 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 
 		// Bulk read contiguous disk entries in one seek
 		if (diskCount > 0) {
-			await file.seek(start * codec.stride, Deno.SeekMode.Start);
-			const bulk = await readFile(file, diskCount * codec.stride);
+			const bulk = await withLock(async () => {
+				await file.seek(start * codec.stride, Deno.SeekMode.Start);
+				return await readFile(file, diskCount * codec.stride);
+			});
 			for (let i = 0; i < diskCount; i++) {
 				const index = start + i;
 				// stagedSets overrides disk
@@ -305,8 +317,10 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 
 				if (appendCount > 0) {
 					const appendBytes = buf.subarray(pos, pos + appendCount * codec.stride);
-					await file.seek(diskLengthCache * codec.stride, Deno.SeekMode.Start);
-					await writeFile(file, appendBytes);
+					await withLock(async () => {
+						await file.seek(diskLengthCache * codec.stride, Deno.SeekMode.Start);
+						await writeFile(file, appendBytes);
+					});
 					diskLengthCache += appendCount;
 					pos += appendCount * codec.stride;
 				}
@@ -319,8 +333,10 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 					const [entry, entryLen] = setCodec.decode(buf.subarray(pos));
 					pos += entryLen;
 					const offset = entry.index * codec.stride;
-					await file.seek(offset, Deno.SeekMode.Start);
-					await writeFile(file, codec.encode(entry.value));
+					await withLock(async () => {
+						await file.seek(offset, Deno.SeekMode.Start);
+						await writeFile(file, codec.encode(entry.value));
+					});
 					if (entry.index >= diskLengthCache) diskLengthCache = entry.index + 1;
 				}
 			},

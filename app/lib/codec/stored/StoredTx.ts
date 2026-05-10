@@ -1,7 +1,7 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
-import { StoredTxInput } from "~/lib/chain/codec/stored/StoredTxInput.ts";
-import { StoredTxOutput } from "~/lib/chain/codec/stored/StoredTxOutput.ts";
-import { TimeLock } from "~/lib/chain/codec/TimeLock.ts";
+import { StoredTxInput } from "~/lib/codec/stored/StoredTxInput.ts";
+import { StoredTxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
+import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
 
 // StoredTx binary layout (optimized for disk storage):
