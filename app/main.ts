@@ -1,14 +1,18 @@
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
-import { PeerChain } from "./lib/chain/PeerChain.ts";
+import { atomicFlush } from "~/chain.ts";
+import { syncHeadersFromPeers } from "~/syncHeaders.ts";
 
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const PORT = 8333;
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
+const FLUSH_INTERVAL_MS = 60 * 1000;
 
 const DNS_SEEDS = [
 	"dnsseed.bitcoin.dashjr.org",
 ];
+
+let lastFlush = Date.now();
 
 while (true) {
 	try {
@@ -20,6 +24,12 @@ while (true) {
 
 async function tick() {
 	await maintain();
+	await syncHeadersFromPeers();
+
+	if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+		await atomicFlush();
+		lastFlush = Date.now();
+	}
 }
 
 async function maintain() {

@@ -1,4 +1,3 @@
-import { type Codec } from "@nomadshiba/codec";
 import { sha256 } from "@noble/hashes/sha2";
 
 const MAGIC_LEN = 4;
@@ -37,7 +36,10 @@ export type DisconnectReason =
 
 export type PeerMessage<T> = {
 	command: string;
-	codec: Codec<T>;
+	codec: {
+		encode(value: T): Uint8Array<ArrayBuffer>;
+		decode(data: Uint8Array): [T, number];
+	};
 };
 
 function makePeerMessage(command: string, payload: Uint8Array): PeerMessageEvent {
