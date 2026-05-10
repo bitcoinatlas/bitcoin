@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Codec } from "@nomadshiba/codec";
-import { createBlobStore, type BlobStore } from "~/lib/storage/BlobStore.ts";
+import { type BlobStore, createBlobStore } from "~/lib/storage/BlobStore.ts";
 
 function makeData(byte: number, length: number): Uint8Array {
 	return new Uint8Array(length).fill(byte);
@@ -73,7 +73,7 @@ Deno.test("BlobStore - length reflects staged length", async () => {
 		assertEquals(store.length(), 0);
 		const tx = store.transaction();
 		tx.append(makeData(1, 10));
-		assertEquals(tx.length(), 10);
+		assertEquals(tx.size(), 10);
 		tx.apply();
 		assertEquals(store.length(), 10);
 	});
@@ -291,9 +291,9 @@ Deno.test("BlobStore - multiple chunks reopen recovers correct total length", as
 		// chunkByteSize = 16, write 3 blobs of 8 bytes each → spans 2 chunks
 		const store1 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
 		const tx = store1.transaction();
-		tx.append(makeData(1, 8));  // chunk_0 bytes 0-7
-		tx.append(makeData(2, 8));  // chunk_0 bytes 8-15 (fills it)
-		tx.append(makeData(3, 8));  // chunk_1 bytes 0-7
+		tx.append(makeData(1, 8)); // chunk_0 bytes 0-7
+		tx.append(makeData(2, 8)); // chunk_0 bytes 8-15 (fills it)
+		tx.append(makeData(3, 8)); // chunk_1 bytes 0-7
 		tx.apply();
 		const wal = await store1.createWAL();
 		await wal.apply();
@@ -348,7 +348,7 @@ Deno.test("BlobStore - length after discard stays at pre-tx value", async () => 
 
 		const tx2 = store.transaction();
 		tx2.append(makeData(2, 8));
-		assertEquals(tx2.length(), 16);
+		assertEquals(tx2.size(), 16);
 		tx2.discard();
 
 		assertEquals(store.length(), 8);

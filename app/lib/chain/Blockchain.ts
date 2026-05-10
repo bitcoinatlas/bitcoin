@@ -104,7 +104,7 @@ if (headers.length > 0) {
 	await atomic([blockHeightToHeader]);
 }
 
-export function appendBlockHeader(headers: WireBlockHeader[]): void {
+export function appendBlockHeader(headers: WireBlockHeader[]): { height: number } {
 	const heightToHeaderTx = blockHeightToHeader.transaction();
 	const hashToHeightTx = blockHashToHeight.transaction();
 
@@ -115,6 +115,7 @@ export function appendBlockHeader(headers: WireBlockHeader[]): void {
 		}
 		heightToHeaderTx.apply();
 		hashToHeightTx.apply();
+		return { height: heightToHeaderTx.length() - 1 };
 	} catch (reason) {
 		heightToHeaderTx.discard();
 		hashToHeightTx.discard();
@@ -123,23 +124,32 @@ export function appendBlockHeader(headers: WireBlockHeader[]): void {
 	}
 }
 
-export function appendBlockBody(wireTxs: WireTx[]) {
+export function appendBlockBody(wireTxs: WireTx[], expectedHeight: number): { pointer: StoredPointer } {
 	const blocksTx = blocks.transaction();
 	const heightToPointerTx = blockHeightToPointer.transaction();
 	const txIdToPointerTx = txIdToPointer.transaction();
 
 	try {
 		const txs = wireTxs.map((wireTx) => Tx.fromWire(wireTx));
-		const storedBlock = StoredBlock.encode({ transactions: txs.map((tx) => tx.toStore()) });
-		const pointer = blocksTx.append(storedBlock);
-		const height = heightToPointerTx.append(pointer);
+		const txCountBytes = StoredBlock.shape.transactions.countCodec.encode(txs.length);
+		const blockPointer = blocksTx.append(txCountBytes);
+		const blockHeight = heightToPointerTx.append(blockPointer);
+		if (blockHeight !== expectedHeight) {
+			throw new Error(`Expected block height ${expectedHeight} but got ${blockHeight}`);
+		}
+
 		for (const tx of txs) {
-			txIdToPointerTx.set(tx.data.txId /* uhh we need to append txs one by one? */);
+			const storedTx = tx.toStore();
+			const storedTxBytes = StoredTx.encode(storedTx);
+			const txPointer = blocksTx.append(storedTxBytes);
+			txIdToPointerTx.set(tx.data.txId, txPointer);
 		}
 
 		blocksTx.apply();
 		heightToPointerTx.apply();
 		txIdToPointerTx.apply();
+
+		return { pointer: blockPointer };
 	} catch (reason) {
 		blocksTx.discard();
 		heightToPointerTx.discard();

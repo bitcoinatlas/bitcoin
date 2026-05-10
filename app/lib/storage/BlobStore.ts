@@ -28,7 +28,7 @@ export interface BlobStoreTransaction extends Transaction {
 	append(data: Uint8Array): number;
 	get(pointer: number, length: number): Promise<Uint8Array>;
 	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
-	length(): number;
+	size(): number;
 }
 
 export type BlobStoreOptions = {
@@ -208,7 +208,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 					return await get(pointer, codec, options);
 				}
 			},
-			length(): number {
+			size(): number {
 				return txLength;
 			},
 			apply(): void {
