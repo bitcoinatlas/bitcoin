@@ -197,36 +197,36 @@ export function appendBlockHeader(headers: WireBlockHeader[]): { height: number 
 }
 
 export async function appendBlockTxs(wireTxs: WireTx[], height: number): Promise<{ pointer: StoredPointer }> {
-	const blobTx = blobStore.transaction();
-	const blocksTx = blockStore.transaction();
+	const blobStoreTx = blobStore.transaction();
+	const blockStoreTx = blockStore.transaction();
 	const txIdToPointerTx = txIdToPointer.transaction();
 
 	try {
-		const block = await blocksTx.get(height);
+		const block = await blockStoreTx.get(height);
 		if (!block) {
 			throw new Error(`Block at height ${height} not found`);
 		}
 
-		const txs = wireTxs.map((wireTx) => Tx.fromWire(wireTx));
+		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.countCodec.encode(txs.length);
-		const blockPointer = blobTx.append(txCountBytes);
-		blocksTx.set(height, { header: block.header, pointer: blockPointer });
+		const blockPointer = blobStoreTx.append(txCountBytes);
+		blockStoreTx.set(height, { header: block.header, pointer: blockPointer });
 
 		for (const tx of txs) {
 			const storedTx = tx.toStore();
 			const storedTxBytes = StoredTx.encode(storedTx);
-			const txPointer = blobTx.append(storedTxBytes);
+			const txPointer = blobStoreTx.append(storedTxBytes);
 			txIdToPointerTx.set(tx.data.txId, txPointer);
 		}
 
-		blobTx.apply();
-		blocksTx.apply();
+		blobStoreTx.apply();
+		blockStoreTx.apply();
 		txIdToPointerTx.apply();
 
 		return { pointer: blockPointer };
 	} catch (reason) {
-		blobTx.discard();
-		blocksTx.discard();
+		blobStoreTx.discard();
+		blockStoreTx.discard();
 		txIdToPointerTx.discard();
 		console.error("Failed to append block body:", reason);
 		Deno.exit(1);
@@ -253,9 +253,8 @@ export async function getBlockByHash(hash: Uint8Array): Promise<StoredBlock | un
 	return await getBlockByHeight(height);
 }
 
-export async function getTxByPointer(pointer: StoredPointer): Promise<Tx | undefined> {
+export async function getTxByPointer(pointer: StoredPointer): Promise<Tx> {
 	const storedTx = await blobStore.get(pointer, StoredTx);
-	if (!storedTx) return undefined;
 	return Tx.fromStore(storedTx);
 }
 

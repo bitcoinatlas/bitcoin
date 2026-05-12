@@ -1,3 +1,4 @@
+import { getTxByPointer } from "~/chain.ts";
 import { SequenceLock } from "~/lib/codec/SequenceLock.ts";
 
 export type OutPoint = {
@@ -22,11 +23,16 @@ export class TxInput {
 	}
 
 	public async getPrevOutTxId(): Promise<Uint8Array> {
-		if (this.data.prevOut.txId.kind === "raw") {
-			return this.data.prevOut.txId.value;
+		const txId = this.data.prevOut.txId;
+		const { kind, value } = txId;
+		if (kind === "raw") {
+			return value;
 		}
-		// In a real implementation, you would fetch the txId from storage using the pointer value.
-		// For this example, we'll just throw an error to indicate that this is not implemented.
-		throw new Error("Pointer txId not implemented");
+
+		if (kind === "pointer") {
+			return await getTxByPointer(value).then((tx) => tx.data.txId);
+		}
+
+		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
 	}
 }

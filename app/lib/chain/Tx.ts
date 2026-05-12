@@ -6,6 +6,7 @@ import { TxInput } from "~/lib/chain/TxInput.ts";
 import { TxOutput } from "~/lib/chain/TxOutput.ts";
 import { ScriptPubKey } from "./ScriptPubKey.ts";
 import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
+import { getTxPointerById } from "~/chain.ts";
 
 export type TxData = {
 	txId: Uint8Array;
@@ -54,16 +55,18 @@ export class Tx {
 		return { txId, version, locktime, inputs, outputs, witness };
 	}
 
-	static fromWire(wireTx: WireTx): Tx {
+	static async fromWire(wireTx: WireTx): Promise<Tx> {
 		const inputs: TxInput[] = [];
 
-		for (let i = 0; i < wireTx.inputs.length; i++) {
-			const wireInput = wireTx.inputs[i]!;
+		await Promise.all(wireTx.inputs.map(async (wireInput, i) => {
+			const prevOutTxPointer = await getTxPointerById(wireInput.prevOut.txId);
 			const inputWitness = wireTx.witness[i] ?? [];
 
 			const input = new TxInput({
 				prevOut: {
-					txId: { kind: "raw", value: wireInput.prevOut.txId },
+					txId: prevOutTxPointer === undefined
+						? { kind: "raw", value: wireInput.prevOut.txId }
+						: { kind: "pointer", value: prevOutTxPointer },
 					vout: wireInput.prevOut.vout,
 				},
 				scriptSig: wireInput.scriptSig,
@@ -72,7 +75,7 @@ export class Tx {
 			});
 
 			inputs.push(input);
-		}
+		}));
 
 		const outputs: TxOutput[] = [];
 		for (const wireOutput of wireTx.outputs) {
