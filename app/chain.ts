@@ -1,22 +1,23 @@
-import { U32LE } from "@nomadshiba/codec";
+import { sha256 } from "@noble/hashes/sha2";
+import { U32, U32LE } from "@nomadshiba/codec";
 import { join } from "@std/path";
+import { BASE_DATA_DIR } from "~/config.ts";
 import { PeerChain } from "~/lib/chain/PeerChain.ts";
 import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
 import { Tx } from "~/lib/chain/Tx.ts";
-import { Bytes32, U48LE } from "~/lib/codec/primitives.ts";
+import { Bytes32 } from "~/lib/codec/primitives.ts";
 import { StoredBlock } from "~/lib/codec/stored/StoredBlock.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
+import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
-import { createArrayStore } from "~/lib/storage/ArrayStore.ts";
-import { createBlobStore } from "~/lib/storage/BlobStore.ts";
-import { createKVStore } from "~/lib/storage/KVStore.ts";
+import { ArrayStoreTransaction, createArrayStore } from "~/lib/storage/ArrayStore.ts";
+import { BlobStoreTransaction, createBlobStore } from "~/lib/storage/BlobStore.ts";
+import { createKVStore, KVStoreTransaction } from "~/lib/storage/KVStore.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
 import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
-import { BASE_DATA_DIR } from "~/config.ts";
-import { sha256 } from "@noble/hashes/sha2";
 
 export const GENESIS_BLOCK_HEIGHT = 0;
 export const GENESIS_BLOCK = new Uint8Array(285);
@@ -111,7 +112,7 @@ const blockStore = await createArrayStore({
 	name: "blocks",
 	path: join(BASE_DATA_DIR, "blocks"),
 	codec: StoredBlock,
-	countCodec: U48LE,
+	countCodec: U32,
 });
 
 const blobStore = await createBlobStore({
@@ -150,58 +151,100 @@ const blocks = await blockStore.slice(0, blockStore.length());
 localChain.clear();
 if (blocks.length > 0) {
 	let cumulativeWork = 0n;
-	localChain.concat(blocks.map((header, height) => {
-		if (!verifyProofOfWork(header.header)) {
+	localChain.concat(blocks.map((block, height) => {
+		if (!verifyProofOfWork(block.header)) {
 			throw new Error();
 		}
-		const pointer = blocks[height]?.pointer ?? null;
-		cumulativeWork += workFromHeader(header.header);
-		return new PeerChainNode({ header: header.header, cumulativeWork, pointer });
+		cumulativeWork += workFromHeader(block.header);
+		return new PeerChainNode({
+			header: block.header,
+			cumulativeWork,
+			pointer: block.pointer ? block.pointer : (height ? null : 0),
+		});
 	}));
 } else {
 	await blockStore.truncate(0);
 	await blobStore.truncate(0);
 	await txIdToPointer.clear();
 	await blockHashToHeight.clear();
-	const [header] = WireBlockHeader.decode(GENESIS_BLOCK_HEADER);
-	const cumulativeWork = workFromHeader(header);
-	localChain.push(new PeerChainNode({ header, cumulativeWork, pointer: null }));
-	const blocksTx = blockStore.transaction();
-	blocksTx.append({ header, pointer: 0 });
-	blocksTx.apply();
-	await atomic([blockStore]);
+	const [genesisBlock] = WireBlock.decode(GENESIS_BLOCK);
+	const cumulativeWork = workFromHeader(genesisBlock.header);
+	const blockStoreTx = blockStore.transaction();
+	const blobStoreTx = blobStore.transaction();
+	const txIdToPointerTx = txIdToPointer.transaction();
+	const blockHashToHeightTx = blockHashToHeight.transaction();
+
+	try {
+		appendBlockHeader([genesisBlock.header], { blockStoreTx, blockHashToHeightTx });
+		const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, { blobStoreTx, blockStoreTx, txIdToPointerTx });
+		localChain.push(new PeerChainNode({ header: genesisBlock.header, cumulativeWork, pointer }));
+
+		blockStoreTx.apply();
+		blobStoreTx.apply();
+		await atomicSave();
+	} catch (reason) {
+		console.error("Pushing genesis block failed:", reason);
+		Deno.exit(1);
+	}
 }
 
-export async function atomicFlush() {
+export async function atomicSave() {
 	await atomic(stores);
 }
 
-export function appendBlockHeader(headers: WireBlockHeader[]): { height: number } {
-	const blocksTx = blockStore.transaction();
-	const hashToHeightTx = blockHashToHeight.transaction();
+export function appendBlockHeader(
+	headers: WireBlockHeader[],
+	storeTxs?: {
+		blockStoreTx: ArrayStoreTransaction<StoredBlock>;
+		blockHashToHeightTx: KVStoreTransaction<Uint8Array, number>;
+	},
+): { height: number } {
+	const { blockStoreTx, blockHashToHeightTx } = storeTxs ?? {
+		blockStoreTx: blockStore.transaction(),
+		blockHashToHeightTx: blockHashToHeight.transaction(),
+	};
+
+	const op = () => {
+		for (const header of headers) {
+			const height = blockStoreTx.append({ header, pointer: 0 });
+			blockHashToHeightTx.set(header.hash, height);
+		}
+	};
+
+	if (storeTxs) {
+		op();
+		return { height: blockStoreTx.length() - 1 };
+	}
 
 	try {
-		for (const header of headers) {
-			const height = blocksTx.append({ header, pointer: 0 });
-			hashToHeightTx.set(header.hash, height);
-		}
-		blocksTx.apply();
-		hashToHeightTx.apply();
-		return { height: blocksTx.length() - 1 };
+		op();
+		blockStoreTx.apply();
+		blockHashToHeightTx.apply();
+		return { height: blockStoreTx.length() - 1 };
 	} catch (reason) {
-		blocksTx.discard();
-		hashToHeightTx.discard();
+		blockStoreTx.discard();
+		blockHashToHeightTx.discard();
 		console.error("Failed to append block header:", reason);
 		Deno.exit(1);
 	}
 }
 
-export async function appendBlockTxs(wireTxs: WireTx[], height: number): Promise<{ pointer: StoredPointer }> {
-	const blobStoreTx = blobStore.transaction();
-	const blockStoreTx = blockStore.transaction();
-	const txIdToPointerTx = txIdToPointer.transaction();
+export async function appendBlockTxs(
+	wireTxs: WireTx[],
+	height: number,
+	storeTxs?: {
+		blobStoreTx: BlobStoreTransaction;
+		blockStoreTx: ArrayStoreTransaction<StoredBlock>;
+		txIdToPointerTx: KVStoreTransaction<Uint8Array, number>;
+	},
+): Promise<{ pointer: StoredPointer }> {
+	const { blobStoreTx, blockStoreTx, txIdToPointerTx } = storeTxs ?? {
+		blobStoreTx: blobStore.transaction(),
+		blockStoreTx: blockStore.transaction(),
+		txIdToPointerTx: txIdToPointer.transaction(),
+	};
 
-	try {
+	const op = async () => {
 		const block = await blockStoreTx.get(height);
 		if (!block) {
 			throw new Error(`Block at height ${height} not found`);
@@ -219,6 +262,16 @@ export async function appendBlockTxs(wireTxs: WireTx[], height: number): Promise
 			txIdToPointerTx.set(tx.data.txId, txPointer);
 		}
 
+		return blockPointer;
+	};
+
+	if (storeTxs) {
+		const blockPointer = await op();
+		return { pointer: blockPointer };
+	}
+
+	try {
+		const blockPointer = await op();
 		blobStoreTx.apply();
 		blockStoreTx.apply();
 		txIdToPointerTx.apply();

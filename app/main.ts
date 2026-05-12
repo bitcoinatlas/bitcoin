@@ -1,5 +1,5 @@
 import { delay } from "@std/async";
-import { atomicFlush } from "~/chain.ts";
+import { atomicSave } from "~/chain.ts";
 import { syncHeadersFromPeers } from "~/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
 import { serve } from "~/serve.ts";
@@ -37,7 +37,7 @@ async function tick() {
 	await syncHeadersFromPeers();
 
 	if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
-		await atomicFlush();
+		await atomicSave();
 		lastFlush = Date.now();
 	}
 }

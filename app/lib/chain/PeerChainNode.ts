@@ -1,9 +1,10 @@
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
+import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 
 export type PeerChainNodeParams = {
 	header: WireBlockHeader;
 	cumulativeWork: bigint;
-	pointer: number | null;
+	pointer: StoredPointer | null;
 };
 
 export class PeerChainNode {
@@ -11,7 +12,7 @@ export class PeerChainNode {
 
 	header: WireBlockHeader;
 	cumulativeWork: bigint;
-	pointer: number | null;
+	pointer: StoredPointer | null;
 
 	constructor(params: PeerChainNodeParams) {
 		this.header = params.header;

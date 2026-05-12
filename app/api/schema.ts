@@ -1,12 +1,11 @@
-import { ArrayCodec, NullableCodec, StructCodec, Void } from "@nomadshiba/codec";
+import { ArrayCodec, NullableCodec, StructCodec, U32, Void } from "@nomadshiba/codec";
 import type { EndpointSchema } from "~/lib/EndpointRouter.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
-import { U48LE } from "~/lib/codec/primitives.ts";
 
 const Block = new StructCodec({
 	header: WireBlockHeader,
-	height: U48LE,
+	height: U32,
 });
 
 export const ENDPOINT_SCHEMA = {

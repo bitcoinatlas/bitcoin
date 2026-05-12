@@ -1,4 +1,4 @@
-import { appendBlockHeader, localChain } from "~/chain.ts";
+import { appendBlockHeader, getBlockPointerByHash, getBlockPointerByHeight, localChain } from "~/chain.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils/pow.ts";
 import { type Peer } from "~/lib/peer/Peer.ts";
@@ -58,7 +58,7 @@ async function syncHeadersFromPeer(peer: Peer): Promise<boolean> {
 
 		if (localChain.height() >= targetHeight) return false; // chunk done
 
-		const accepted = applyHeaders(peer, headers);
+		const accepted = await applyHeaders(peer, headers);
 		if (accepted === 0) return true; // nothing new, treat as tip
 
 		// Next request: single locator = current tip
@@ -75,7 +75,7 @@ async function syncHeadersFromPeer(peer: Peer): Promise<boolean> {
  * Validate and append headers to localChain.
  * Returns number of headers successfully appended.
  */
-function applyHeaders(peer: Peer, headers: WireBlockHeader[]): number {
+async function applyHeaders(peer: Peer, headers: WireBlockHeader[]): Promise<number> {
 	const tip = localChain.tip();
 	if (!tip) return 0;
 
@@ -96,7 +96,8 @@ function applyHeaders(peer: Peer, headers: WireBlockHeader[]): number {
 		}
 
 		cumulativeWork += workFromHeader(header);
-		const node = new PeerChainNode({ header, cumulativeWork, pointer: null });
+		const pointer = await getBlockPointerByHash(header.hash);
+		const node = new PeerChainNode({ header, cumulativeWork, pointer: pointer ?? null });
 		localChain.push(node);
 
 		prevHash = header.hash;
