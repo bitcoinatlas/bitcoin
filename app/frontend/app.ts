@@ -22,7 +22,7 @@ function BlockDetailsContent(height: number | null) {
 		return p().textContent("Select a block");
 	}
 
-	const loading = p().textContent(`Loading block ${height}...`);
+	const title = p().textContent(`Block ${height}`);
 
 	const promise = Promise.all([
 		api.fetch("GET /v1/block/:hashOrHeight", { pathname: { hashOrHeight: String(height) } }),
@@ -63,7 +63,7 @@ function BlockDetailsContent(height: number | null) {
 		return div().append$(headerSection, txsSection);
 	}))));
 
-	return div().append$(loading, content);
+	return div().append$(title, content);
 }
 
 function TxRow(tx: WireTx, index: number) {

@@ -1,8 +1,8 @@
+import { Codec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { Codec } from "@nomadshiba/codec";
-import { writeFile } from "~/lib/utils/fs.ts";
 import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
+import { writeFile } from "~/lib/utils/fs.ts";
 
 /**
  * An append-only store for variable-size blobs, split across fixed-size chunk files.

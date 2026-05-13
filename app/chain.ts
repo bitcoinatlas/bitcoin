@@ -317,7 +317,7 @@ export async function getBlockByHash(hash: Uint8Array): Promise<StoredBlock | un
 }
 
 export async function getTxByPointer(pointer: StoredPointer): Promise<Tx> {
-	const storedTx = await blobStore.get(pointer, StoredTx);
+	const storedTx = await blobStore.get(pointer, StoredTx, { readAheadSize: 400_000 });
 	return Tx.fromStore(storedTx);
 }
 

@@ -133,8 +133,8 @@ Deno.test("KVStore - tx.getMany sees staged writes", async () => {
 		tx2.set(makeKey(2), makeValue(2));
 
 		const results = await tx2.getMany([makeKey(1), makeKey(2), makeKey(999)]);
-		assertEquals(results[0], makeValue(1));  // from store
-		assertEquals(results[1], makeValue(2));  // staged in tx
+		assertEquals(results[0], makeValue(1)); // from store
+		assertEquals(results[1], makeValue(2)); // staged in tx
 		assertEquals(results[2], undefined);
 		tx2.discard();
 	});
@@ -173,7 +173,7 @@ Deno.test("KVStore - WAL save and apply persists to disk", async () => {
 		tx.apply();
 
 		const wal = await store1.createWAL();
-		;
+
 		await wal.apply();
 
 		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
@@ -202,7 +202,7 @@ Deno.test("KVStore - WAL apply is idempotent (overwrite same key twice)", async 
 		tx.apply();
 
 		const wal = await store1.createWAL();
-		;
+
 		await wal.apply();
 		await wal.apply(); // second apply — same key, same value, no error
 
@@ -224,7 +224,7 @@ Deno.test("KVStore - crash recovery: WAL apply replays changes", async () => {
 		tx.apply();
 
 		const wal = await store1.createWAL();
-		;
+
 		// crash before apply
 		store1.close();
 
@@ -249,7 +249,7 @@ Deno.test("KVStore - persists data across reopen", async () => {
 		tx.set(makeKey(2), makeValue(2));
 		tx.apply();
 		const wal = await store1.createWAL();
-		;
+
 		await wal.apply();
 		await wal.discard();
 		store1.close();
@@ -272,7 +272,6 @@ Deno.test("KVStore - WAL discard removes the file", async () => {
 		tx.apply();
 
 		const wal = await store.createWAL();
-		;
 
 		const walExists = (await Array.fromAsync(Deno.readDir(dir))).some((e) => e.name.endsWith(".wal"));
 		assertEquals(walExists, true);
@@ -292,7 +291,7 @@ Deno.test("KVStore - WAL empty save and apply is a no-op", async () => {
 		const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		// no transaction, nothing staged
 		const wal = await store.createWAL();
-		;
+
 		await wal.apply();
 		await wal.discard();
 		assertEquals(await store.get(makeKey(1)), undefined);
@@ -346,7 +345,7 @@ Deno.test("KVStore - multiple WAL cycles accumulate all keys", async () => {
 			for (let i = 0; i < 10; i++) tx.set(makeKey(batch * 10 + i), makeValue(batch * 10 + i));
 			tx.apply();
 			const wal = await store.createWAL();
-			;
+
 			await wal.apply();
 			await wal.discard();
 		}
@@ -372,7 +371,6 @@ Deno.test("KVStore - staged value visible after apply, cleared after WAL save", 
 		assertEquals(await store.get(makeKey(1)), makeValue(1));
 
 		const wal = await store.createWAL();
-		;
 
 		// After save, staged cleared but value is in WAL / on disk after apply
 		await wal.apply();
@@ -410,7 +408,11 @@ Deno.test("KVStore - tx.get sees store-staged value (not yet on disk)", async ()
 Deno.test("KVStore - invalid key codec stride throws", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
+		const badCodec = {
+			stride: 0,
+			encode: () => new Uint8Array(0),
+			decode: () => [new Uint8Array(0), 0] as [Uint8Array, number],
+		};
 		let threw = false;
 		try {
 			await createKVStore({ name: "test", path: dir, keyCodec: badCodec as never, valueCodec: VALUE_CODEC });
@@ -426,7 +428,11 @@ Deno.test("KVStore - invalid key codec stride throws", async () => {
 Deno.test("KVStore - invalid value codec stride throws", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "lookupstore-test-" });
 	try {
-		const badCodec = { stride: 0, encode: () => new Uint8Array(0), decode: () => [new Uint8Array(0), 0] as [Uint8Array, number] };
+		const badCodec = {
+			stride: 0,
+			encode: () => new Uint8Array(0),
+			decode: () => [new Uint8Array(0), 0] as [Uint8Array, number],
+		};
 		let threw = false;
 		try {
 			await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: badCodec as never });

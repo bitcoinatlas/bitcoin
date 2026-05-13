@@ -9,3 +9,6 @@
 - [ ] block txs start pointer shouldnt be packed with the header. limits parallelism. instead it should have a seperate
       arraystore like before.
 - [ ] put all the sync logic in a simplified way into a single file or directory
+- [ ] read ahead should be in get() on blobstore before or after the codec, if left empty stride is used, if stried is
+      dynamic fail
+- [ ] seperate url params infer to InferINput and InferOutput, so we can use StringInput for inputs.
