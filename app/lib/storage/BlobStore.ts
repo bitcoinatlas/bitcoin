@@ -118,9 +118,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		lengthOrCodec: number | Codec<T>,
 		options?: { readAheadSize?: number },
 	): Promise<Uint8Array | T> {
-		if (self.wal) {
-			throw new Error("Can't perform this operation while a WAL is in progress");
-		}
 		if (typeof lengthOrCodec === "number") {
 			const length = lengthOrCodec;
 			for (const entry of stagedAppends) {
@@ -143,9 +140,6 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	function length(): number {
-		if (self.wal) {
-			throw new Error("Can't perform this operation while a WAL is in progress");
-		}
 		return stagedLength;
 	}
 
@@ -248,7 +242,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			pos += data.length;
 		}
 		await Deno.writeFile(walPath, buf, { create: true });
-		stagedAppends.length = 0;
+		// stagedAppends kept alive for reads during WAL window; cleared in apply/discard
 
 		const wal = await getWAL();
 		if (!wal) throw new Error("Failed to create WAL");
@@ -273,9 +267,11 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 					await appendBlobToDisk(data);
 				}
 				stagedLength = totalLength;
+				stagedAppends.length = 0;
 			},
 			async discard(): Promise<void> {
 				self.wal = null;
+				stagedAppends.length = 0;
 				await Deno.remove(walPath).catch(() => {/* ignore */});
 			},
 		};

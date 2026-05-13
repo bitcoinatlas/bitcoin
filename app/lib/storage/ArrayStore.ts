@@ -68,10 +68,6 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	const stagedSets = new Map<number, T>();
 
 	function length(): number {
-		if (self.wal) {
-			throw new Error("Can't perform this operation while a WAL is in progress");
-		}
-
 		return diskLengthCache + stagedAppends.length;
 	}
 
@@ -83,10 +79,6 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	}
 
 	async function get(index: number): Promise<T> {
-		if (self.wal) {
-			throw new Error("Can't perform this operation while a WAL is in progress");
-		}
-
 		if (index < 0) {
 			throw new Error("Index must be non-negative");
 		}
@@ -108,9 +100,6 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	}
 
 	async function slice(start: number, length: number): Promise<T[]> {
-		if (self.wal) {
-			throw new Error("Can't perform this operation while a WAL is in progress");
-		}
 		if (start < 0) throw new Error("start must be non-negative");
 		if (length < 0) throw new Error("length must be non-negative");
 
@@ -290,8 +279,6 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		}
 
 		await Deno.writeFile(walPath, buf, { create: true });
-		stagedAppends.length = 0;
-		stagedSets.clear();
 
 		const wal = await getWAL();
 		if (!wal) {
@@ -322,6 +309,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 						await writeFile(file, appendBytes);
 					});
 					diskLengthCache += appendCount;
+					stagedAppends.length = 0; // disk now consistent for appended range; clear before sets
 					pos += appendCount * codec.stride;
 				}
 
@@ -339,9 +327,12 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 					});
 					if (entry.index >= diskLengthCache) diskLengthCache = entry.index + 1;
 				}
+				stagedSets.clear();
 			},
 			async discard() {
 				self.wal = null;
+				stagedAppends.length = 0;
+				stagedSets.clear();
 				return await Deno.remove(walPath).catch(() => {/* ignore */});
 			},
 		};

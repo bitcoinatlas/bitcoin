@@ -222,13 +222,11 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	// --- public get/getMany ---
 
 	async function get(key: K): Promise<V | undefined> {
-		if (self.wal) throw new Error("Can't read while WAL is in progress");
 		const keyBytes = keyCodec.encode(key);
 		return getByBytes(keyBytes, staged[shardIndex(keyBytes)]!);
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
-		if (self.wal) throw new Error("Can't read while WAL is in progress");
 		return Promise.all(keys.map((k) => {
 			const keyBytes = keyCodec.encode(k);
 			return getByBytes(keyBytes, staged[shardIndex(keyBytes)]!);
@@ -366,9 +364,6 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 		await Deno.writeFile(walPath, walBuf, { create: true });
 
-		// Clear staged — now committed to WAL
-		for (let s = 0; s < NUM_SHARDS; s++) staged[s]!.clear();
-
 		const wal = await getWAL();
 		if (!wal) throw new Error("Failed to read WAL after write");
 		self.wal = wal;
@@ -399,9 +394,11 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 					const shardDir = join(path, `shard_${s}`);
 					await writeMeta(join(shardDir, "meta.bin"), shard.slotCount, shard.liveCount);
 				}
+				for (let s = 0; s < NUM_SHARDS; s++) staged[s]!.clear();
 			},
 			async discard(): Promise<void> {
 				self.wal = null;
+				for (let s = 0; s < NUM_SHARDS; s++) staged[s]!.clear();
 				await Deno.remove(walPath).catch(() => {});
 			},
 		};
