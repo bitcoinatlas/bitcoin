@@ -12,6 +12,11 @@ const BATCH_SIZE = 32;
 const BLOCK_TIMEOUT_MS = 30_000;
 const TICK_BYTE_LIMIT = MAX_BLOCK_WEIGHT * BATCH_SIZE;
 
+// Cumulative stats for smoothed speed / ETA across ticks.
+let _sessionStart = 0;
+let _sessionBlocks = 0;
+let _sessionBytes = 0;
+
 type PoolBlock = { height: number; payload: Uint8Array; block: ReturnType<typeof WireBlock.decode>[0] };
 
 /** Call once per tick. Downloads block bodies until TICK_BYTE_LIMIT bytes received or tip reached. */
@@ -78,6 +83,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 	let appendedCount = 0;
 	let firstAppendHeight: number | undefined;
 	let lastAppendHeight: number | undefined;
+	if (_sessionStart === 0) _sessionStart = Date.now();
 	const appendDone = (async () => {
 		for (const { height, hash } of pending) {
 			// Wait until this block is in the pool or download finishes.
@@ -105,12 +111,42 @@ export async function syncBodiesFromPeers(): Promise<void> {
 			if (appendedBytes >= TICK_BYTE_LIMIT) break;
 		}
 		if (appendedCount > 0) {
+			_sessionBlocks += appendedCount;
+			_sessionBytes += appendedBytes;
+			const elapsedSec = (Date.now() - _sessionStart) / 1_000;
+			const blocksPerSec = elapsedSec > 0 ? _sessionBlocks / elapsedSec : 0;
+			const bytesPerSec = elapsedSec > 0 ? _sessionBytes / elapsedSec : 0;
+
+			// Remaining blocks that still need bodies (excluding this batch).
+			const remaining = [...localChain.entries()].filter(
+				([h, n]) => h > 0 && n.pointer === null,
+			).length;
+			const etaStr = blocksPerSec > 0 && remaining > 0
+				? `eta=${fmtDuration(remaining / blocksPerSec)}`
+				: remaining === 0
+				? "eta=done"
+				: "eta=unknown";
+
 			console.log(
-				`[bodies] appended blocks=${appendedCount} heights=${firstAppendHeight}-${lastAppendHeight} bytes=${appendedBytes}`,
+				`[bodies] appended blocks=${appendedCount} heights=${firstAppendHeight}-${lastAppendHeight}` +
+				` bytes=${appendedBytes} speed=${fmtBytes(bytesPerSec)}/s blocks/s=${blocksPerSec.toFixed(1)} ${etaStr}`,
 			);
 		}
 	})();
 
 	await Promise.all([downloadDone, appendDone]);
+}
+
+function fmtBytes(bytes: number): string {
+	if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(2)} MB`;
+	if (bytes >= 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
+	return `${Math.round(bytes)} B`;
+}
+
+function fmtDuration(seconds: number): string {
+	const s = Math.round(seconds);
+	if (s < 60) return `${s}s`;
+	if (s < 3_600) return `${Math.floor(s / 60)}m${s % 60}s`;
+	return `${Math.floor(s / 3_600)}h${Math.floor((s % 3_600) / 60)}m`;
 }
 

@@ -12,3 +12,4 @@
 - [ ] read ahead should be in get() on blobstore before or after the codec, if left empty stride is used, if stried is
       dynamic fail
 - [ ] seperate url params infer to InferINput and InferOutput, so we can use StringInput for inputs.
+- [ ] higher level storage for fixed height ranges of block txs data. for on demand block body(txs) downloads.
