@@ -36,15 +36,11 @@ while (true) {
 
 async function tick() {
 	// await maintain(); // uncomment for production peer management
-	console.log("sync headers");
 	await syncHeadersFromPeers();
-	console.log("sync txs");
 	await syncBodiesFromPeers();
 
-	console.log(ticks % SAVE_EVERY_N_TICK);
 	if (ticks % SAVE_EVERY_N_TICK === 0) {
 		ticks = 0;
-		console.log("save");
 		await atomicSave();
 	}
 }

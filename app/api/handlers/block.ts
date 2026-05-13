@@ -1,5 +1,12 @@
 import { endpointRouter } from "~/api/router.ts";
-import { getBlocksByHeightRange, getChainTip } from "~/chain.ts";
+import {
+	getBlockByHeight,
+	getBlocksByHeightRange,
+	getChainTip,
+	getHeightByHash,
+	getTxsByBlockHash,
+	getTxsByBlockHeight,
+} from "~/chain.ts";
 
 const MAX_TAKE = 210;
 
@@ -39,4 +46,46 @@ endpointRouter.registerHandler("GET /v1/block/tip", async () => {
 		return { status: "OK", data: null };
 	}
 	return { status: "OK", data: { height: tip.height, header: tip.block.header } };
+});
+
+function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { kind: "hash"; hash: Uint8Array } {
+	if (/^[0-9]+$/.test(raw)) {
+		return { kind: "height", height: Number(raw) };
+	}
+	const hash = Uint8Array.from(raw.match(/.{2}/g)!.map((b: string) => parseInt(b, 16)).reverse());
+	return { kind: "hash", hash };
+}
+
+endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params }) => {
+	const parsed = parseHashOrHeight(params.pathname.hashOrHeight);
+	let block;
+	let height: number;
+
+	if (parsed.kind === "height") {
+		height = parsed.height;
+		block = await getBlockByHeight(height);
+	} else {
+		const h = await getHeightByHash(parsed.hash);
+		if (h === undefined) return { status: "OK", data: null };
+		height = h;
+		block = await getBlockByHeight(height);
+	}
+
+	if (!block) return { status: "OK", data: null };
+	return { status: "OK", data: { height, header: block.header } };
+});
+
+endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ params }) => {
+	const parsed = parseHashOrHeight(params.pathname.hashOrHeight);
+	let txs;
+
+	if (parsed.kind === "height") {
+		txs = await getTxsByBlockHeight(parsed.height);
+	} else {
+		txs = await getTxsByBlockHash(parsed.hash);
+	}
+
+	if (!txs) return { status: "OK", data: [] };
+	const wireTxs = await Promise.all(txs.map((tx) => tx.toWire()));
+	return { status: "OK", data: wireTxs };
 });

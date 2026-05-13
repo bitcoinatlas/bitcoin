@@ -1,6 +1,6 @@
 import { Codec } from "@nomadshiba/codec";
 import { EndpointResponse, EndpointResponseOptions } from "~/lib/EndpointResponse.ts";
-import { _, PromiseOrValue, StringInput } from "~/types.ts";
+import { _, PromiseOrValue } from "~/types.ts";
 
 type SchemaKeyGeneric = `${string} /${string}`;
 export type EndpointSchema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };
@@ -11,11 +11,11 @@ export type EndpointSchemaKey<TSchema extends EndpointSchema = EndpointSchema> =
 
 export namespace EndpointSchema {
 	export type InferParams<TSchemaKey extends EndpointSchemaKey> = {
-		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], StringInput>;
+		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], string>;
 		search:
-			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], StringInput>
+			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], string>
 			// deno-lint-ignore ban-types
-			& Record<string & {}, StringInput | undefined>;
+			& Record<string & {}, string | undefined>;
 	};
 
 	// Internal Helpers

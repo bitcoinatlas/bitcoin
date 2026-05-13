@@ -66,65 +66,49 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	const stagedAppends: Array<{ pointer: number; data: Uint8Array }> = [];
 	let stagedLength = totalLength;
 
-	/**
-	 * Compute the canonical pointer for a blob of `dataSize` bytes given the
-	 * current virtual stream position `pos`. Mirrors the roll-to-next-chunk
-	 * logic in appendBlobToDisk so tx.append and disk writes always agree.
-	 */
-	function nextPointer(pos: number, dataSize: number): number {
-		const offsetInChunk = pos % chunkByteSize;
-		if (offsetInChunk + dataSize > chunkByteSize) {
-			const chunkIndex = Math.floor(pos / chunkByteSize);
-			return (chunkIndex + 1) * chunkByteSize;
+	async function readFromDisk(pointer: number, buf: Uint8Array, allowEOF: boolean): Promise<number> {
+		let bytesRead = 0;
+		let currentPointer = pointer;
+		while (bytesRead < buf.length) {
+			const chunkIndex = Math.floor(currentPointer / chunkByteSize);
+			const offset = currentPointer % chunkByteSize;
+			const chunkPath = join(path, `chunk_${chunkIndex}`);
+			if (!await exists(chunkPath)) {
+				if (bytesRead === 0) throw new Error(`Chunk ${chunkIndex} not found for pointer ${pointer}`);
+				break;
+			}
+			const file = await Deno.open(chunkPath, { read: true });
+			try {
+				await file.seek(offset, Deno.SeekMode.Start);
+				while (bytesRead < buf.length) {
+					const n = await file.read(buf.subarray(bytesRead));
+					if (n === null) break;
+					bytesRead += n;
+					currentPointer += n;
+				}
+			} finally {
+				file.close();
+			}
+			// If we didn't reach the next chunk boundary, we hit EOF within this chunk
+			if (currentPointer % chunkByteSize !== 0) break;
 		}
-		return pos;
+		if (!allowEOF && bytesRead < buf.length) {
+			throw new Error("Unexpected EOF reading blob");
+		}
+		return bytesRead;
 	}
 
 	async function getFromDisk(pointer: number, length: number): Promise<Uint8Array> {
-		const chunkIndex = Math.floor(pointer / chunkByteSize);
-		const offset = pointer % chunkByteSize;
-		const chunkPath = join(path, `chunk_${chunkIndex}`);
-		if (!await exists(chunkPath)) {
-			throw new Error(`Chunk ${chunkIndex} not found for pointer ${pointer}`);
-		}
-		const file = await Deno.open(chunkPath, { read: true });
-		try {
-			await file.seek(offset, Deno.SeekMode.Start);
-			const buf = new Uint8Array(length);
-			let bytesRead = 0;
-			while (bytesRead < length) {
-				const n = await file.read(buf.subarray(bytesRead));
-				if (n === null) throw new Error("Unexpected EOF reading blob");
-				bytesRead += n;
-			}
-			return buf;
-		} finally {
-			file.close();
-		}
+		const buf = new Uint8Array(length);
+		await readFromDisk(pointer, buf, false);
+		return buf;
 	}
 
 	async function getFromDiskWithCodec<T>(pointer: number, codec: Codec<T>, readAheadSize: number): Promise<T> {
-		const chunkIndex = Math.floor(pointer / chunkByteSize);
-		const offset = pointer % chunkByteSize;
-		const chunkPath = join(path, `chunk_${chunkIndex}`);
-		if (!await exists(chunkPath)) {
-			throw new Error(`Chunk ${chunkIndex} not found for pointer ${pointer}`);
-		}
-		const file = await Deno.open(chunkPath, { read: true });
-		try {
-			await file.seek(offset, Deno.SeekMode.Start);
-			const buf = new Uint8Array(readAheadSize);
-			let bytesRead = 0;
-			while (bytesRead < readAheadSize) {
-				const n = await file.read(buf.subarray(bytesRead));
-				if (n === null) break;
-				bytesRead += n;
-			}
-			const [value] = codec.decode(buf.subarray(0, bytesRead));
-			return value;
-		} finally {
-			file.close();
-		}
+		const buf = new Uint8Array(readAheadSize);
+		const bytesRead = await readFromDisk(pointer, buf, true);
+		const [value] = codec.decode(buf.subarray(0, bytesRead));
+		return value;
 	}
 
 	async function get(pointer: number, length: number): Promise<Uint8Array>;
@@ -175,10 +159,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 
 		tx = {
 			append(data: Uint8Array): number {
-				if (data.length > chunkByteSize) {
-					throw new Error(`Blob size (${data.length}) exceeds chunk limit (${chunkByteSize})`);
-				}
-				const pointer = nextPointer(txLength, data.length);
+				const pointer = txLength;
 				txAppends.push({ pointer, data: new Uint8Array(data) });
 				txLength = pointer + data.length;
 				return pointer;
@@ -229,14 +210,22 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	async function appendBlobToDisk(data: Uint8Array): Promise<void> {
-		const pointer = nextPointer(totalLength, data.length);
-		const chunkIndex = Math.floor(pointer / chunkByteSize);
-		const chunkPath = join(path, `chunk_${chunkIndex}`);
-		const file = await Deno.open(chunkPath, { create: true, write: true, append: true });
-		try {
-			await writeFile(file, data);
-		} finally {
-			file.close();
+		const pointer = totalLength;
+		let written = 0;
+		while (written < data.length) {
+			const currentPointer = pointer + written;
+			const chunkIndex = Math.floor(currentPointer / chunkByteSize);
+			const offsetInChunk = currentPointer % chunkByteSize;
+			const spaceInChunk = chunkByteSize - offsetInChunk;
+			const slice = data.subarray(written, written + spaceInChunk);
+			const chunkPath = join(path, `chunk_${chunkIndex}`);
+			const file = await Deno.open(chunkPath, { create: true, write: true, append: true });
+			try {
+				await writeFile(file, slice);
+			} finally {
+				file.close();
+			}
+			written += slice.length;
 		}
 		totalLength = pointer + data.length;
 	}

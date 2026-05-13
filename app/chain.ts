@@ -18,6 +18,7 @@ import { BlobStoreTransaction, createBlobStore } from "~/lib/storage/BlobStore.t
 import { createKVStore, KVStoreTransaction } from "~/lib/storage/KVStore.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
 import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
+import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 
 export const GENESIS_BLOCK_HEIGHT = 0;
 export const GENESIS_BLOCK = new Uint8Array(285);
@@ -198,9 +199,7 @@ if (blocks.length > 0) {
 }
 
 export async function atomicSave() {
-	console.log(`[chain] atomicSave start blobStaged=${blobStore.length()} ${heapMB()}`);
 	await atomic(stores);
-	console.log(`[chain] atomicSave done ${heapMB()}`);
 }
 
 export function appendBlockHeader(
@@ -287,9 +286,6 @@ export async function appendBlockTxs(
 		blockStoreTx.apply();
 		txIdToPointerTx.apply();
 
-		console.log(
-			`[chain] appendBlockTxs height=${height} txs=${wireTxs.length} blobTotal=${blobStore.length()} ${heapMB()}`,
-		);
 		return { pointer: blockPointer };
 	} catch (reason) {
 		blobStoreTx.discard();
@@ -332,14 +328,14 @@ export async function getTxById(txId: Uint8Array): Promise<Tx | undefined> {
 }
 
 export async function getTxsByBlockPointer(pointer: StoredPointer): Promise<Tx[] | undefined> {
-	const storedTxs = await blobStore.get(pointer, StoredTxs);
+	const storedTxs = await blobStore.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
 	if (!storedTxs) return undefined;
 	return await Promise.all(storedTxs.map(Tx.fromStore));
 }
 
 export async function getTxsByBlockHeight(height: number): Promise<Tx[] | undefined> {
 	const { pointer } = await blockStore.get(height);
-	if (pointer === undefined) return undefined;
+	if (pointer === 0 && height !== 0) return undefined;
 	return await getTxsByBlockPointer(pointer);
 }
 

@@ -1,26 +1,227 @@
-import { bytesToHex } from "@noble/hashes/utils";
-import { tags, toChild } from "@purifyjs/core";
+import { sync, tags, toChild } from "@purifyjs/core";
+import { encodeHex } from "@std/encoding";
 import { api } from "~/frontend/api.ts";
+import { awaited } from "~/frontend/utils/awaited.ts";
+import { useReplaceChildren } from "~/frontend/utils/bind.ts";
+import { css } from "~/frontend/utils/css.ts";
+import type { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import appCss from "./app.css" with { type: "text" };
 
 const appSheet = new CSSStyleSheet();
 appSheet.replaceSync(appCss);
 document.adoptedStyleSheets.push(appSheet);
 
+function hex(bytes: Uint8Array) {
+	return encodeHex(bytes.toReversed());
+}
+
+function BlockDetailsContent(height: number | null) {
+	const { p, div, dl, dt, dd, ul, li } = tags;
+
+	if (height === null) {
+		return p().textContent("Select a block");
+	}
+
+	const loading = p().textContent(`Loading block ${height}...`);
+
+	const promise = Promise.all([
+		api.fetch("GET /v1/block/:hashOrHeight", { pathname: { hashOrHeight: String(height) } }),
+		api.fetch("GET /v1/block/:hashOrHeight/txs", { pathname: { hashOrHeight: String(height) } }),
+	]);
+
+	const content = div().$bind(useReplaceChildren(awaited(promise.then(([block, txs]) => {
+		if (!block) return p().textContent("Block not found");
+
+		const h = block.header;
+		const timestamp = new Date(h.timestamp * 1000).toISOString();
+
+		const headerSection = dl().append$(
+			dt().textContent("Hash"),
+			dd().textContent(hex(h.hash)),
+			dt().textContent("Height"),
+			dd().textContent(String(block.height)),
+			dt().textContent("Time"),
+			dd().textContent(timestamp),
+			dt().textContent("Merkle Root"),
+			dd().textContent(hex(h.merkleRoot)),
+			dt().textContent("Prev Hash"),
+			dd().textContent(hex(h.prevHash)),
+			dt().textContent("Version"),
+			dd().textContent("0x" + h.version.toString(16)),
+			dt().textContent("Bits"),
+			dd().textContent("0x" + h.bits.toString(16)),
+			dt().textContent("Nonce"),
+			dd().textContent(String(h.nonce)),
+			dt().textContent("Tx count"),
+			dd().textContent(String(txs.length)),
+		);
+
+		const txsSection = ul().append$(
+			...txs.map((tx: WireTx, i: number) => li().append$(TxRow(tx, i))),
+		);
+
+		return div().append$(headerSection, txsSection);
+	}))));
+
+	return div().append$(loading, content);
+}
+
+function TxRow(tx: WireTx, index: number) {
+	const { details, summary, dl, dt, dd, ul, li, span } = tags;
+
+	const totalOut = tx.outputs.reduce((acc, o) => acc + o.value, 0n);
+	const isCoinbase = tx.inputs.length === 1 &&
+		tx.inputs[0]!.prevOut.txId.every((b) => b === 0) &&
+		tx.inputs[0]!.prevOut.vout === 0xffffffff;
+
+	return details().append$(
+		summary().append$(
+			span().textContent(`#${index} `),
+			span().textContent(hex(tx.txId)),
+			span().textContent(` | ${tx.inputs.length} in, ${tx.outputs.length} out | ${totalOut} sat`),
+			isCoinbase ? span().textContent(" [coinbase]") : null,
+		),
+		dl().append$(
+			dt().textContent("TxID"),
+			dd().textContent(hex(tx.txId)),
+			dt().textContent("Version"),
+			dd().textContent(String(tx.version)),
+		),
+		details().append$(
+			summary().textContent(`Inputs (${tx.inputs.length})`),
+			ul().append$(
+				...tx.inputs.map((inp, i) => {
+					const coinbaseInput = isCoinbase && i === 0;
+					return li().append$(
+						dl().append$(
+							dt().textContent("Index"),
+							dd().textContent(String(i)),
+							dt().textContent("Prev TxID"),
+							dd().textContent(coinbaseInput ? "coinbase" : hex(inp.prevOut.txId)),
+							dt().textContent("Vout"),
+							dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
+							dt().textContent("ScriptSig"),
+							dd().textContent(encodeHex(inp.scriptSig)),
+						),
+					);
+				}),
+			),
+		),
+		details().append$(
+			summary().textContent(`Outputs (${tx.outputs.length})`),
+			ul().append$(
+				...tx.outputs.map((out, i) =>
+					li().append$(
+						dl().append$(
+							dt().textContent("Index"),
+							dd().textContent(String(i)),
+							dt().textContent("Value"),
+							dd().textContent(`${out.value} sat`),
+							dt().textContent("ScriptPubKey"),
+							dd().textContent(encodeHex(out.scriptPubKey)),
+						),
+					)
+				),
+			),
+		),
+	);
+}
+
 export function App() {
-	const { body, div } = tags;
-	const self = body();
+	const { body, ul, li, button, section } = tags;
+	const self = body().$bind(appStyle.useScope());
 
 	const tipPromise = api.fetch("GET /v1/block/tip", {});
 	const blocksPromise = tipPromise.then((tip) => api.fetch("GET /v1/block", { search: { to: tip?.height ?? 0 } }));
 
-	blocksPromise.then((blocks) => {
-		self.append$(blocks.map((block) => {
-			return div().textContent(bytesToHex(block.header.hash.toReversed()));
-		}));
+	const selectedBlockHeight = sync<number | null>((set) => {
+		set(null);
+		const onHashChange = () => {
+			const height = Number(location.hash.slice(1));
+			set(isNaN(height) || !location.hash ? null : height);
+		};
+		onHashChange();
+		globalThis.addEventListener("hashchange", onHashChange);
+		return () => globalThis.removeEventListener("hashchange", onHashChange);
 	});
+
+	const blockList = section().id("blocklist").ariaLabel("Block List").append$(
+		ul().$bind(useReplaceChildren(awaited(blocksPromise.then((blocks) =>
+			blocks.map((block) => {
+				return li().append$(
+					button().type("button")
+						.onclick(() => location.assign(new URL(`#${block.height}`, location.href)))
+						.textContent(`${block.height}: ${hex(block.header.hash)}`),
+				);
+			})
+		)))),
+	);
+
+	const blockDetails = section().id("blockdetails")
+		.ariaLabel("Block Details")
+		.$bind(useReplaceChildren(selectedBlockHeight.derive((height) => BlockDetailsContent(height))));
+
+	self.append$(blockList, blockDetails);
 
 	return self;
 }
+
+const appStyle = css`
+	:scope {
+		display: block grid;
+		grid-template-columns: max-content 1fr;
+		gap: 1em;
+		align-items: start;
+	}
+
+	#blocklist {
+		display: block grid;
+		gap: 0.5em;
+		overflow-y: auto;
+		max-block-size: 100dvb;
+	}
+
+	#blockdetails {
+		display: block grid;
+		gap: 0.5em;
+		overflow-x: auto;
+	}
+
+	dl {
+		display: block grid;
+		grid-template-columns: max-content 1fr;
+		gap: 1em;
+		font-size: 0.85em;
+	}
+
+	dt {
+		font-weight: bold;
+		opacity: 0.7;
+	}
+
+	dd {
+		margin: 0;
+		word-break: break-all;
+	}
+
+	ul {
+		list-style: none;
+		padding: 0;
+		margin: 0;
+		display: block grid;
+		gap: 0.5em;
+	}
+
+	details {
+		border: 1px solid #444;
+	}
+
+	summary {
+		padding-inline: 0.25em;
+		padding-block: 0.5em;
+		cursor: pointer;
+		word-break: break-all;
+	}
+`;
 
 document.body.replaceWith(toChild(App()));

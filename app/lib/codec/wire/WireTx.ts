@@ -1,4 +1,5 @@
 import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { concat } from "@std/bytes";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
@@ -57,7 +58,7 @@ class WireTxCodec extends Codec<T> {
 			locktime: tx.locktime,
 		}));
 
-		return Uint8Array.from(chunks);
+		return concat(chunks);
 	}
 
 	decode(bytes: Uint8Array): [T, number] {
@@ -100,7 +101,7 @@ function encodeWitness(witness: Uint8Array[][]): Uint8Array {
 			chunks.push(item);
 		}
 	}
-	return Uint8Array.from(chunks);
+	return concat(chunks);
 }
 
 // Decode witness: array of witness per input
