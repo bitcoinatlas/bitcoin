@@ -14,3 +14,13 @@
 - [ ] seperate url params infer to InferINput and InferOutput, so we can use StringInput for inputs.
 - [ ] higher level storage for fixed height ranges of block txs data. for on demand block body(txs) downloads.
 - [ ] make sync faster (try to batch writes, try to make txid index faster as well, also maybe check what is slower)
+- [ ] convert stores to classes for consistency
+- [ ] make atomic a wrapper class with multiple stores.
+- [ ] downloaded non stop just have a max block pool size.
+- [ ] keep blocks as bytes when they are in the pool until you start appending it, decoding makes it take more space
+      because V8.
+- [ ] on IBD a tick can go on non stop. so make saves based on staged size as well, and also time based.
+- [ ] during WAL dont throw, instead await. or dont wait at all if posibble.
+- [ ] create the pubkey index to use it for pointers.
+- [ ] maybe dont hide pubkey enum type, and have a method to get the raw thing like prevout, so we dont have to keep
+      checking its type over and over again in multiple places.
