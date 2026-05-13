@@ -21,7 +21,16 @@
       because V8.
 - [ ] on IBD a tick can go on non stop. so make saves based on staged size as well, and also time based.
 - [ ] during WAL dont throw, instead await. or dont wait at all if posibble.
-- [ ] create the pubkey index to use it for pointers.
+- [ ] create the pubkey index to use it for pointers. repeating pubkeys stored once, referenced by pointer everywhere.
 - [ ] maybe dont hide pubkey enum type, and have a method to get the raw thing like prevout, so we dont have to keep
       checking its type over and over again in multiple places.
 - [ ] we dont need blockhash index on disk probably, we can index it in memory
+- [ ] ETA calculation should be based on remaining bytes (from historical size dataset), not remaining block count.
+- [ ] on-demand block range download (not just single block) triggered by frontend requests.
+- [ ] on-demand fetched blocks go into a separate higher-level store; main sync job checks cache first before requesting
+      from peers.
+- [ ] frontend: scrollable block size chart where visual weight maps to actual block weight. click/hold to fast-scroll.
+- [ ] support Electrum endpoints.
+- [ ] support Satoshi RPC endpoints.
+- [ ] rename mempool to txpool everywhere.
+- [ ] chunk compression for cold data (LZ4 or similar), with uncompressed cache for hot chunks.
