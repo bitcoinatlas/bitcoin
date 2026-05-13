@@ -37,6 +37,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 
 	const pool = new Uint8ArrayMap<PoolBlock>(pending.length);
 	let downloadedBytes = 0;
+	let downloadFinished = false;
 
 	// Download: send getdata and fill the pool as blocks arrive.
 	const downloadDone = new Promise<void>((resolve) => {
@@ -45,6 +46,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 		const tid = setTimeout(() => {
 			unlisten();
 			if (remaining.size > 0) console.warn(`[bodies] timeout — ${remaining.size} block(s) not received`);
+			downloadFinished = true;
 			resolve();
 		}, BLOCK_TIMEOUT_MS);
 
@@ -69,6 +71,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 			if (remaining.size === 0) {
 				clearTimeout(tid);
 				unlisten();
+				downloadFinished = true;
 				resolve();
 			}
 		});
@@ -88,7 +91,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 		for (const { height, hash } of pending) {
 			// Wait until this block is in the pool or download finishes.
 			while (!pool.has(hash)) {
-				if (downloadedBytes >= TICK_BYTE_LIMIT) break;
+				if (downloadFinished || downloadedBytes >= TICK_BYTE_LIMIT) break;
 				await new Promise((r) => setTimeout(r, 10));
 			}
 
