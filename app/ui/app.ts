@@ -1,9 +1,9 @@
 import { sync, tags, toChild } from "@purifyjs/core";
 import { encodeHex } from "@std/encoding";
-import { api } from "~/frontend/api.ts";
-import { awaited } from "~/frontend/utils/awaited.ts";
-import { useReplaceChildren } from "~/frontend/utils/bind.ts";
-import { css } from "~/frontend/utils/css.ts";
+import { api } from "~/ui/api.ts";
+import { awaited } from "~/ui/utils/awaited.ts";
+import { useReplaceChildren } from "~/ui/utils/bind.ts";
+import { css } from "~/ui/utils/css.ts";
 import type { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import appCss from "./app.css" with { type: "text" };
 

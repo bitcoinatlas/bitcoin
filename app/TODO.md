@@ -13,3 +13,4 @@
       dynamic fail
 - [ ] seperate url params infer to InferINput and InferOutput, so we can use StringInput for inputs.
 - [ ] higher level storage for fixed height ranges of block txs data. for on demand block body(txs) downloads.
+- [ ] make sync faster (try to batch writes, try to make txid index faster as well, also maybe check what is slower)

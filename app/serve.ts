@@ -1,6 +1,6 @@
 import { endpointRouter } from "~/api/router.ts";
-import appHtml from "./frontend/app.html" with { type: "text" };
-import appJs from "./frontend/dist/app.js" with { type: "text" };
+import appHtml from "./ui/app.html" with { type: "text" };
+import appJs from "./ui/dist/app.js" with { type: "text" };
 
 const app = appHtml.replace("<!-- inject js -->", () => `<script type="module">${appJs}</script>`);
 

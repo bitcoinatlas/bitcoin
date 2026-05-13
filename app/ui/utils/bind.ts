@@ -1,5 +1,5 @@
 import { type Lifecycle, type Member, Sync, toChild } from "@purifyjs/core";
-import type { SyncOrValue } from "~/frontend/types.ts";
+import type { SyncOrValue } from "~/ui/types.ts";
 
 export function useReplaceChildren<T extends Member>(signal: Sync<T>): Lifecycle.OnConnected {
 	return (element) => signal.follow((member) => element.replaceChildren(toChild(member)), true);

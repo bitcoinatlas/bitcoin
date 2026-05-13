@@ -20,8 +20,8 @@
 		"cache": "deno cache ./app/main.ts",
 		"start": "deno run -A ./app/main.ts",
 		"dev": "deno task build && (deno run -A --watch ./app/main.ts & deno task dev:build)",
-		"build": "deno bundle --output=app/frontend/dist/app.js app/frontend/app.ts",
-		"dev:build": "deno bundle --output=app/frontend/dist/app.js app/frontend/app.ts --watch",
+		"build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts",
+		"dev:build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts --watch",
 		"check": "deno check app && deno lint app"
 	},
 	"unstable": ["raw-imports"],
