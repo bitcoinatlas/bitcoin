@@ -1,5 +1,6 @@
 import { BytesCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
-import { TxInput } from "~/lib/chain/TxInput.ts";
+import { COINBASE_VOUT } from "~/constants.ts";
+import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
 import { U24LE } from "~/lib/codec/primitives.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
@@ -14,9 +15,6 @@ const resolvedPrevOutCodec = new StructCodec({
 	vout: U24LE,
 });
 
-// Unresolved uses raw txId (32 bytes) + vout (3 bytes)
-const UNRESOLVED_SIZE = 32 + 3;
-
 // StoredTxInput codec that decodes to TxInput runtime class
 export class StoredTxInputCodec extends Codec<TxInput> {
 	readonly stride = -1;
@@ -28,19 +26,24 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		if (data.prevOut.txId.kind === "pointer") {
 			// Resolved - use struct codec
 			prevOutEncoded = new Uint8Array(1 + 6 + 3); // tag + tx + vout
-			prevOutEncoded[0] = 0; // resolved tag
+			prevOutEncoded[0] = 0;
 			const encoded = resolvedPrevOutCodec.encode({
 				tx: data.prevOut.txId.value,
 				vout: data.prevOut.vout,
 			});
 			prevOutEncoded.set(encoded, 1);
-		} else {
-			// Unresolved - raw txId + vout
+		} else if (data.prevOut.txId.kind === "raw") {
+			const storedVout = data.prevOut.vout;
 			prevOutEncoded = new Uint8Array(1 + 32 + 3); // tag + txId + vout
-			prevOutEncoded[0] = 1; // unresolved tag
+			prevOutEncoded[0] = 1;
 			prevOutEncoded.set(data.prevOut.txId.value, 1);
-			const voutBytes = U24LE.encode(data.prevOut.vout);
+			const voutBytes = U24LE.encode(storedVout);
 			prevOutEncoded.set(voutBytes, 33);
+		} else if (data.prevOut.txId.kind === "coinbase") {
+			prevOutEncoded = new Uint8Array(1); // tag
+			prevOutEncoded[0] = 2;
+		} else {
+			throw new Error();
 		}
 
 		const sequenceEncoded = U32LE.encode(SequenceLockCodec.toU32(data.sequence));
@@ -67,22 +70,28 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		let offset = 0;
 
 		// First byte is tag: 0 = resolved, 1 = unresolved
-		const isResolved = data[0] === 0;
-		let txId: { kind: "pointer"; value: number } | { kind: "raw"; value: Uint8Array };
+		let txId: OutPoint["txId"];
 		let vout: number;
 		let prevOutBytes: number;
 
-		if (isResolved) {
+		if (data[0] === 0) {
 			// Resolved: use StructCodec
 			const [prevOut] = resolvedPrevOutCodec.decode(data.subarray(1));
 			txId = { kind: "pointer", value: prevOut.tx };
 			vout = prevOut.vout;
 			prevOutBytes = 1 + 6 + 3;
-		} else {
+		} else if (data[0] === 1) {
 			// Unresolved: manual decode
-			txId = { kind: "raw", value: data.subarray(1, 33) };
+			const rawTxId = data.subarray(1, 33);
+			txId = { kind: "raw", value: rawTxId };
 			[vout] = U24LE.decode(data.subarray(33));
 			prevOutBytes = 1 + 32 + 3;
+		} else if (data[0] === 2) {
+			txId = { kind: "coinbase" };
+			vout = COINBASE_VOUT;
+			prevOutBytes = 1;
+		} else {
+			throw new Error();
 		}
 		offset += prevOutBytes;
 

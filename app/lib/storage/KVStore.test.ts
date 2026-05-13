@@ -172,8 +172,8 @@ Deno.test("KVStore - WAL save and apply persists to disk", async () => {
 		tx.set(makeKey(2), makeValue(2));
 		tx.apply();
 
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
+		;
 		await wal.apply();
 
 		const store2 = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
@@ -201,8 +201,8 @@ Deno.test("KVStore - WAL apply is idempotent (overwrite same key twice)", async 
 		tx.set(makeKey(1), makeValue(1));
 		tx.apply();
 
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
+		;
 		await wal.apply();
 		await wal.apply(); // second apply — same key, same value, no error
 
@@ -223,8 +223,8 @@ Deno.test("KVStore - crash recovery: WAL apply replays changes", async () => {
 		tx.set(makeKey(42), makeValue(42));
 		tx.apply();
 
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
+		;
 		// crash before apply
 		store1.close();
 
@@ -248,8 +248,8 @@ Deno.test("KVStore - persists data across reopen", async () => {
 		tx.set(makeKey(1), makeValue(1));
 		tx.set(makeKey(2), makeValue(2));
 		tx.apply();
-		const wal = await store1.WAL();
-		await wal.save();
+		const wal = await store1.createWAL();
+		;
 		await wal.apply();
 		await wal.discard();
 		store1.close();
@@ -271,8 +271,8 @@ Deno.test("KVStore - WAL discard removes the file", async () => {
 		tx.set(makeKey(1), makeValue(1));
 		tx.apply();
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
+		;
 
 		const walExists = (await Array.fromAsync(Deno.readDir(dir))).some((e) => e.name.endsWith(".wal"));
 		assertEquals(walExists, true);
@@ -291,8 +291,8 @@ Deno.test("KVStore - WAL empty save and apply is a no-op", async () => {
 	try {
 		const store = await createKVStore({ name: "test", path: dir, keyCodec: KEY_CODEC, valueCodec: VALUE_CODEC });
 		// no transaction, nothing staged
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
+		;
 		await wal.apply();
 		await wal.discard();
 		assertEquals(await store.get(makeKey(1)), undefined);
@@ -310,7 +310,7 @@ Deno.test("KVStore - WAL apply updates existing key on disk", async () => {
 		const tx1 = store1.transaction();
 		tx1.set(makeKey(1), makeValue(1));
 		tx1.apply();
-		const wal1 = await store1.WAL();
+		const wal1 = await store1.createWAL();
 		await wal1.save();
 		await wal1.apply();
 		await wal1.discard();
@@ -321,7 +321,7 @@ Deno.test("KVStore - WAL apply updates existing key on disk", async () => {
 		const tx2 = store2.transaction();
 		tx2.set(makeKey(1), makeValue(99));
 		tx2.apply();
-		const wal2 = await store2.WAL();
+		const wal2 = await store2.createWAL();
 		await wal2.save();
 		await wal2.apply();
 		await wal2.discard();
@@ -345,8 +345,8 @@ Deno.test("KVStore - multiple WAL cycles accumulate all keys", async () => {
 			const tx = store.transaction();
 			for (let i = 0; i < 10; i++) tx.set(makeKey(batch * 10 + i), makeValue(batch * 10 + i));
 			tx.apply();
-			const wal = await store.WAL();
-			await wal.save();
+			const wal = await store.createWAL();
+			;
 			await wal.apply();
 			await wal.discard();
 		}
@@ -371,8 +371,8 @@ Deno.test("KVStore - staged value visible after apply, cleared after WAL save", 
 		// Staged — visible before WAL save
 		assertEquals(await store.get(makeKey(1)), makeValue(1));
 
-		const wal = await store.WAL();
-		await wal.save();
+		const wal = await store.createWAL();
+		;
 
 		// After save, staged cleared but value is in WAL / on disk after apply
 		await wal.apply();
@@ -444,7 +444,7 @@ Deno.test("KVStore - WAL with transaction open throws", async () => {
 		const tx = store.transaction();
 		let threw = false;
 		try {
-			await store.WAL();
+			await store.createWAL();
 		} catch {
 			threw = true;
 		}

@@ -1,4 +1,5 @@
 import { type Codec } from "@nomadshiba/codec";
+import { PingMessage, PongMessage } from "~/lib/peer/messages/PingPong.ts";
 import { VerackMessage } from "~/lib/peer/messages/Verack.ts";
 import { VersionMessage, VersionPayload } from "~/lib/peer/messages/Version.ts";
 import { Peer, type PeerMessage, type PeerMessageEvent } from "~/lib/peer/Peer.ts";
@@ -217,4 +218,11 @@ export async function handshake(peer: Peer): Promise<void> {
 
 	await peer.expect(VerackMessage);
 	console.log(`[handshake] complete ✓ ${peer.host}:${peer.port}`);
+
+	// Reply to ping with pong echoing the nonce, for the lifetime of the peer.
+	peer.onMessage((msg) => {
+		if (msg.command !== PingMessage.command) return;
+		const [nonce] = PingMessage.codec.decode(msg.payload);
+		peer.send(PongMessage, nonce).catch(() => {});
+	});
 }

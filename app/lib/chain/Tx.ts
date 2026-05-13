@@ -1,12 +1,14 @@
+import { equals } from "@std/bytes";
+import { getTxPointerById } from "~/chain.ts";
+import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
+import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
+import { TxOutput } from "~/lib/chain/TxOutput.ts";
+import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
 import type { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
-import { TxInput } from "~/lib/chain/TxInput.ts";
-import { TxOutput } from "~/lib/chain/TxOutput.ts";
 import { ScriptPubKey } from "./ScriptPubKey.ts";
-import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
-import { getTxPointerById } from "~/chain.ts";
 
 export type TxData = {
 	txId: Uint8Array;
@@ -62,13 +64,19 @@ export class Tx {
 			const prevOutTxPointer = await getTxPointerById(wireInput.prevOut.txId);
 			const inputWitness = wireTx.witness[i] ?? [];
 
+			let txId: OutPoint["txId"];
+			if (prevOutTxPointer === undefined) {
+				if (equals(wireInput.prevOut.txId, COINBASE_TXID) && wireInput.prevOut.vout === COINBASE_VOUT) {
+					txId = { kind: "coinbase" };
+				} else {
+					txId = { kind: "raw", value: wireInput.prevOut.txId };
+				}
+			} else {
+				txId = { kind: "pointer", value: prevOutTxPointer };
+			}
+
 			const input = new TxInput({
-				prevOut: {
-					txId: prevOutTxPointer === undefined
-						? { kind: "raw", value: wireInput.prevOut.txId }
-						: { kind: "pointer", value: prevOutTxPointer },
-					vout: wireInput.prevOut.vout,
-				},
+				prevOut: { txId, vout: wireInput.prevOut.vout },
 				scriptSig: wireInput.scriptSig,
 				sequence: wireInput.sequence,
 				witness: inputWitness,

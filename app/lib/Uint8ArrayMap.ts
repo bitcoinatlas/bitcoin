@@ -1,10 +1,6 @@
 import { compare } from "~/lib/utils/bytes.ts";
 
-/**
- * Fast Uint8Array hash map using value equality
- * Variable-length key support
- */
-export class Uint8ArrayMap<V> {
+export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	private buckets: Array<Array<[Uint8Array, V]>>;
 	private mask: number;
 	private _size = 0;
@@ -12,13 +8,17 @@ export class Uint8ArrayMap<V> {
 		return this._size;
 	}
 
-	constructor(capacity = 16384) {
+	constructor(capacity = 1) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(capacity)));
 		this.mask = pow2 - 1;
 		this.buckets = new Array(pow2);
 		for (let i = 0; i < pow2; i++) {
 			this.buckets[i] = [];
 		}
+	}
+
+	[Symbol.iterator](): Iterator<[Uint8Array, V], any, any> {
+		return this.entries();
 	}
 
 	private hash(key: Uint8Array): number {

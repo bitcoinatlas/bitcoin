@@ -54,7 +54,7 @@ GENESIS_BLOCK.set([
 	...[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 	...[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 	...[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
-	...[0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff],
+	...[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
 	// prev output index
 	...[0xff, 0xff, 0xff, 0xff],
 	// script length
@@ -145,9 +145,15 @@ console.log("Stores initialized. Recovering data if needed…");
 await recover(stores);
 console.log("Recovery complete.");
 
+function heapMB(): string {
+	return `heap=${(Deno.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)}MB`;
+}
+
 export const localChain = new PeerChain([]);
 
+console.log(`[chain] loading blocks count=${blockStore.length()} ${heapMB()}`);
 const blocks = await blockStore.slice(0, blockStore.length());
+console.log(`[chain] blocks loaded ${heapMB()}`);
 localChain.clear();
 if (blocks.length > 0) {
 	let cumulativeWork = 0n;
@@ -162,6 +168,7 @@ if (blocks.length > 0) {
 			pointer: block.pointer ? block.pointer : (height ? null : 0),
 		});
 	}));
+	console.log(`[chain] chain built height=${localChain.height()} ${heapMB()}`);
 } else {
 	await blockStore.truncate(0);
 	await blobStore.truncate(0);
@@ -181,6 +188,8 @@ if (blocks.length > 0) {
 
 		blockStoreTx.apply();
 		blobStoreTx.apply();
+		txIdToPointerTx.apply();
+		blockHashToHeightTx.apply();
 		await atomicSave();
 	} catch (reason) {
 		console.error("Pushing genesis block failed:", reason);
@@ -189,7 +198,9 @@ if (blocks.length > 0) {
 }
 
 export async function atomicSave() {
+	console.log(`[chain] atomicSave start blobStaged=${blobStore.length()} ${heapMB()}`);
 	await atomic(stores);
+	console.log(`[chain] atomicSave done ${heapMB()}`);
 }
 
 export function appendBlockHeader(
@@ -276,6 +287,9 @@ export async function appendBlockTxs(
 		blockStoreTx.apply();
 		txIdToPointerTx.apply();
 
+		console.log(
+			`[chain] appendBlockTxs height=${height} txs=${wireTxs.length} blobTotal=${blobStore.length()} ${heapMB()}`,
+		);
 		return { pointer: blockPointer };
 	} catch (reason) {
 		blobStoreTx.discard();

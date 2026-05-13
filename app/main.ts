@@ -1,5 +1,6 @@
 import { delay } from "@std/async";
 import { atomicSave } from "~/chain.ts";
+import { syncBodiesFromPeers } from "~/bodies.ts";
 import { syncHeadersFromPeers } from "~/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
 import { serve } from "~/serve.ts";
@@ -7,7 +8,7 @@ import { serve } from "~/serve.ts";
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 const HTTP_PORT = 3000;
-const FLUSH_INTERVAL_MS = 60 * 1000;
+const SAVE_EVERY_N_TICK = 4;
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
 
@@ -21,24 +22,30 @@ serve(HTTP_PORT);
 await addPeer("192.168.1.10", P2P_PORT, MAGIC);
 // await maintain();
 
-let lastFlush = Date.now();
-
+let ticks = 0;
 while (true) {
 	try {
 		await delay(0);
 		await tick();
 	} catch (error) {
 		console.error("[main] tick error:", error);
+	} finally {
+		ticks++;
 	}
 }
 
 async function tick() {
 	// await maintain(); // uncomment for production peer management
+	console.log("sync headers");
 	await syncHeadersFromPeers();
+	console.log("sync txs");
+	await syncBodiesFromPeers();
 
-	if (Date.now() - lastFlush >= FLUSH_INTERVAL_MS) {
+	console.log(ticks % SAVE_EVERY_N_TICK);
+	if (ticks % SAVE_EVERY_N_TICK === 0) {
+		ticks = 0;
+		console.log("save");
 		await atomicSave();
-		lastFlush = Date.now();
 	}
 }
 
