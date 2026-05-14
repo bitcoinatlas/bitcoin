@@ -1,8 +1,6 @@
 import { Codec } from "@nomadshiba/codec";
-import { ScriptPubKey } from "~/lib/chain/ScriptPubKey.ts";
 import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
-import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
-import { CompactSize } from "~/lib/codec/primitives.ts";
+import { decodePayload, encodePayload, ID_TO_KIND, KIND_TO_ID, type StoredScriptPubKeyData } from "~/lib/codec/stored/StoredScriptPubKey.ts";
 
 /**
  * StoredTxOutput binary layout
@@ -12,51 +10,12 @@ import { CompactSize } from "~/lib/codec/primitives.ts";
  * bit   51   : spent   (1-bit flag)
  * bits 52–55 : typeId  (4-bit script type, range 0..15)
  *
- * typeId mapping:
- *   0 = pointer (StoredPointer:u48)
- *   1 = raw     (scriptPubKey, arbitrary length with CompactSize prefix)
- *   2 = p2pkh   (20-byte hash160)
- *   3 = p2sh    (20-byte hash160)
- *   4 = p2wpkh  (20-byte hash160)
- *   5 = p2wsh   (32-byte sha256)
- *   6 = p2tr    (32-byte xonly pubkey)
- *   7–15 = reserved
+ * typeId mapping (see StoredScriptPubKey.ts):
+ *   0 = pointer, 1 = raw, 2 = p2pkh, 3 = p2sh, 4 = p2wpkh, 5 = p2wsh, 6 = p2tr
  *
  * ── payload (variable) ──
- * if typeId = 0: 6 bytes [StoredPointer:u48]
- * if typeId = 1: CompactSize + raw scriptPubKey
- * if typeId = 2–6: fixed-length data as listed above
+ * Encoded by encodePayload / decoded by decodePayload in StoredScriptPubKey
  */
-
-type Kind = ScriptPubKey["kind"] | "pointer";
-
-const KIND_TO_ID: Record<Kind, number> = {
-	pointer: 0,
-	raw: 1,
-	p2pkh: 2,
-	p2sh: 3,
-	p2wpkh: 4,
-	p2wsh: 5,
-	p2tr: 6,
-};
-
-const ID_TO_KIND: Record<number, Kind> = {
-	[KIND_TO_ID.pointer]: "pointer",
-	[KIND_TO_ID.raw]: "raw",
-	[KIND_TO_ID.p2pkh]: "p2pkh",
-	[KIND_TO_ID.p2sh]: "p2sh",
-	[KIND_TO_ID.p2wpkh]: "p2wpkh",
-	[KIND_TO_ID.p2wsh]: "p2wsh",
-	[KIND_TO_ID.p2tr]: "p2tr",
-};
-
-const EXPECTED_HASH_LEN: Record<Exclude<Kind, "raw" | "pointer">, number> = {
-	p2pkh: 20,
-	p2sh: 20,
-	p2wpkh: 20,
-	p2wsh: 32,
-	p2tr: 32,
-};
 
 export class StoredTxOutputCodec extends Codec<TxOutput> {
 	readonly stride = -1;
@@ -68,30 +27,9 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 			throw new Error("Value out of range for 51-bit integer");
 		}
 
-		let payload: Uint8Array;
-		let storeKind: Kind;
+		const { kind, payload } = encodePayload(data.scriptPubKey as StoredScriptPubKeyData);
 
-		if (data.scriptPubKey.kind === "pointer") {
-			storeKind = "pointer";
-			payload = StoredPointer.encode(data.scriptPubKey.value);
-		} else {
-			const normalized = ScriptPubKey.normalize(data.scriptPubKey);
-			storeKind = normalized.kind;
-
-			if (storeKind === "raw") {
-				// Raw scripts: CompactSize prefix + full script bytes
-				const script = ScriptPubKey.toRaw(normalized);
-				const len = CompactSize.encode(script.length);
-				payload = new Uint8Array(len.length + script.length);
-				payload.set(len, 0);
-				payload.set(script, len.length);
-			} else {
-				// Known types: just the hash (value)
-				payload = normalized.value;
-			}
-		}
-
-		let bits = BigInt(KIND_TO_ID[storeKind]);
+		let bits = BigInt(KIND_TO_ID[kind]);
 		if (data.spent) bits |= 1n << 4n;
 		const combined = (bits << 51n) | data.value;
 
@@ -118,43 +56,14 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		const bits = combined >> 51n;
 		const spent = (bits & (1n << 4n)) !== 0n;
 		const typeId = Number(bits & 0xfn);
-		const payload = bytes.subarray(7);
-
-		let bytesRead = 7;
-		let scriptPubKey: TxOutputData["scriptPubKey"];
 
 		const kind = ID_TO_KIND[typeId];
+		if (kind === undefined) throw new Error(`Unknown type ID: ${typeId}`);
 
-		if (kind === "pointer") {
-			const [pointer, size] = StoredPointer.decode(payload);
-			bytesRead += size;
-			scriptPubKey = { kind: "pointer", value: pointer };
-		} else if (kind === "raw") {
-			// Raw scripts: CompactSize prefix + full script bytes
-			const [scriptLen, lenSize] = CompactSize.decode(payload);
-			if (payload.length < lenSize + scriptLen) {
-				throw new Error(
-					`Invalid raw script length: expected ${lenSize + scriptLen} bytes, got ${payload.length}`,
-				);
-			}
-			const scriptBytes = payload.subarray(lenSize, lenSize + scriptLen);
-			const decoded = ScriptPubKey.fromRaw(scriptBytes);
-			bytesRead += lenSize + scriptLen;
-			scriptPubKey = decoded;
-		} else if (kind) {
-			// Known script type - payload is just the hash
-			const expectedLen = EXPECTED_HASH_LEN[kind];
-			if (payload.length < expectedLen) {
-				throw new Error(`Invalid payload length for ${kind}: expected ${expectedLen}, got ${payload.length}`);
-			}
-			scriptPubKey = { kind, value: payload.subarray(0, expectedLen) };
-			bytesRead += expectedLen;
-		} else {
-			throw new Error(`Unknown type ID: ${typeId}`);
-		}
+		const [scriptPubKey, payloadSize] = decodePayload(kind, bytes.subarray(7));
 
 		const data: TxOutputData = { value, spent, scriptPubKey };
-		return [new TxOutput(data), bytesRead];
+		return [new TxOutput(data), 7 + payloadSize];
 	}
 }
 
