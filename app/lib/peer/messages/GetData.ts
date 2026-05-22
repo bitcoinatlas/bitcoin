@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
@@ -14,7 +14,7 @@ export type GetDataPayload = {
 };
 
 class GetDataCodec extends Codec<GetDataPayload> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(data: GetDataPayload): Uint8Array<ArrayBuffer> {
 		const count = data.inventory.length;
@@ -38,8 +38,8 @@ class GetDataCodec extends Codec<GetDataPayload> {
 		let off = csLen;
 		const inventory: InvVector[] = [];
 		for (let i = 0; i < count; i++) {
-			const type =
-				(bytes[off]! | (bytes[off + 1]! << 8) | (bytes[off + 2]! << 16) | (bytes[off + 3]! << 24)) >>> 0;
+			const type = (bytes[off]! | (bytes[off + 1]! << 8) | (bytes[off + 2]! << 16) | (bytes[off + 3]! << 24)) >>>
+				0;
 			const hash = bytes.slice(off + 4, off + 36);
 			inventory.push({ type, hash });
 			off += 36;

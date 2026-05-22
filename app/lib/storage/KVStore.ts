@@ -1,4 +1,4 @@
-import { type Codec } from "@nomadshiba/codec";
+import { type Codec, Stride } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { exists } from "@std/fs";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
@@ -36,8 +36,8 @@ export interface KVStoreTransaction<K, V> extends Transaction {
 export type KVStoreOptions<K, V> = {
 	name: string;
 	path: string;
-	keyCodec: Codec<K>;
-	valueCodec: Codec<V>;
+	keyCodec: Codec<K> & { stride: Stride<"fixed"> };
+	valueCodec: Codec<V> & { stride: Stride<"fixed"> };
 };
 
 const NUM_SHARDS = 256;
@@ -55,12 +55,9 @@ type ShardState = {
 };
 
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
-	if (options.keyCodec.stride <= 0) throw new Error("Key codec must have a fixed byte length");
-	if (options.valueCodec.stride <= 0) throw new Error("Value codec must have a fixed byte length");
-
 	const { name, path, keyCodec, valueCodec } = options;
-	const keyStride = keyCodec.stride;
-	const valueStride = valueCodec.stride;
+	const keyStride = keyCodec.stride.size;
+	const valueStride = valueCodec.stride.size;
 	const slotSize = 1 + keyStride + valueStride;
 
 	await Deno.mkdir(path, { recursive: true });

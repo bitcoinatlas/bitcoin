@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
 export type GetHeadersPayload = {
@@ -8,7 +8,7 @@ export type GetHeadersPayload = {
 };
 
 class GetHeadersCodec extends Codec<GetHeadersPayload> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(data: GetHeadersPayload): Uint8Array<ArrayBuffer> {
 		const count = data.locators.length;

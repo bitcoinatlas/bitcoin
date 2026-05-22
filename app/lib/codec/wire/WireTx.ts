@@ -1,4 +1,4 @@
-import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
@@ -15,8 +15,8 @@ import { sha256 } from "@noble/hashes/sha2";
 const WireTxPreWitness = new StructCodec({
 	version: U32LE,
 	hasWitness: WireSegwitMarker,
-	inputs: new ArrayCodec(WireTxInput, { countCodec: CompactSize }),
-	outputs: new ArrayCodec(WireTxOutput, { countCodec: CompactSize }),
+	inputs: new ArrayCodec(WireTxInput, { counter: CompactSize }),
+	outputs: new ArrayCodec(WireTxOutput, { counter: CompactSize }),
 });
 
 // Part 2: Everything after witness (just locktime)
@@ -33,7 +33,7 @@ type T = {
 };
 
 class WireTxCodec extends Codec<T> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(tx: T): Uint8Array<ArrayBuffer> {
 		const hasWitness = tx.witness.length > 0;

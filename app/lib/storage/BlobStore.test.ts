@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { type BlobStore, createBlobStore } from "~/lib/storage/BlobStore.ts";
 
@@ -156,7 +156,7 @@ Deno.test("BlobStore - crash recovery: WAL apply replays changes", async () => {
 		tx.append(data);
 		tx.apply();
 
-		const wal = await store1.createWAL();
+		const _wal = await store1.createWAL();
 		// crash before apply
 
 		const store2 = await createBlobStore({ name: "test", path: dir });
@@ -388,7 +388,7 @@ Deno.test("BlobStore - tx.get on staged value after outer apply", async () => {
 
 /** Simple variable-length codec: [u8 length][bytes] */
 class LengthPrefixedCodec extends Codec<Uint8Array> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 	encode(value: Uint8Array): Uint8Array<ArrayBuffer> {
 		const out = new Uint8Array(1 + value.length);
 		out[0] = value.length;

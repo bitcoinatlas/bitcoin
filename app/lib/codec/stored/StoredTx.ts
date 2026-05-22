@@ -16,6 +16,6 @@ export const StoredTx = new StructCodec({
 	txId: Bytes32,
 	version: U32LE,
 	lockTime: TimeLock,
-	vout: new ArrayCodec(StoredTxOutput, { countCodec: CompactSize }),
-	vin: new ArrayCodec(StoredTxInput, { countCodec: CompactSize }),
+	vout: new ArrayCodec(StoredTxOutput, { counter: CompactSize }),
+	vin: new ArrayCodec(StoredTxInput, { counter: CompactSize }),
 });

@@ -1,4 +1,4 @@
-import { Codec, U32LE } from "@nomadshiba/codec";
+import { Codec, Stride, U32LE } from "@nomadshiba/codec";
 
 export type SequenceLock =
 	| { kind: "final" }
@@ -20,7 +20,7 @@ export type SequenceLock =
 // - bit 31 set = disable flag
 // - bit 22 set = time-based (seconds), otherwise block-based
 export class SequenceLockCodec extends Codec<SequenceLock> {
-	readonly stride = 4;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
 
 	static toU32(value: SequenceLock): number {
 		if (value.kind === "final") {

@@ -1,4 +1,4 @@
-import { ArrayCodec, BytesCodec, Codec, StructCodec, type UnionOutput, UnionCodec } from "@nomadshiba/codec";
+import { ArrayCodec, BytesCodec, Codec, EnumCodec, type EnumOutput, Stride, StructCodec } from "@nomadshiba/codec";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 
 // ── Fixed-size byte array codecs ──────────────────────────────────────────────
@@ -13,8 +13,8 @@ const Script39 = new BytesCodec({ size: 39 });
 
 // ── Raw witness fallback ──────────────────────────────────────────────────────
 
-const RawWitnessItemCodec = new BytesCodec({ lengthCodec: CompactSize });
-const RawWitnessCodec = new ArrayCodec(RawWitnessItemCodec, { countCodec: CompactSize });
+const RawWitnessItemCodec = new BytesCodec({ sizer: CompactSize });
+const RawWitnessCodec = new ArrayCodec(RawWitnessItemCodec, { counter: CompactSize });
 
 // ── Struct codecs for each recognized pattern ─────────────────────────────────
 
@@ -44,7 +44,7 @@ export type WitnessPattern =
 
 // ── Internal union (numbered keys for deterministic wire-format indices) ──────
 
-const StoredWitnessUnion = new UnionCodec({
+const StoredWitnessUnion = new EnumCodec({
 	"0_raw": RawWitnessCodec,
 	"1_p2wpkh": P2WPKHCodec,
 	"2_p2trKeyPath": P2TRKeyPathCodec,
@@ -57,7 +57,7 @@ const StoredWitnessUnion = new UnionCodec({
 	"9_p2wshTimelock": P2WSHTimelockCodec,
 });
 
-type UnionWitness = typeof StoredWitnessUnion extends UnionCodec<infer T> ? UnionOutput<T> : never;
+type UnionWitness = typeof StoredWitnessUnion extends EnumCodec<infer T> ? EnumOutput<T> : never;
 
 const KIND_MAP: Record<UnionWitness["kind"], WitnessPattern["kind"]> = {
 	"0_raw": "raw",
@@ -285,7 +285,7 @@ export function reconstructWitness(pattern: WitnessPattern): Uint8Array[] {
 // ── Codecs ────────────────────────────────────────────────────────────────────
 
 export class StoredWitnessPatternCodec extends Codec<WitnessPattern> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(pattern: WitnessPattern): Uint8Array<ArrayBuffer> {
 		return StoredWitnessUnion.encode(toUnion(pattern));
@@ -300,7 +300,7 @@ export class StoredWitnessPatternCodec extends Codec<WitnessPattern> {
 export const StoredWitnessPattern = new StoredWitnessPatternCodec();
 
 export class StoredWitnessCodec extends Codec<Uint8Array[]> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(items: Uint8Array[]): Uint8Array<ArrayBuffer> {
 		return StoredWitnessPattern.encode(detectWitnessPattern(items));

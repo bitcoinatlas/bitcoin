@@ -1,8 +1,8 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
 class PingPongCodec extends Codec<bigint> {
-	readonly stride = 8;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 8 };
 
 	encode(nonce: bigint): Uint8Array<ArrayBuffer> {
 		const buf = new Uint8Array(8);

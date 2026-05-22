@@ -10,12 +10,20 @@ export type EndpointSchemaKey<TSchema extends EndpointSchema = EndpointSchema> =
 >;
 
 export namespace EndpointSchema {
-	export type InferParams<TSchemaKey extends EndpointSchemaKey> = {
+	export type InferParamsOutput<TSchemaKey extends EndpointSchemaKey> = {
 		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], string>;
 		search:
 			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], string>
 			// deno-lint-ignore ban-types
 			& Record<string & {}, string | undefined>;
+	};
+
+	export type InferParamsInput<TSchemaKey extends EndpointSchemaKey> = {
+		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], string | number | bigint>;
+		search:
+			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], string | number | bigint>
+			// deno-lint-ignore ban-types
+			& Record<string & {}, string | number | bigint | undefined>;
 	};
 
 	// Internal Helpers
@@ -52,7 +60,7 @@ export type EndpointHandlerOptions<
 	TMeta,
 > = {
 	event: EndpointEvent;
-	params: EndpointSchema.InferParams<TSchemaKey>;
+	params: EndpointSchema.InferParamsOutput<TSchemaKey>;
 	data: Codec.InferOutput<InferItem<TSchema, TSchemaKey>["input"]>;
 	meta: TMeta;
 };
@@ -64,7 +72,7 @@ export type EndpointHandlerResult<TSchema extends EndpointSchema, TSchemaKey ext
 
 export type EndpointMiddlewareOptions<TSchema extends EndpointSchema = _> = {
 	event: EndpointEvent;
-	params: EndpointSchema.InferParams<EndpointSchemaKey<TSchema>>;
+	params: EndpointSchema.InferParamsOutput<EndpointSchemaKey<TSchema>>;
 	data: Codec.InferOutput<InferItem<TSchema, EndpointSchemaKey<TSchema>>["input"]>;
 };
 

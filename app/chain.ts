@@ -94,10 +94,10 @@ GENESIS_BLOCK.set([
 	// locktime
 	...[0x00, 0x00, 0x00, 0x00],
 ]);
-export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, WireBlockHeader.stride);
+export const GENESIS_BLOCK_HEADER = GENESIS_BLOCK.subarray(0, WireBlockHeader.stride.size);
 export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
-	WireBlockHeader.inner.shape.version.stride,
-	WireBlockHeader.inner.shape.version.stride + WireBlockHeader.inner.shape.prevHash.stride,
+	WireBlockHeader.inner.shape.version.stride.size,
+	WireBlockHeader.inner.shape.version.stride.size + WireBlockHeader.inner.shape.prevHash.stride.size,
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
 
@@ -113,7 +113,7 @@ const blockStore = await createArrayStore({
 	name: "blocks",
 	path: join(BASE_DATA_DIR, "blocks"),
 	codec: StoredBlock,
-	countCodec: U32,
+	counter: U32,
 });
 
 const blobStore = await createBlobStore({
@@ -205,7 +205,7 @@ export async function atomicSave() {
 export function appendBlockHeader(
 	headers: WireBlockHeader[],
 	storeTxs?: {
-		blockStoreTx: ArrayStoreTransaction<StoredBlock>;
+		blockStoreTx: ArrayStoreTransaction<typeof StoredBlock>;
 		blockHashToHeightTx: KVStoreTransaction<Uint8Array, number>;
 	},
 ): { height: number } {
@@ -244,7 +244,7 @@ export async function appendBlockTxs(
 	height: number,
 	storeTxs?: {
 		blobStoreTx: BlobStoreTransaction;
-		blockStoreTx: ArrayStoreTransaction<StoredBlock>;
+		blockStoreTx: ArrayStoreTransaction<typeof StoredBlock>;
 		txIdToPointerTx: KVStoreTransaction<Uint8Array, number>;
 	},
 ): Promise<{ pointer: StoredPointer }> {
@@ -261,7 +261,7 @@ export async function appendBlockTxs(
 		}
 
 		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
-		const txCountBytes = StoredTxs.countCodec.encode(txs.length);
+		const txCountBytes = StoredTxs.counter.encode(txs.length);
 		const blockPointer = blobStoreTx.append(txCountBytes);
 		blockStoreTx.set(height, { header: block.header, pointer: blockPointer });
 

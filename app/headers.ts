@@ -1,10 +1,10 @@
-import { appendBlockHeader, getBlockPointerByHash, getBlockPointerByHeight, localChain } from "~/chain.ts";
-import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
+import { appendBlockHeader, getBlockPointerByHash, localChain } from "~/chain.ts";
+import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
 import { verifyProofOfWork, workFromHeader } from "~/lib/chain/utils/pow.ts";
+import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { type Peer } from "~/lib/peer/Peer.ts";
 import { GetHeadersMessage } from "~/lib/peer/messages/GetHeaders.ts";
 import { HeadersMessage } from "~/lib/peer/messages/Headers.ts";
-import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
 import { peers } from "~/peers.ts";
 
 const PROTOCOL_VERSION = 70015;

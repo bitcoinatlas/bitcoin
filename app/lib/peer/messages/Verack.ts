@@ -1,8 +1,8 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
 class VerackCodec extends Codec<null> {
-	readonly stride = 0;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 0 };
 
 	encode(_data: null): Uint8Array<ArrayBuffer> {
 		return new Uint8Array(0) as Uint8Array<ArrayBuffer>;

@@ -1,29 +1,30 @@
-import { type Codec, StructCodec, VarInt } from "@nomadshiba/codec";
+import { BytesCodec, type Codec, Stride, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
-export interface ArrayStore<T> extends Store<ArrayStoreTransaction<T>>, Disposable {
-	get(index: number): Promise<T>;
-	slice(start: number, length: number): Promise<T[]>;
+export interface ArrayStore<T extends Codec<any> & { stride: Stride<"fixed"> }>
+	extends Store<ArrayStoreTransaction<T>>, Disposable {
+	get(index: number): Promise<Codec.InferOutput<T>>;
+	slice(start: number, length: number): Promise<Codec.InferOutput<T>[]>;
 	length(): number;
 	truncate(newLength: number): Promise<void>;
 	close(): void;
 }
 
-export interface ArrayStoreTransaction<T> extends Transaction {
-	get(index: number): Promise<T>;
-	set(index: number, value: T): void;
-	append(value: T): number;
+export interface ArrayStoreTransaction<T extends Codec<any> & { stride: Stride<"fixed"> }> extends Transaction {
+	get(index: number): Promise<Codec.InferOutput<T>>;
+	set(index: number, value: Codec.InferInput<T>): void;
+	append(value: Codec.InferInput<T>): number;
 	length(): number;
 }
 
-export type ArrayStoreOptions<T> = {
+export type ArrayStoreOptions<T extends Codec<any> & { stride: Stride<"fixed"> }> = {
 	name: string;
 	path: string;
-	codec: Codec<T>;
-	countCodec?: Codec<number>;
+	codec: T;
+	counter?: Codec<number>;
 };
 
 /**
@@ -35,13 +36,11 @@ export type ArrayStoreOptions<T> = {
  * Appends have no index — they are packed raw bytes applied as a single bulk write.
  * Sets carry an explicit index and are applied after appends so index arithmetic is stable.
  */
-export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promise<ArrayStore<T>> {
-	if (options.codec.stride <= 0) {
-		throw new Error("Codec must have a fixed byte length");
-	}
-
+export async function createArrayStore<T extends Codec<any> & { stride: Stride<"fixed"> }>(
+	options: ArrayStoreOptions<T>,
+): Promise<ArrayStore<T>> {
 	const { name, path, codec } = options;
-	const countCodec = options.countCodec ?? VarInt;
+	const countCodec = options.counter ?? VarInt;
 
 	const binPath = join(path, "data.bin");
 	const walPath = join(path, `data.wal`);
@@ -49,7 +48,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	await Deno.mkdir(path, { recursive: true });
 	const file = await Deno.open(binPath, { read: true, write: true, create: true });
 
-	let diskLengthCache = (await file.stat()).size / codec.stride;
+	let diskLengthCache = (await file.stat()).size / codec.stride.size;
 	if (!Number.isInteger(diskLengthCache)) {
 		throw new Error("File size must be a multiple of codec stride");
 	}
@@ -63,9 +62,9 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 	}
 
 	// Staged appends: new entries in order (index = length + i)
-	const stagedAppends: T[] = [];
+	const stagedAppends: Uint8Array[] = [];
 	// Staged sets: in-place updates to existing indices
-	const stagedSets = new Map<number, T>();
+	const stagedSets = new Map<number, Uint8Array>();
 
 	function length(): number {
 		return diskLengthCache + stagedAppends.length;
@@ -78,7 +77,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		file.close();
 	}
 
-	async function get(index: number): Promise<T> {
+	async function get(index: number): Promise<Codec.InferOutput<T>> {
 		if (index < 0) {
 			throw new Error("Index must be non-negative");
 		}
@@ -87,19 +86,19 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 			throw new Error("Index out of bounds");
 		}
 		// Check sets first
-		if (stagedSets.has(index)) return stagedSets.get(index)!;
+		if (stagedSets.has(index)) return codec.decode(stagedSets.get(index)!)[0];
 		// Check staged appends
-		if (index >= diskLengthCache) return stagedAppends[index - diskLengthCache]!;
-		const offset = index * codec.stride;
+		if (index >= diskLengthCache) return codec.decode(stagedAppends[index - diskLengthCache]!)[0];
+		const offset = index * codec.stride.size;
 		return await withLock(async () => {
 			await file.seek(offset, Deno.SeekMode.Start);
-			const data = await readFile(file, codec.stride);
+			const data = await readFile(file, codec.stride.size);
 			const [value] = codec.decode(data);
 			return value;
 		});
 	}
 
-	async function slice(start: number, length: number): Promise<T[]> {
+	async function slice(start: number, length: number): Promise<Codec.InferOutput<T>[]> {
 		if (start < 0) throw new Error("start must be non-negative");
 		if (length < 0) throw new Error("length must be non-negative");
 
@@ -107,7 +106,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		const size = Math.min(length, totalLength - start);
 		if (size <= 0) return [];
 
-		const results = new Array<T>(size);
+		const results = new Array<Codec.InferOutput<T>>(size);
 
 		// How many entries of this slice come from disk vs staged
 		const diskEnd = Math.min(start + size, diskLengthCache);
@@ -116,16 +115,16 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		// Bulk read contiguous disk entries in one seek
 		if (diskCount > 0) {
 			const bulk = await withLock(async () => {
-				await file.seek(start * codec.stride, Deno.SeekMode.Start);
-				return await readFile(file, diskCount * codec.stride);
+				await file.seek(start * codec.stride.size, Deno.SeekMode.Start);
+				return await readFile(file, diskCount * codec.stride.size);
 			});
 			for (let i = 0; i < diskCount; i++) {
 				const index = start + i;
 				// stagedSets overrides disk
 				if (stagedSets.has(index)) {
-					results[i] = stagedSets.get(index)!;
+					results[i] = codec.decode(stagedSets.get(index)!)[0];
 				} else {
-					results[i] = codec.decode(bulk.subarray(i * codec.stride, (i + 1) * codec.stride))[0];
+					results[i] = codec.decode(bulk.subarray(i * codec.stride.size, (i + 1) * codec.stride.size))[0];
 				}
 			}
 		}
@@ -135,9 +134,9 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 			const index = start + i;
 			// stagedSets can also override staged appends
 			if (stagedSets.has(index)) {
-				results[i] = stagedSets.get(index)!;
+				results[i] = codec.decode(stagedSets.get(index)!)[0];
 			} else {
-				results[i] = stagedAppends[index - diskLengthCache]!;
+				results[i] = codec.decode(stagedAppends[index - diskLengthCache]!)[0];
 			}
 		}
 
@@ -169,7 +168,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 
 		// Truncate on-disk committed entries if newLength < length
 		if (newLength < diskLengthCache) {
-			await file.truncate(newLength * codec.stride);
+			await file.truncate(newLength * codec.stride.size);
 			diskLengthCache = newLength;
 		}
 	}
@@ -183,32 +182,32 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 			throw new Error("Can't start a transaction while a WAL is in progress");
 		}
 
-		const txSets = new Map<number, T>();
-		const txAppends: T[] = [];
+		const txSets = new Map<number, Uint8Array>();
+		const txAppends: Uint8Array[] = [];
 		// snapshot of length at tx open (includes already-staged appends)
 		const txBaseLength = diskLengthCache + stagedAppends.length;
 
 		tx = {
-			async get(index: number): Promise<T> {
+			async get(index: number) {
 				if (index < 0) throw new Error("Index must be non-negative");
 				if (index >= txBaseLength + txAppends.length) throw new Error("Index out of bounds");
-				if (txSets.has(index)) return txSets.get(index)!;
-				if (index >= txBaseLength) return txAppends[index - txBaseLength]!;
+				if (txSets.has(index)) return codec.decode(txSets.get(index)!)[0];
+				if (index >= txBaseLength) return codec.decode(txAppends[index - txBaseLength]!)[0];
 				return await get(index);
 			},
-			set(index: number, value: T): void {
+			set(index: number, value: Codec.InferInput<T>): void {
 				if (index < 0) throw new Error("Index must be non-negative");
 				if (index >= txBaseLength + txAppends.length) throw new Error("Index out of bounds");
 				if (index >= txBaseLength) {
 					// Overwrite a within-tx append
-					txAppends[index - txBaseLength] = value;
+					txAppends[index - txBaseLength] = codec.encode(value);
 				} else {
-					txSets.set(index, value);
+					txSets.set(index, codec.encode(value));
 				}
 			},
-			append(value: T): number {
+			append(value: Codec.InferInput<T>): number {
 				const index = txBaseLength + txAppends.length;
-				txAppends.push(value);
+				txAppends.push(codec.encode(value));
 				return index;
 			},
 			length(): number {
@@ -236,7 +235,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		return tx;
 	}
 
-	const setCodec = new StructCodec({ index: countCodec, value: codec });
+	const setCodec = new StructCodec({ index: countCodec, value: new BytesCodec({ size: codec.stride.size }) });
 
 	async function createWAL(): Promise<WAL> {
 		if (self.wal) {
@@ -249,7 +248,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		// Section 1: appends — count + packed raw bytes
 		const appendCount = stagedAppends.length;
 		const appendCountBytes = countCodec.encode(appendCount);
-		const appendDataSize = appendCount * codec.stride;
+		const appendDataSize = appendCount * codec.stride.size;
 
 		// Section 2: sets — count + [{index, value}...]
 		const setEntries = Array.from(stagedSets.entries());
@@ -268,7 +267,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 		pos += appendCountBytes.length;
 		for (const value of stagedAppends) {
 			buf.set(codec.encode(value), pos);
-			pos += codec.stride;
+			pos += codec.stride.size;
 		}
 
 		buf.set(setCountBytes, pos);
@@ -303,14 +302,14 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 				pos += appendCountLen;
 
 				if (appendCount > 0) {
-					const appendBytes = buf.subarray(pos, pos + appendCount * codec.stride);
+					const appendBytes = buf.subarray(pos, pos + appendCount * codec.stride.size);
 					await withLock(async () => {
-						await file.seek(diskLengthCache * codec.stride, Deno.SeekMode.Start);
+						await file.seek(diskLengthCache * codec.stride.size, Deno.SeekMode.Start);
 						await writeFile(file, appendBytes);
 					});
 					diskLengthCache += appendCount;
 					stagedAppends.length = 0; // disk now consistent for appended range; clear before sets
-					pos += appendCount * codec.stride;
+					pos += appendCount * codec.stride.size;
 				}
 
 				// Section 2: sets
@@ -320,7 +319,7 @@ export async function createArrayStore<T>(options: ArrayStoreOptions<T>): Promis
 				for (let i = 0; i < setCount; i++) {
 					const [entry, entryLen] = setCodec.decode(buf.subarray(pos));
 					pos += entryLen;
-					const offset = entry.index * codec.stride;
+					const offset = entry.index * codec.stride.size;
 					await withLock(async () => {
 						await file.seek(offset, Deno.SeekMode.Start);
 						await writeFile(file, codec.encode(entry.value));

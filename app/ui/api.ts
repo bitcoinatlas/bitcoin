@@ -16,7 +16,7 @@ type OptionalIfEmpty<T> = T extends { search: infer S } ? MakeOptionalIfEmpty<Om
 async function apiFetch<TSchemaKey extends EndpointSchemaKey<TSchema>>(
 	key: TSchemaKey,
 	params: OptionalIfEmpty<
-		EndpointSchema.InferParams<TSchemaKey> & {
+		EndpointSchema.InferParamsInput<TSchemaKey> & {
 			data: NeverFallback<Codec.InferInput<TSchema[TSchemaKey]["input"]>, Empty>;
 			headers?: Partial<Record<string, string>>;
 		}

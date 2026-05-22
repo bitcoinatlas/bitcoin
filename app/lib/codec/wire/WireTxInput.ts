@@ -14,6 +14,6 @@ export const WireTxInput = new StructCodec({
 		txId: Bytes32,
 		vout: U32LE,
 	}),
-	scriptSig: new BytesCodec({ lengthCodec: CompactSize }),
+	scriptSig: new BytesCodec({ sizer: CompactSize }),
 	sequence: SequenceLock,
 });

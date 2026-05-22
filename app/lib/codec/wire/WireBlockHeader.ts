@@ -2,7 +2,7 @@ import { Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { Bytes32 } from "~/lib/codec/primitives.ts";
 import { sha256 } from "@noble/hashes/sha2";
 
-const WireBlockHeaderInner = new StructCodec({
+const WireBlockHeaderBase = new StructCodec({
 	version: U32LE,
 	prevHash: Bytes32,
 	merkleRoot: Bytes32,
@@ -11,10 +11,10 @@ const WireBlockHeaderInner = new StructCodec({
 	nonce: U32LE,
 });
 
-type WireBlockHeaderBase = Codec.Infer<typeof WireBlockHeaderInner>;
+type WireBlockHeaderBase = Codec.Infer<typeof WireBlockHeaderBase>;
 
 export type WireBlockHeader = WireBlockHeaderBase & { hash: Uint8Array };
-export const WireBlockHeader = WireBlockHeaderInner.transform((value, bytes): WireBlockHeader => {
+export const WireBlockHeader = WireBlockHeaderBase.transform((value, bytes): WireBlockHeader => {
 	return {
 		hash: sha256(sha256(bytes)),
 		...value,

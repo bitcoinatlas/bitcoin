@@ -45,7 +45,7 @@ async function tick() {
 	}
 }
 
-async function maintain() {
+async function _maintain() {
 	expireFailed(FAILED_RETRY_MS);
 
 	if (peers().length >= MAX_PEERS) return;

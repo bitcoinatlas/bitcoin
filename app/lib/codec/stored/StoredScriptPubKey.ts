@@ -1,5 +1,11 @@
-import { Codec } from "@nomadshiba/codec";
-import { detectScriptPubKey, EXPECTED_SCRIPT_PAYLOAD_LEN, normalizeScriptPubKey, rawScriptPubKey, type ScriptPubKey } from "~/lib/chain/ScriptPubKey.ts";
+import { Codec, Stride } from "@nomadshiba/codec";
+import {
+	detectScriptPubKey,
+	EXPECTED_SCRIPT_PAYLOAD_LEN,
+	normalizeScriptPubKey,
+	rawScriptPubKey,
+	type ScriptPubKey,
+} from "~/lib/chain/ScriptPubKey.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 
@@ -78,7 +84,7 @@ export function decodePayload(kind: Kind, payload: Uint8Array): [StoredScriptPub
 }
 
 export class StoredScriptPubKeyCodec extends Codec<StoredScriptPubKeyData> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(value: StoredScriptPubKeyData): Uint8Array<ArrayBuffer> {
 		const { kind, payload } = encodePayload(value);

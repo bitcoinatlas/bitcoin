@@ -1,4 +1,4 @@
-import { ArrayCodec, Codec, Str, U8, UnionCodec, Void } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, EnumCodec, Str, U8, Void } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { BASE_DATA_DIR } from "~/config.ts";
@@ -54,14 +54,14 @@ const ATOMIC_STORE_NAMES_PATH = join(ATOMIC_DIR, "ids.bin");
 await Deno.mkdir(ATOMIC_DIR, { recursive: true });
 
 type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
-const AtomicState = new UnionCodec({
+const AtomicState = new EnumCodec({
 	"started": Void,
 	"saved": Void,
 	"applied": Void,
 	"discarded": Void,
 });
 
-const StoreNames = new ArrayCodec(Str, { countCodec: U8 });
+const StoreNames = new ArrayCodec(Str, { counter: U8 });
 
 const atomicMeta = {
 	state: {

@@ -1,9 +1,9 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export class CompactSizeCodec extends Codec<number> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(n: number): Uint8Array<ArrayBuffer> {
 		if (n < 0xfd) return Uint8Array.of(n);
@@ -49,7 +49,7 @@ export class CompactSizeCodec extends Codec<number> {
 export const CompactSize = new CompactSizeCodec();
 
 export class U24LECodec extends Codec<number> {
-	readonly stride = 3;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 3 };
 
 	encode(value: number): Uint8Array<ArrayBuffer> {
 		if (value < 0 || value > 0xffffff || !Number.isInteger(value)) {
@@ -74,7 +74,7 @@ export const U24LE = new U24LECodec();
 const MAX_U48 = 2 ** 48 - 1;
 
 export class U48LECodec extends Codec<number> {
-	readonly stride = 6;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 6 };
 
 	encode(value: number): Uint8Array<ArrayBuffer> {
 		if (value < 0 || value > MAX_U48 || !Number.isInteger(value)) {
@@ -102,7 +102,7 @@ export class U48LECodec extends Codec<number> {
 export const U48LE = new U48LECodec();
 
 export class U56LECodec extends Codec<bigint> {
-	readonly stride = 7;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 7 };
 
 	encode(value: bigint): Uint8Array<ArrayBuffer> {
 		if (value < 0n || value > 0x00ffffffffffffffn) {
@@ -128,7 +128,7 @@ export class U56LECodec extends Codec<bigint> {
 export const U56LE = new U56LECodec();
 
 export class Bytes32Codec extends Codec<Uint8Array> {
-	readonly stride = 32;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 32 };
 
 	encode(value: Uint8Array): Uint8Array<ArrayBuffer> {
 		if (value.length !== 32) {

@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { CompactSize } from "~/lib/codec/primitives.ts";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
@@ -7,10 +7,10 @@ export type HeadersPayload = {
 	headers: WireBlockHeader[];
 };
 
-const HEADER_STRIDE = WireBlockHeader.stride; // 80 bytes
+const HEADER_STRIDE = WireBlockHeader.stride.size;
 
 class HeadersCodec extends Codec<HeadersPayload> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(data: HeadersPayload): Uint8Array<ArrayBuffer> {
 		const count = data.headers.length;

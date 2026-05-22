@@ -1,6 +1,12 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
-import { decodePayload, encodePayload, ID_TO_KIND, KIND_TO_ID, type StoredScriptPubKeyData } from "~/lib/codec/stored/StoredScriptPubKey.ts";
+import {
+	decodePayload,
+	encodePayload,
+	ID_TO_KIND,
+	KIND_TO_ID,
+	type StoredScriptPubKeyData,
+} from "~/lib/codec/stored/StoredScriptPubKey.ts";
 
 /**
  * StoredTxOutput binary layout
@@ -18,7 +24,7 @@ import { decodePayload, encodePayload, ID_TO_KIND, KIND_TO_ID, type StoredScript
  */
 
 export class StoredTxOutputCodec extends Codec<TxOutput> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(output: TxOutput): Uint8Array<ArrayBuffer> {
 		const { data } = output;

@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
 export type VersionPayload = {
@@ -49,7 +49,7 @@ function decodeIP(bytes: Uint8Array): string {
 }
 
 class VersionCodec extends Codec<VersionPayload> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(data: VersionPayload): Uint8Array<ArrayBuffer> {
 		const ua = new TextEncoder().encode(data.userAgent);
@@ -57,19 +57,31 @@ class VersionCodec extends Codec<VersionPayload> {
 		const view = new DataView(out.buffer);
 		let off = 0;
 
-		view.setInt32(off, data.version, true); off += 4;
-		view.setBigUint64(off, data.services, true); off += 8;
-		view.setBigUint64(off, data.timestamp, true); off += 8;
-		view.setBigUint64(off, data.recvServices, true); off += 8;
-		out.set(encodeIP(data.recvIP), off); off += 16;
-		view.setUint16(off, data.recvPort, false); off += 2;
-		view.setBigUint64(off, data.transServices, true); off += 8;
-		out.set(encodeIP(data.transIP), off); off += 16;
-		view.setUint16(off, data.transPort, false); off += 2;
-		view.setBigUint64(off, data.nonce, true); off += 8;
+		view.setInt32(off, data.version, true);
+		off += 4;
+		view.setBigUint64(off, data.services, true);
+		off += 8;
+		view.setBigUint64(off, data.timestamp, true);
+		off += 8;
+		view.setBigUint64(off, data.recvServices, true);
+		off += 8;
+		out.set(encodeIP(data.recvIP), off);
+		off += 16;
+		view.setUint16(off, data.recvPort, false);
+		off += 2;
+		view.setBigUint64(off, data.transServices, true);
+		off += 8;
+		out.set(encodeIP(data.transIP), off);
+		off += 16;
+		view.setUint16(off, data.transPort, false);
+		off += 2;
+		view.setBigUint64(off, data.nonce, true);
+		off += 8;
 		out[off++] = ua.length;
-		out.set(ua, off); off += ua.length;
-		view.setInt32(off, data.startHeight, true); off += 4;
+		out.set(ua, off);
+		off += ua.length;
+		view.setInt32(off, data.startHeight, true);
+		off += 4;
 		out[off++] = data.relay ? 1 : 0;
 
 		return out;
@@ -79,22 +91,48 @@ class VersionCodec extends Codec<VersionPayload> {
 		const view = new DataView(bytes.buffer, bytes.byteOffset);
 		let off = 0;
 
-		const version = view.getInt32(off, true); off += 4;
-		const services = view.getBigUint64(off, true); off += 8;
-		const timestamp = view.getBigUint64(off, true); off += 8;
-		const recvServices = view.getBigUint64(off, true); off += 8;
-		const recvIP = decodeIP(bytes.subarray(off, off + 16)); off += 16;
-		const recvPort = view.getUint16(off, false); off += 2;
-		const transServices = view.getBigUint64(off, true); off += 8;
-		const transIP = decodeIP(bytes.subarray(off, off + 16)); off += 16;
-		const transPort = view.getUint16(off, false); off += 2;
-		const nonce = view.getBigUint64(off, true); off += 8;
+		const version = view.getInt32(off, true);
+		off += 4;
+		const services = view.getBigUint64(off, true);
+		off += 8;
+		const timestamp = view.getBigUint64(off, true);
+		off += 8;
+		const recvServices = view.getBigUint64(off, true);
+		off += 8;
+		const recvIP = decodeIP(bytes.subarray(off, off + 16));
+		off += 16;
+		const recvPort = view.getUint16(off, false);
+		off += 2;
+		const transServices = view.getBigUint64(off, true);
+		off += 8;
+		const transIP = decodeIP(bytes.subarray(off, off + 16));
+		off += 16;
+		const transPort = view.getUint16(off, false);
+		off += 2;
+		const nonce = view.getBigUint64(off, true);
+		off += 8;
 		const uaLen = bytes[off++]!;
-		const userAgent = new TextDecoder().decode(bytes.subarray(off, off + uaLen)); off += uaLen;
-		const startHeight = view.getInt32(off, true); off += 4;
+		const userAgent = new TextDecoder().decode(bytes.subarray(off, off + uaLen));
+		off += uaLen;
+		const startHeight = view.getInt32(off, true);
+		off += 4;
 		const relay = !!bytes[off++];
 
-		return [{ version, services, timestamp, recvServices, recvIP, recvPort, transServices, transIP, transPort, nonce, userAgent, startHeight, relay }, off];
+		return [{
+			version,
+			services,
+			timestamp,
+			recvServices,
+			recvIP,
+			recvPort,
+			transServices,
+			transIP,
+			transPort,
+			nonce,
+			userAgent,
+			startHeight,
+			relay,
+		}, off];
 	}
 }
 

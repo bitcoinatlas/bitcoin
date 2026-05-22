@@ -1,4 +1,4 @@
-import { BytesCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { BytesCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
 import { COINBASE_VOUT } from "~/constants.ts";
 import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
@@ -17,7 +17,7 @@ const resolvedPrevOutCodec = new StructCodec({
 
 // StoredTxInput codec that decodes to TxInput runtime class
 export class StoredTxInputCodec extends Codec<TxInput> {
-	readonly stride = -1;
+	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(input: TxInput): Uint8Array<ArrayBuffer> {
 		const data = input.data;

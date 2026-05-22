@@ -128,7 +128,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			return await getFromDisk(pointer, length);
 		} else {
 			const codec = lengthOrCodec;
-			const readAheadSize = options?.readAheadSize ?? (codec.stride > 0 ? codec.stride : 4096);
+			const readAheadSize = options?.readAheadSize ?? (codec.stride.kind === "fixed" ? codec.stride.size : 4096);
 			for (const entry of stagedAppends) {
 				if (entry.pointer === pointer) {
 					const [value] = codec.decode(entry.data);

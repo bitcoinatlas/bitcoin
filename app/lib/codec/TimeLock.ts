@@ -1,4 +1,4 @@
-import { Codec, U32LE } from "@nomadshiba/codec";
+import { Codec, Stride, U32LE } from "@nomadshiba/codec";
 
 export type TimeLock =
 	| { kind: "none" }
@@ -11,7 +11,7 @@ export type TimeLock =
 // - < 500_000_000 = block height
 // - >= 500_000_000 = timestamp
 export class TimeLockCodec extends Codec<TimeLock> {
-	readonly stride = 4;
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
 
 	static toU32(value: TimeLock): number {
 		switch (value.kind) {
