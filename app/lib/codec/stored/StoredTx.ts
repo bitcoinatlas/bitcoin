@@ -11,7 +11,7 @@ import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
 // - vout[]: CompactSize count + StoredTxOutput[]
 // - vin[]: CompactSize count + StoredTxInput[] (uses pointers for prevOut when resolved)
 
-export type StoredTx = Codec.Infer<typeof StoredTx>;
+export type StoredTx = Codec.InferOutput<typeof StoredTx>;
 export const StoredTx = new StructCodec({
 	txId: Bytes32,
 	version: U32LE,

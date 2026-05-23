@@ -124,7 +124,7 @@ function decodeWitness(data: Uint8Array, inputCount: number): [Uint8Array[][], n
 	return [witness, offset];
 }
 
-export type WireTx = Codec.Infer<typeof WireTx>;
+export type WireTx = Codec.InferOutput<typeof WireTx>;
 export const WireTx = new WireTxCodec().transform((value, bytes) => {
 	return {
 		txId: sha256(sha256(bytes)),

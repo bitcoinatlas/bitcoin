@@ -8,7 +8,7 @@ import { SequenceLock } from "~/lib/codec/SequenceLock.ts";
 // - sequence: 4 bytes
 // NO witness - witness is at transaction level
 
-export type WireTxInput = Codec.Infer<typeof WireTxInput>;
+export type WireTxInput = Codec.InferOutput<typeof WireTxInput>;
 export const WireTxInput = new StructCodec({
 	prevOut: new StructCodec({
 		txId: Bytes32,

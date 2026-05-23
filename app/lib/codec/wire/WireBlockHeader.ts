@@ -11,7 +11,7 @@ const WireBlockHeaderBase = new StructCodec({
 	nonce: U32LE,
 });
 
-type WireBlockHeaderBase = Codec.Infer<typeof WireBlockHeaderBase>;
+type WireBlockHeaderBase = Codec.InferOutput<typeof WireBlockHeaderBase>;
 
 export type WireBlockHeader = WireBlockHeaderBase & { hash: Uint8Array };
 export const WireBlockHeader = WireBlockHeaderBase.transform((value, bytes): WireBlockHeader => {

@@ -152,7 +152,7 @@ export class Peer {
 		}
 	}
 
-	expect<T extends Codec>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.Infer<T>> {
+	expect<T extends Codec>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.InferOutput<T>> {
 		return new Promise((resolve, reject) => {
 			const tid = setTimeout(() => {
 				unlisten();

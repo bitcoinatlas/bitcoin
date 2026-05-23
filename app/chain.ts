@@ -182,24 +182,24 @@ if (blocks.length > 0) {
 	const txIdToPointerTx = txIdToPointer.transaction();
 	const blockHashToHeightTx = blockHashToHeight.transaction();
 
-	try {
-		appendBlockHeader([genesisBlock.header], { blockStoreTx, blockHashToHeightTx });
-		const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, { blobStoreTx, blockStoreTx, txIdToPointerTx });
-		localChain.push(new PeerChainNode({ header: genesisBlock.header, cumulativeWork, pointer }));
+	appendBlockHeader([genesisBlock.header], { blockStoreTx, blockHashToHeightTx });
+	const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, { blobStoreTx, blockStoreTx, txIdToPointerTx });
+	localChain.push(new PeerChainNode({ header: genesisBlock.header, cumulativeWork, pointer }));
 
-		blockStoreTx.apply();
-		blobStoreTx.apply();
-		txIdToPointerTx.apply();
-		blockHashToHeightTx.apply();
-		await atomicSave();
-	} catch (reason) {
-		console.error("Pushing genesis block failed:", reason);
-		Deno.exit(1);
-	}
+	blockStoreTx.apply();
+	blobStoreTx.apply();
+	txIdToPointerTx.apply();
+	blockHashToHeightTx.apply();
+	await atomicSave();
 }
 
 export async function atomicSave() {
-	await atomic(stores);
+	try {
+		await atomic(stores);
+	} catch (reason) {
+		console.error("Atomic save failed:", reason);
+		Deno.exit(1);
+	}
 }
 
 export function appendBlockHeader(
