@@ -161,7 +161,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			// deno-lint-ignore no-explicit-any
 			async get(
 				pointer: number,
-				lengthOrCodec: number | Codec<any>,
+				lengthOrCodec: number | Codec,
 				options?: { readAheadSize?: number },
 			): Promise<any> {
 				if (typeof lengthOrCodec === "number") {

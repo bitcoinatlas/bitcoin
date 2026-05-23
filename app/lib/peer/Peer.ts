@@ -35,7 +35,7 @@ export type DisconnectReason =
 	| { type: "connection_closed" }
 	| { type: "write_timeout" };
 
-export type PeerMessage<T extends Codec<any>> = {
+export type PeerMessage<T extends Codec> = {
 	command: string;
 	codec: T;
 };
@@ -111,7 +111,7 @@ export class Peer {
 		return () => this.#listeners.delete(listener);
 	}
 
-	async send<T extends Codec<any>>(def: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = 10_000): Promise<void> {
+	async send<T extends Codec>(def: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = 10_000): Promise<void> {
 		const conn = this.#conn;
 		if (!this.#connected || !conn) throw new Error("not connected");
 
@@ -152,7 +152,7 @@ export class Peer {
 		}
 	}
 
-	expect<T extends Codec<any>>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.Infer<T>> {
+	expect<T extends Codec>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.Infer<T>> {
 		return new Promise((resolve, reject) => {
 			const tid = setTimeout(() => {
 				unlisten();

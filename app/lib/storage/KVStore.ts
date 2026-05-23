@@ -1,9 +1,9 @@
-import { type Codec, Stride } from "@nomadshiba/codec";
-import { join } from "@std/path";
+import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
-import { readFile, writeFile } from "~/lib/utils/fs.ts";
+import { join } from "@std/path";
 import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
+import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
 /**
  * A persistent key-value store backed by a sharded on-disk open-addressing hash table.
@@ -36,8 +36,8 @@ export interface KVStoreTransaction<K, V> extends Transaction {
 export type KVStoreOptions<K, V> = {
 	name: string;
 	path: string;
-	keyCodec: Codec<K> & { stride: Stride<"fixed"> };
-	valueCodec: Codec<V> & { stride: Stride<"fixed"> };
+	keyCodec: FixedCodec<K>;
+	valueCodec: FixedCodec<V>;
 };
 
 const NUM_SHARDS = 256;

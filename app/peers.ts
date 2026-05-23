@@ -157,7 +157,7 @@ export function onMessage(listener: (peer: Peer, msg: PeerMessageEvent) => void)
 }
 
 /** Send to all connected peers, ignoring individual failures. */
-export async function broadcast<T extends Codec<any>>(
+export async function broadcast<T extends Codec>(
 	message: PeerMessage<T>,
 	data: Codec.InferInput<T>,
 ): Promise<void> {

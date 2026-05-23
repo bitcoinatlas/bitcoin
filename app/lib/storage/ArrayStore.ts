@@ -1,11 +1,10 @@
-import { BytesCodec, type Codec, Stride, StructCodec, VarInt } from "@nomadshiba/codec";
+import { BytesCodec, type Codec, FixedCodec, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
-export interface ArrayStore<T extends Codec<any> & { stride: Stride<"fixed"> }>
-	extends Store<ArrayStoreTransaction<T>>, Disposable {
+export interface ArrayStore<T extends FixedCodec> extends Store<ArrayStoreTransaction<T>>, Disposable {
 	get(index: number): Promise<Codec.InferOutput<T>>;
 	slice(start: number, length: number): Promise<Codec.InferOutput<T>[]>;
 	length(): number;
@@ -13,14 +12,14 @@ export interface ArrayStore<T extends Codec<any> & { stride: Stride<"fixed"> }>
 	close(): void;
 }
 
-export interface ArrayStoreTransaction<T extends Codec<any> & { stride: Stride<"fixed"> }> extends Transaction {
+export interface ArrayStoreTransaction<T extends FixedCodec> extends Transaction {
 	get(index: number): Promise<Codec.InferOutput<T>>;
 	set(index: number, value: Codec.InferInput<T>): void;
 	append(value: Codec.InferInput<T>): number;
 	length(): number;
 }
 
-export type ArrayStoreOptions<T extends Codec<any> & { stride: Stride<"fixed"> }> = {
+export type ArrayStoreOptions<T extends FixedCodec> = {
 	name: string;
 	path: string;
 	codec: T;
@@ -36,7 +35,7 @@ export type ArrayStoreOptions<T extends Codec<any> & { stride: Stride<"fixed"> }
  * Appends have no index — they are packed raw bytes applied as a single bulk write.
  * Sets carry an explicit index and are applied after appends so index arithmetic is stable.
  */
-export async function createArrayStore<T extends Codec<any> & { stride: Stride<"fixed"> }>(
+export async function createArrayStore<T extends FixedCodec>(
 	options: ArrayStoreOptions<T>,
 ): Promise<ArrayStore<T>> {
 	const { name, path, codec } = options;
