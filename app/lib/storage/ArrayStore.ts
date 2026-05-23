@@ -265,7 +265,7 @@ export async function createArrayStore<T extends FixedCodec>(
 		buf.set(appendCountBytes, pos);
 		pos += appendCountBytes.length;
 		for (const value of stagedAppends) {
-			buf.set(codec.encode(value), pos);
+			buf.set(value, pos);
 			pos += codec.stride.size;
 		}
 
@@ -321,7 +321,7 @@ export async function createArrayStore<T extends FixedCodec>(
 					const offset = entry.index * codec.stride.size;
 					await withLock(async () => {
 						await file.seek(offset, Deno.SeekMode.Start);
-						await writeFile(file, codec.encode(entry.value));
+						await writeFile(file, entry.value);
 					});
 					if (entry.index >= diskLengthCache) diskLengthCache = entry.index + 1;
 				}
