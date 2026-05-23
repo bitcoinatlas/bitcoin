@@ -24,10 +24,10 @@ async function withStore<T>(
 Deno.test("BlobStore - append and get", async () => {
 	await withStore(async (store) => {
 		const data = makeData(0xAB, 16);
-		const tx = store.transaction();
-		const pointer = tx.append(data);
+		const batch = store.batch();
+		const pointer = batch.append(data);
 		assertEquals(pointer, 0);
-		tx.apply();
+		batch.apply();
 
 		const wal = await store.createWAL();
 		await wal.apply();
@@ -39,14 +39,14 @@ Deno.test("BlobStore - append and get", async () => {
 
 Deno.test("BlobStore - append returns sequential pointers", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		const p0 = tx.append(makeData(1, 10));
-		const p1 = tx.append(makeData(2, 20));
-		const p2 = tx.append(makeData(3, 5));
+		const batch = store.batch();
+		const p0 = batch.append(makeData(1, 10));
+		const p1 = batch.append(makeData(2, 20));
+		const p2 = batch.append(makeData(3, 5));
 		assertEquals(p0, 0);
 		assertEquals(p1, 10);
 		assertEquals(p2, 30);
-		tx.apply();
+		batch.apply();
 
 		const wal = await store.createWAL();
 		await wal.apply();
@@ -58,54 +58,54 @@ Deno.test("BlobStore - append returns sequential pointers", async () => {
 	});
 });
 
-Deno.test("BlobStore - tx.get sees staged writes before apply", async () => {
+Deno.test("BlobStore - batch.get sees staged writes before apply", async () => {
 	await withStore(async (store) => {
 		const data = makeData(0x77, 8);
-		const tx = store.transaction();
-		const pointer = tx.append(data);
-		assertEquals(await tx.get(pointer, 8), data);
-		tx.discard();
+		const batch = store.batch();
+		const pointer = batch.append(data);
+		assertEquals(await batch.get(pointer, 8), data);
+		batch.discard();
 	});
 });
 
 Deno.test("BlobStore - length reflects staged length", async () => {
 	await withStore(async (store) => {
 		assertEquals(store.length(), 0);
-		const tx = store.transaction();
-		tx.append(makeData(1, 10));
-		assertEquals(tx.size(), 10);
-		tx.apply();
+		const batch = store.batch();
+		batch.append(makeData(1, 10));
+		assertEquals(batch.size(), 10);
+		batch.apply();
 		assertEquals(store.length(), 10);
 	});
 });
 
 Deno.test("BlobStore - discard throws away staged changes", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		tx.append(makeData(0xFF, 8));
-		tx.discard();
+		const batch = store.batch();
+		batch.append(makeData(0xFF, 8));
+		batch.discard();
 		assertEquals(store.length(), 0);
 	});
 });
 
-Deno.test("BlobStore - second transaction throws while one is open", async () => {
+Deno.test("BlobStore - second batch throws while one is open", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		assertThrows(() => store.transaction());
-		tx.discard();
+		const batch = store.batch();
+		assertThrows(() => store.batch());
+		batch.discard();
 	});
 });
 
-Deno.test("BlobStore - multiple sequential transactions accumulate", async () => {
+Deno.test("BlobStore - multiple sequential batches accumulate", async () => {
 	await withStore(async (store) => {
 		const blobs = [makeData(1, 4), makeData(2, 8), makeData(3, 16)];
 		let nextExpected = 0;
 		for (const blob of blobs) {
-			const tx = store.transaction();
-			const p = tx.append(blob);
+			const batch = store.batch();
+			const p = batch.append(blob);
 			assertEquals(p, nextExpected);
 			nextExpected += blob.length;
-			tx.apply();
+			batch.apply();
 		}
 
 		const wal = await store.createWAL();
@@ -130,9 +130,9 @@ Deno.test("BlobStore - WAL discard removes the file", async () => {
 	const dir = await Deno.makeTempDir({ prefix: "blobstore-test-" });
 	try {
 		const store = await createBlobStore({ name: "test", path: dir });
-		const tx = store.transaction();
-		tx.append(makeData(1, 4));
-		tx.apply();
+		const batch = store.batch();
+		batch.append(makeData(1, 4));
+		batch.apply();
 
 		const wal = await store.createWAL();
 
@@ -152,9 +152,9 @@ Deno.test("BlobStore - crash recovery: WAL apply replays changes", async () => {
 	const data = makeData(0x42, 32);
 	try {
 		const store1 = await createBlobStore({ name: "test", path: dir });
-		const tx = store1.transaction();
-		tx.append(data);
-		tx.apply();
+		const batch = store1.batch();
+		batch.append(data);
+		batch.apply();
 
 		const _wal = await store1.createWAL();
 		// crash before apply
@@ -176,9 +176,9 @@ Deno.test("BlobStore - persists data across reopen", async () => {
 	const data = makeData(0x77, 64);
 	try {
 		const store1 = await createBlobStore({ name: "test", path: dir });
-		const tx = store1.transaction();
-		tx.append(data);
-		tx.apply();
+		const batch = store1.batch();
+		batch.append(data);
+		batch.apply();
 		const wal = await store1.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -193,20 +193,20 @@ Deno.test("BlobStore - persists data across reopen", async () => {
 Deno.test("BlobStore - pointers continue correctly across chunk boundary", async () => {
 	await withStore(async (store) => {
 		// chunkByteSize = 16, first blob fills it exactly
-		const tx1 = store.transaction();
-		const p0 = tx1.append(makeData(0xAA, 16));
+		const batch1 = store.batch();
+		const p0 = batch1.append(makeData(0xAA, 16));
 		assertEquals(p0, 0);
-		tx1.apply();
+		batch1.apply();
 
 		const wal1 = await store.createWAL();
 		await wal1.apply();
 		await wal1.discard();
 
 		// second blob goes to next chunk
-		const tx2 = store.transaction();
-		const p1 = tx2.append(makeData(0xBB, 8));
+		const batch2 = store.batch();
+		const p1 = batch2.append(makeData(0xBB, 8));
 		assertEquals(p1, 16);
-		tx2.apply();
+		batch2.apply();
 
 		const wal2 = await store.createWAL();
 		await wal2.apply();
@@ -217,10 +217,10 @@ Deno.test("BlobStore - pointers continue correctly across chunk boundary", async
 	}, { chunkByteSize: 16 });
 });
 
-Deno.test("BlobStore - empty transaction WAL saves and applies cleanly", async () => {
+Deno.test("BlobStore - empty batch WAL saves and applies cleanly", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		tx.apply();
+		const batch = store.batch();
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -230,20 +230,20 @@ Deno.test("BlobStore - empty transaction WAL saves and applies cleanly", async (
 
 Deno.test("BlobStore - blob exceeding chunk size throws", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
+		const batch = store.batch();
 		await assertRejects(async () => {
-			tx.append(makeData(1, 32)); // 32 > chunkByteSize of 16
+			batch.append(makeData(1, 32)); // 32 > chunkByteSize of 16
 		});
-		tx.discard();
+		batch.discard();
 	}, { chunkByteSize: 16 });
 });
 
 Deno.test("BlobStore - staged blob readable after apply but before WAL save", async () => {
 	await withStore(async (store) => {
 		const data = makeData(0xCC, 8);
-		const tx = store.transaction();
-		const pointer = tx.append(data);
-		tx.apply();
+		const batch = store.batch();
+		const pointer = batch.append(data);
+		batch.apply();
 
 		// Not yet on disk, but readable from staged
 		assertEquals(await store.get(pointer, 8), data);
@@ -254,24 +254,24 @@ Deno.test("BlobStore - blob straddling chunk boundary rolls to next chunk with g
 	// chunkByteSize = 16
 	// First blob: 10 bytes → pointer 0, occupies bytes 0-9 of chunk_0
 	// Second blob: 10 bytes → won't fit in remaining 6 bytes → rolls to chunk_1
-	// tx.append now uses the same roll logic as appendBlobToDisk, so pointer is canonical
+	// batch.append now uses the same roll logic as appendBlobToDisk, so pointer is canonical
 	const dir = await Deno.makeTempDir({ prefix: "blobstore-test-" });
 	try {
 		const store1 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
-		const tx1 = store1.transaction();
-		const p0 = tx1.append(makeData(0xAA, 10));
+		const batch1 = store1.batch();
+		const p0 = batch1.append(makeData(0xAA, 10));
 		assertEquals(p0, 0);
-		tx1.apply();
+		batch1.apply();
 		const wal1 = await store1.createWAL();
 		await wal1.apply();
 		await wal1.discard();
 
 		// Reopen so stagedLength reflects actual totalLength from disk
 		const store2 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
-		const tx2 = store2.transaction();
-		const p1 = tx2.append(makeData(0xBB, 10));
+		const batch2 = store2.batch();
+		const p1 = batch2.append(makeData(0xBB, 10));
 		assertEquals(p1, 16); // correctly rolled to chunk_1 start
-		tx2.apply();
+		batch2.apply();
 		const wal2 = await store2.createWAL();
 		await wal2.apply();
 		await wal2.discard();
@@ -290,11 +290,11 @@ Deno.test("BlobStore - multiple chunks reopen recovers correct total length", as
 	try {
 		// chunkByteSize = 16, write 3 blobs of 8 bytes each → spans 2 chunks
 		const store1 = await createBlobStore({ name: "test", path: dir, chunkByteSize: 16 });
-		const tx = store1.transaction();
-		tx.append(makeData(1, 8)); // chunk_0 bytes 0-7
-		tx.append(makeData(2, 8)); // chunk_0 bytes 8-15 (fills it)
-		tx.append(makeData(3, 8)); // chunk_1 bytes 0-7
-		tx.apply();
+		const batch = store1.batch();
+		batch.append(makeData(1, 8)); // chunk_0 bytes 0-7
+		batch.append(makeData(2, 8)); // chunk_0 bytes 8-15 (fills it)
+		batch.append(makeData(3, 8)); // chunk_1 bytes 0-7
+		batch.apply();
 		const wal = await store1.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -313,9 +313,9 @@ Deno.test("BlobStore - multiple chunks reopen recovers correct total length", as
 
 Deno.test("BlobStore - get on pointer beyond committed length throws", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		tx.append(makeData(1, 8));
-		tx.apply();
+		const batch = store.batch();
+		batch.append(makeData(1, 8));
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -325,9 +325,9 @@ Deno.test("BlobStore - get on pointer beyond committed length throws", async () 
 	});
 });
 
-Deno.test("BlobStore - WAL with transaction open throws", async () => {
+Deno.test("BlobStore - WAL with batch open throws", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
+		const batch = store.batch();
 		let threw = false;
 		try {
 			await store.createWAL();
@@ -335,21 +335,21 @@ Deno.test("BlobStore - WAL with transaction open throws", async () => {
 			threw = true;
 		}
 		assertEquals(threw, true);
-		tx.discard();
+		batch.discard();
 	});
 });
 
-Deno.test("BlobStore - length after discard stays at pre-tx value", async () => {
+Deno.test("BlobStore - length after discard stays at pre-batch value", async () => {
 	await withStore(async (store) => {
-		const tx1 = store.transaction();
-		tx1.append(makeData(1, 8));
-		tx1.apply();
+		const batch1 = store.batch();
+		batch1.append(makeData(1, 8));
+		batch1.apply();
 		assertEquals(store.length(), 8);
 
-		const tx2 = store.transaction();
-		tx2.append(makeData(2, 8));
-		assertEquals(tx2.size(), 16);
-		tx2.discard();
+		const batch2 = store.batch();
+		batch2.append(makeData(2, 8));
+		assertEquals(batch2.size(), 16);
+		batch2.discard();
 
 		assertEquals(store.length(), 8);
 	});
@@ -357,10 +357,10 @@ Deno.test("BlobStore - length after discard stays at pre-tx value", async () => 
 
 Deno.test("BlobStore - zero-length blob append and read", async () => {
 	await withStore(async (store) => {
-		const tx = store.transaction();
-		const p = tx.append(new Uint8Array(0));
+		const batch = store.batch();
+		const p = batch.append(new Uint8Array(0));
 		assertEquals(p, 0);
-		tx.apply();
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -370,17 +370,17 @@ Deno.test("BlobStore - zero-length blob append and read", async () => {
 	});
 });
 
-Deno.test("BlobStore - tx.get on staged value after outer apply", async () => {
+Deno.test("BlobStore - batch.get on staged value after outer apply", async () => {
 	await withStore(async (store) => {
 		// Stage blob in outer store
-		const tx1 = store.transaction();
-		const p = tx1.append(makeData(0xDE, 4));
-		tx1.apply();
+		const batch1 = store.batch();
+		const p = batch1.append(makeData(0xDE, 4));
+		batch1.apply();
 
-		// New tx can read it via store.get fallback
-		const tx2 = store.transaction();
-		assertEquals(await tx2.get(p, 4), makeData(0xDE, 4));
-		tx2.discard();
+		// New batch can read it via store.get fallback
+		const batch2 = store.batch();
+		assertEquals(await batch2.get(p, 4), makeData(0xDE, 4));
+		batch2.discard();
 	});
 });
 
@@ -407,9 +407,9 @@ Deno.test("BlobStore - get with variable codec reads staged blob", async () => {
 	await withStore(async (store) => {
 		const payload = makeData(0xAB, 8);
 		const encoded = lpCodec.encode(payload);
-		const tx = store.transaction();
-		const pointer = tx.append(encoded);
-		tx.apply();
+		const batch = store.batch();
+		const pointer = batch.append(encoded);
+		batch.apply();
 
 		const result = await store.get(pointer, lpCodec);
 		assertEquals(result, payload);
@@ -420,9 +420,9 @@ Deno.test("BlobStore - get with variable codec reads from disk", async () => {
 	await withStore(async (store) => {
 		const payload = makeData(0xCD, 12);
 		const encoded = lpCodec.encode(payload);
-		const tx = store.transaction();
-		const pointer = tx.append(encoded);
-		tx.apply();
+		const batch = store.batch();
+		const pointer = batch.append(encoded);
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -436,9 +436,9 @@ Deno.test("BlobStore - get with codec respects custom readAheadSize", async () =
 	await withStore(async (store) => {
 		const payload = makeData(0xEF, 4);
 		const encoded = lpCodec.encode(payload);
-		const tx = store.transaction();
-		const pointer = tx.append(encoded);
-		tx.apply();
+		const batch = store.batch();
+		const pointer = batch.append(encoded);
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -448,15 +448,15 @@ Deno.test("BlobStore - get with codec respects custom readAheadSize", async () =
 	});
 });
 
-Deno.test("BlobStore - tx.get with codec sees tx-staged blob", async () => {
+Deno.test("BlobStore - batch.get with codec sees batch-staged blob", async () => {
 	await withStore(async (store) => {
 		const payload = makeData(0x77, 6);
 		const encoded = lpCodec.encode(payload);
-		const tx = store.transaction();
-		const pointer = tx.append(encoded);
+		const batch = store.batch();
+		const pointer = batch.append(encoded);
 
-		const result = await tx.get(pointer, lpCodec);
+		const result = await batch.get(pointer, lpCodec);
 		assertEquals(result, payload);
-		tx.discard();
+		batch.discard();
 	});
 });

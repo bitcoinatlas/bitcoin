@@ -4,7 +4,7 @@ import { join } from "@std/path";
 import { BASE_DATA_DIR } from "~/config.ts";
 
 /**
- * An in-memory transaction for a store.
+ * An in-memory batch of writes for a store.
  *
  * Enables "all or none" writes: stage changes in memory, then either
  * commit them to disk via a WAL or throw them away entirely.
@@ -12,7 +12,7 @@ import { BASE_DATA_DIR } from "~/config.ts";
  * - `apply()` — flush staged changes to disk. Never fails; a failure is a bug and should panic.
  * - `discard()` — throw away staged changes. Like nothing happened.
  */
-export type Transaction = {
+export type Batch = {
 	apply(): void;
 	discard(): void;
 };
@@ -33,18 +33,18 @@ export type WAL = {
 };
 
 /**
- * A persistent store that supports transactional writes and WAL-based crash recovery.
+ * A persistent store that supports batched writes and WAL-based crash recovery.
  *
  * - `name` — unique identifier for the store, used for tracking pending atomic flushes.
- * - `transaction()` — create an in-memory transaction to stage changes.
+ * - `batch()` — create an in-memory batch to stage changes.
  * - `WAL()` — return the store's existing WAL if one is on disk, or null.
  * - `WAL({ create: true })` — if WAL doesn't exist return a new one.
  */
-export type Store<T extends Transaction = Transaction> = {
+export type Store<T extends Batch = Batch> = {
 	name: string;
 	wal: WAL | null;
 	createWAL(): Promise<WAL>;
-	transaction(): T;
+	batch(): T;
 };
 
 const ATOMIC_DIR = join(BASE_DATA_DIR, "atomic");

@@ -1,7 +1,7 @@
 import { Codec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
+import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { writeFile } from "~/lib/utils/fs.ts";
 
 /**
@@ -15,7 +15,7 @@ import { writeFile } from "~/lib/utils/fs.ts";
  *
  * WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
  */
-export interface BlobStore extends Store<BlobStoreTransaction> {
+export interface BlobStore extends Store<BlobStoreBatch> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
 	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
 	/** Current end-of-stream pointer (total bytes written). */
@@ -23,7 +23,7 @@ export interface BlobStore extends Store<BlobStoreTransaction> {
 	truncate(newLength: number): Promise<void>;
 }
 
-export interface BlobStoreTransaction extends Transaction {
+export interface BlobStoreBatch extends Batch {
 	/** Stage a blob for append. Returns tentative pointer. */
 	append(data: Uint8Array): number;
 	get(pointer: number, length: number): Promise<Uint8Array>;
@@ -143,19 +143,19 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		return stagedLength;
 	}
 
-	let tx: BlobStoreTransaction | null = null;
-	function transaction(): BlobStoreTransaction {
-		if (tx) throw new Error("Transaction already in progress");
-		if (self.wal) throw new Error("Can't start a transaction while a WAL is in progress");
+	let batch: BlobStoreBatch | null = null;
+	function batchFn(): BlobStoreBatch {
+		if (batch) throw new Error("Batch already in progress");
+		if (self.wal) throw new Error("Can't start a batch while a WAL is in progress");
 
-		const txAppends: Array<{ pointer: number; data: Uint8Array }> = [];
-		let txLength = stagedLength;
+		const batchAppends: Array<{ pointer: number; data: Uint8Array }> = [];
+		let batchLength = stagedLength;
 
-		tx = {
+		batch = {
 			append(data: Uint8Array): number {
-				const pointer = txLength;
-				txAppends.push({ pointer, data: new Uint8Array(data) });
-				txLength = pointer + data.length;
+				const pointer = batchLength;
+				batchAppends.push({ pointer, data: new Uint8Array(data) });
+				batchLength = pointer + data.length;
 				return pointer;
 			},
 			// deno-lint-ignore no-explicit-any
@@ -166,7 +166,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			): Promise<any> {
 				if (typeof lengthOrCodec === "number") {
 					const length = lengthOrCodec;
-					for (const entry of txAppends) {
+					for (const entry of batchAppends) {
 						if (entry.pointer === pointer && entry.data.length === length) {
 							return entry.data;
 						}
@@ -174,7 +174,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 					return await get(pointer, length);
 				} else {
 					const codec = lengthOrCodec;
-					for (const entry of txAppends) {
+					for (const entry of batchAppends) {
 						if (entry.pointer === pointer) {
 							const [value] = codec.decode(entry.data);
 							return value;
@@ -184,23 +184,23 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				}
 			},
 			size(): number {
-				return txLength;
+				return batchLength;
 			},
 			apply(): void {
-				for (const entry of txAppends) {
+				for (const entry of batchAppends) {
 					stagedAppends.push(entry);
 				}
-				stagedLength = txLength;
-				txAppends.length = 0;
-				tx = null;
+				stagedLength = batchLength;
+				batchAppends.length = 0;
+				batch = null;
 			},
 			discard(): void {
-				txAppends.length = 0;
-				tx = null;
+				batchAppends.length = 0;
+				batch = null;
 			},
 		};
 
-		return tx;
+		return batch;
 	}
 
 	async function appendBlobToDisk(data: Uint8Array): Promise<void> {
@@ -226,7 +226,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 
 	async function createWAL(): Promise<WAL> {
 		if (self.wal) throw new Error("WAL already exists");
-		if (tx) throw new Error("Can't create a WAL while a transaction is in progress");
+		if (batch) throw new Error("Can't create a WAL while a batch is in progress");
 
 		// WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
 		let totalSize = 4;
@@ -278,7 +278,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	async function truncate(newLength: number): Promise<void> {
-		if (tx) throw new Error("Can't perform this operation while a transaction is in progress");
+		if (batch) throw new Error("Can't perform this operation while a batch is in progress");
 		if (self.wal) throw new Error("Can't perform this operation while a WAL is in progress");
 		if (newLength < 0) throw new Error("newLength must be non-negative");
 		if (newLength > stagedLength) {
@@ -323,7 +323,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		wal: await getWAL(),
 		get,
 		length,
-		transaction,
+		batch: batchFn,
 		createWAL,
 		truncate,
 	};

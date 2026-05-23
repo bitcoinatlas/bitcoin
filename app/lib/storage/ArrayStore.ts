@@ -1,10 +1,10 @@
 import { BytesCodec, type Codec, FixedCodec, StructCodec, VarInt } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
+import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
-export interface ArrayStore<T extends FixedCodec> extends Store<ArrayStoreTransaction<T>>, Disposable {
+export interface ArrayStore<T extends FixedCodec> extends Store<ArrayStoreBatch<T>>, Disposable {
 	get(index: number): Promise<Codec.InferOutput<T>>;
 	slice(start: number, length: number): Promise<Codec.InferOutput<T>[]>;
 	length(): number;
@@ -12,7 +12,7 @@ export interface ArrayStore<T extends FixedCodec> extends Store<ArrayStoreTransa
 	close(): void;
 }
 
-export interface ArrayStoreTransaction<T extends FixedCodec> extends Transaction {
+export interface ArrayStoreBatch<T extends FixedCodec> extends Batch {
 	get(index: number): Promise<Codec.InferOutput<T>>;
 	set(index: number, value: Codec.InferInput<T>): void;
 	append(value: Codec.InferInput<T>): number;
@@ -143,8 +143,8 @@ export async function createArrayStore<T extends FixedCodec>(
 	}
 
 	async function truncate(newLength: number): Promise<void> {
-		if (tx) {
-			throw new Error("Can't perform this operation while a transaction is in progress");
+		if (batch) {
+			throw new Error("Can't perform this operation while a batch is in progress");
 		}
 		if (self.wal) {
 			throw new Error("Can't perform this operation while a WAL is in progress");
@@ -172,66 +172,66 @@ export async function createArrayStore<T extends FixedCodec>(
 		}
 	}
 
-	let tx: ArrayStoreTransaction<T> | null = null;
-	function transaction(): ArrayStoreTransaction<T> {
-		if (tx) {
-			throw new Error("Transaction already in progress");
+	let batch: ArrayStoreBatch<T> | null = null;
+	function batchFn(): ArrayStoreBatch<T> {
+		if (batch) {
+			throw new Error("Batch already in progress");
 		}
 		if (self.wal) {
-			throw new Error("Can't start a transaction while a WAL is in progress");
+			throw new Error("Can't start a batch while a WAL is in progress");
 		}
 
-		const txSets = new Map<number, Uint8Array>();
-		const txAppends: Uint8Array[] = [];
-		// snapshot of length at tx open (includes already-staged appends)
-		const txBaseLength = diskLengthCache + stagedAppends.length;
+		const batchSets = new Map<number, Uint8Array>();
+		const batchAppends: Uint8Array[] = [];
+		// snapshot of length at batch open (includes already-staged appends)
+		const batchBaseLength = diskLengthCache + stagedAppends.length;
 
-		tx = {
+		batch = {
 			async get(index: number) {
 				if (index < 0) throw new Error("Index must be non-negative");
-				if (index >= txBaseLength + txAppends.length) throw new Error("Index out of bounds");
-				if (txSets.has(index)) return codec.decode(txSets.get(index)!)[0];
-				if (index >= txBaseLength) return codec.decode(txAppends[index - txBaseLength]!)[0];
+				if (index >= batchBaseLength + batchAppends.length) throw new Error("Index out of bounds");
+				if (batchSets.has(index)) return codec.decode(batchSets.get(index)!)[0];
+				if (index >= batchBaseLength) return codec.decode(batchAppends[index - batchBaseLength]!)[0];
 				return await get(index);
 			},
 			set(index: number, value: Codec.InferInput<T>): void {
 				if (index < 0) throw new Error("Index must be non-negative");
-				if (index >= txBaseLength + txAppends.length) throw new Error("Index out of bounds");
-				if (index >= txBaseLength) {
-					// Overwrite a within-tx append
-					txAppends[index - txBaseLength] = codec.encode(value);
+				if (index >= batchBaseLength + batchAppends.length) throw new Error("Index out of bounds");
+				if (index >= batchBaseLength) {
+					// Overwrite a within-batch append
+					batchAppends[index - batchBaseLength] = codec.encode(value);
 				} else {
-					txSets.set(index, codec.encode(value));
+					batchSets.set(index, codec.encode(value));
 				}
 			},
 			append(value: Codec.InferInput<T>): number {
-				const index = txBaseLength + txAppends.length;
-				txAppends.push(codec.encode(value));
+				const index = batchBaseLength + batchAppends.length;
+				batchAppends.push(codec.encode(value));
 				return index;
 			},
 			length(): number {
-				return txBaseLength + txAppends.length;
+				return batchBaseLength + batchAppends.length;
 			},
 			apply(): void {
-				for (const [index, value] of txSets) {
+				for (const [index, value] of batchSets) {
 					stagedSets.set(index, value);
 				}
-				for (const value of txAppends) {
+				for (const value of batchAppends) {
 					stagedAppends.push(value);
 				}
 				// length stays as on-disk count; stagedAppends tracks the rest
-				txSets.clear();
-				txAppends.length = 0;
-				tx = null;
+				batchSets.clear();
+				batchAppends.length = 0;
+				batch = null;
 			},
 			discard(): void {
-				txSets.clear();
-				txAppends.length = 0;
-				tx = null;
+				batchSets.clear();
+				batchAppends.length = 0;
+				batch = null;
 			},
 		};
 
-		return tx;
+		return batch;
 	}
 
 	const setCodec = new StructCodec({ index: countCodec, value: new BytesCodec({ size: codec.stride.size }) });
@@ -240,8 +240,8 @@ export async function createArrayStore<T extends FixedCodec>(
 		if (self.wal) {
 			throw new Error("WAL already exists");
 		}
-		if (tx) {
-			throw new Error("Can't create a WAL while a transaction is in progress");
+		if (batch) {
+			throw new Error("Can't create a WAL while a batch is in progress");
 		}
 
 		// Section 1: appends — count + packed raw bytes
@@ -340,7 +340,7 @@ export async function createArrayStore<T extends FixedCodec>(
 		name,
 		get,
 		slice,
-		transaction,
+		batch: batchFn,
 		wal: await getWAL(),
 		createWAL,
 		truncate,

@@ -1,7 +1,7 @@
 import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import type { Store, Transaction, WAL } from "~/lib/storage/Store.ts";
+import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
@@ -20,14 +20,14 @@ import { readFile, writeFile } from "~/lib/utils/fs.ts";
  * WAL format: [u8 shardCount]([u8 shardIdx][u32 entryCount LE]([u32 slotIdx LE][slotBytes])...)
  */
 
-export interface KVStore<K, V> extends Store<KVStoreTransaction<K, V>> {
+export interface KVStore<K, V> extends Store<KVStoreBatch<K, V>> {
 	get(key: K): Promise<V | undefined>;
 	getMany(keys: K[]): Promise<(V | undefined)[]>;
 	clear(): Promise<void>;
 	close(): void;
 }
 
-export interface KVStoreTransaction<K, V> extends Transaction {
+export interface KVStoreBatch<K, V> extends Batch {
 	get(key: K): Promise<V | undefined>;
 	getMany(keys: K[]): Promise<(V | undefined)[]>;
 	set(key: K, value: V): void;
@@ -165,7 +165,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		return valueCodec.decode(buf.subarray(1 + keyStride))[0];
 	}
 
-	// Committed on tx.apply(), flushed to disk on createWAL()
+	// Committed on batch.apply(), flushed to disk on createWAL()
 	const staged: Uint8ArrayMap<Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Uint8ArrayMap(64));
 
 	// --- grow shard if needed (called during createWAL before slot resolution) ---
@@ -232,7 +232,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	async function clear(): Promise<void> {
 		if (self.wal) throw new Error("Can't clear while WAL is in progress");
-		if (tx) throw new Error("Can't clear while transaction is in progress");
+		if (batch) throw new Error("Can't clear while batch is in progress");
 		for (let s = 0; s < NUM_SHARDS; s++) {
 			const shard = shards[s]!;
 			staged[s]!.clear();
@@ -251,50 +251,50 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		for (const shard of shards) shard.file.close();
 	}
 
-	// --- transaction: buffers raw pairs, no disk I/O ---
+	// --- batch: buffers raw pairs, no disk I/O ---
 
-	let tx: KVStoreTransaction<K, V> | null = null;
+	let batch: KVStoreBatch<K, V> | null = null;
 
-	function transaction(): KVStoreTransaction<K, V> {
-		if (tx) throw new Error("Transaction already in progress");
-		if (self.wal) throw new Error("Can't start transaction while WAL is in progress");
+	function batchFn(): KVStoreBatch<K, V> {
+		if (batch) throw new Error("Batch already in progress");
+		if (self.wal) throw new Error("Can't start batch while WAL is in progress");
 
-		const txStaged: Uint8ArrayMap<Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Uint8ArrayMap(64));
+		const batchStaged: Uint8ArrayMap<Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Uint8ArrayMap(64));
 
-		tx = {
+		batch = {
 			async get(key: K): Promise<V | undefined> {
 				const keyBytes = keyCodec.encode(key);
 				const s = shardIndex(keyBytes);
-				// tx staged → store staged → disk
-				const txVal = txStaged[s]!.get(keyBytes);
-				if (txVal !== undefined) return valueCodec.decode(txVal)[0];
+				// batch staged → store staged → disk
+				const batchVal = batchStaged[s]!.get(keyBytes);
+				if (batchVal !== undefined) return valueCodec.decode(batchVal)[0];
 				return getByBytes(keyBytes, staged[s]!);
 			},
 			async getMany(keys: K[]): Promise<(V | undefined)[]> {
-				return Promise.all(keys.map((k) => tx!.get(k)));
+				return Promise.all(keys.map((k) => batch!.get(k)));
 			},
 			set(key: K, value: V): void {
 				const keyBytes = keyCodec.encode(key);
 				const valueBytes = valueCodec.encode(value);
-				txStaged[shardIndex(keyBytes)]!.set(keyBytes, valueBytes);
+				batchStaged[shardIndex(keyBytes)]!.set(keyBytes, valueBytes);
 			},
 			apply(): void {
-				// Move tx staged → store staged. No disk I/O.
+				// Move batch staged → store staged. No disk I/O.
 				for (let s = 0; s < NUM_SHARDS; s++) {
-					for (const [keyBytes, valueBytes] of txStaged[s]!) {
+					for (const [keyBytes, valueBytes] of batchStaged[s]!) {
 						staged[s]!.set(keyBytes, valueBytes);
 					}
-					txStaged[s]!.clear();
+					batchStaged[s]!.clear();
 				}
-				tx = null;
+				batch = null;
 			},
 			discard(): void {
-				for (let s = 0; s < NUM_SHARDS; s++) txStaged[s]!.clear();
-				tx = null;
+				for (let s = 0; s < NUM_SHARDS; s++) batchStaged[s]!.clear();
+				batch = null;
 			},
 		};
 
-		return tx;
+		return batch;
 	}
 
 	// --- WAL: resolve slots for all staged pairs, write WAL file ---
@@ -303,7 +303,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	async function createWAL(): Promise<WAL> {
 		if (self.wal) throw new Error("WAL already exists");
-		if (tx) throw new Error("Can't create WAL while transaction is in progress");
+		if (batch) throw new Error("Can't create WAL while batch is in progress");
 
 		// Per-shard: resolve slot indices for all staged pairs
 		// walSlots[s]: slotIdx → slotBuf (what to write to disk)
@@ -408,7 +408,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		getMany,
 		clear,
 		close,
-		transaction,
+		batch: batchFn,
 		createWAL,
 	};
 

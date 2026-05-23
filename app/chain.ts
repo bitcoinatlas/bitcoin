@@ -13,9 +13,9 @@ import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
-import { ArrayStoreTransaction, createArrayStore } from "~/lib/storage/ArrayStore.ts";
-import { BlobStoreTransaction, createBlobStore } from "~/lib/storage/BlobStore.ts";
-import { createKVStore, KVStoreTransaction } from "~/lib/storage/KVStore.ts";
+import { ArrayStoreBatch, createArrayStore } from "~/lib/storage/ArrayStore.ts";
+import { BlobStoreBatch, createBlobStore } from "~/lib/storage/BlobStore.ts";
+import { createKVStore, KVStoreBatch } from "~/lib/storage/KVStore.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
 import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
 import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
@@ -177,19 +177,19 @@ if (blocks.length > 0) {
 	await blockHashToHeight.clear();
 	const [genesisBlock] = WireBlock.decode(GENESIS_BLOCK);
 	const cumulativeWork = workFromHeader(genesisBlock.header);
-	const blockStoreTx = blockStore.transaction();
-	const blobStoreTx = blobStore.transaction();
-	const txIdToPointerTx = txIdToPointer.transaction();
-	const blockHashToHeightTx = blockHashToHeight.transaction();
+	const blockStoreBatch = blockStore.batch();
+	const blobStoreBatch = blobStore.batch();
+	const txIdToPointerBatch = txIdToPointer.batch();
+	const blockHashToHeightBatch = blockHashToHeight.batch();
 
-	appendBlockHeader([genesisBlock.header], { blockStoreTx, blockHashToHeightTx });
-	const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, { blobStoreTx, blockStoreTx, txIdToPointerTx });
+	appendBlockHeader([genesisBlock.header], { blockStoreBatch, blockHashToHeightBatch });
+	const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, { blobStoreBatch, blockStoreBatch, txIdToPointerBatch });
 	localChain.push(new PeerChainNode({ header: genesisBlock.header, cumulativeWork, pointer }));
 
-	blockStoreTx.apply();
-	blobStoreTx.apply();
-	txIdToPointerTx.apply();
-	blockHashToHeightTx.apply();
+	blockStoreBatch.apply();
+	blobStoreBatch.apply();
+	txIdToPointerBatch.apply();
+	blockHashToHeightBatch.apply();
 	await atomicSave();
 }
 
@@ -204,36 +204,36 @@ export async function atomicSave() {
 
 export function appendBlockHeader(
 	headers: WireBlockHeader[],
-	storeTxs?: {
-		blockStoreTx: ArrayStoreTransaction<typeof StoredBlock>;
-		blockHashToHeightTx: KVStoreTransaction<Uint8Array, number>;
+	storeBatches?: {
+		blockStoreBatch: ArrayStoreBatch<typeof StoredBlock>;
+		blockHashToHeightBatch: KVStoreBatch<Uint8Array, number>;
 	},
 ): { height: number } {
-	const { blockStoreTx, blockHashToHeightTx } = storeTxs ?? {
-		blockStoreTx: blockStore.transaction(),
-		blockHashToHeightTx: blockHashToHeight.transaction(),
+	const { blockStoreBatch, blockHashToHeightBatch } = storeBatches ?? {
+		blockStoreBatch: blockStore.batch(),
+		blockHashToHeightBatch: blockHashToHeight.batch(),
 	};
 
 	const op = () => {
 		for (const header of headers) {
-			const height = blockStoreTx.append({ header, pointer: 0 });
-			blockHashToHeightTx.set(header.hash, height);
+			const height = blockStoreBatch.append({ header, pointer: 0 });
+			blockHashToHeightBatch.set(header.hash, height);
 		}
 	};
 
-	if (storeTxs) {
+	if (storeBatches) {
 		op();
-		return { height: blockStoreTx.length() - 1 };
+		return { height: blockStoreBatch.length() - 1 };
 	}
 
 	try {
 		op();
-		blockStoreTx.apply();
-		blockHashToHeightTx.apply();
-		return { height: blockStoreTx.length() - 1 };
+		blockStoreBatch.apply();
+		blockHashToHeightBatch.apply();
+		return { height: blockStoreBatch.length() - 1 };
 	} catch (reason) {
-		blockStoreTx.discard();
-		blockHashToHeightTx.discard();
+		blockStoreBatch.discard();
+		blockHashToHeightBatch.discard();
 		console.error("Failed to append block header:", reason);
 		Deno.exit(1);
 	}
@@ -242,55 +242,55 @@ export function appendBlockHeader(
 export async function appendBlockTxs(
 	wireTxs: WireTx[],
 	height: number,
-	storeTxs?: {
-		blobStoreTx: BlobStoreTransaction;
-		blockStoreTx: ArrayStoreTransaction<typeof StoredBlock>;
-		txIdToPointerTx: KVStoreTransaction<Uint8Array, number>;
+	storeBatches?: {
+		blobStoreBatch: BlobStoreBatch;
+		blockStoreBatch: ArrayStoreBatch<typeof StoredBlock>;
+		txIdToPointerBatch: KVStoreBatch<Uint8Array, number>;
 	},
 ): Promise<{ pointer: StoredPointer }> {
-	const { blobStoreTx, blockStoreTx, txIdToPointerTx } = storeTxs ?? {
-		blobStoreTx: blobStore.transaction(),
-		blockStoreTx: blockStore.transaction(),
-		txIdToPointerTx: txIdToPointer.transaction(),
+	const { blobStoreBatch, blockStoreBatch, txIdToPointerBatch } = storeBatches ?? {
+		blobStoreBatch: blobStore.batch(),
+		blockStoreBatch: blockStore.batch(),
+		txIdToPointerBatch: txIdToPointer.batch(),
 	};
 
 	const op = async () => {
-		const block = await blockStoreTx.get(height);
+		const block = await blockStoreBatch.get(height);
 		if (!block) {
 			throw new Error(`Block at height ${height} not found`);
 		}
 
 		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
-		const blockPointer = blobStoreTx.append(txCountBytes);
-		blockStoreTx.set(height, { header: block.header, pointer: blockPointer });
+		const blockPointer = blobStoreBatch.append(txCountBytes);
+		blockStoreBatch.set(height, { header: block.header, pointer: blockPointer });
 
 		for (const tx of txs) {
 			const storedTx = tx.toStore();
 			const storedTxBytes = StoredTx.encode(storedTx);
-			const txPointer = blobStoreTx.append(storedTxBytes);
-			txIdToPointerTx.set(tx.data.txId, txPointer);
+			const txPointer = blobStoreBatch.append(storedTxBytes);
+			txIdToPointerBatch.set(tx.data.txId, txPointer);
 		}
 
 		return blockPointer;
 	};
 
-	if (storeTxs) {
+	if (storeBatches) {
 		const blockPointer = await op();
 		return { pointer: blockPointer };
 	}
 
 	try {
 		const blockPointer = await op();
-		blobStoreTx.apply();
-		blockStoreTx.apply();
-		txIdToPointerTx.apply();
+		blobStoreBatch.apply();
+		blockStoreBatch.apply();
+		txIdToPointerBatch.apply();
 
 		return { pointer: blockPointer };
 	} catch (reason) {
-		blobStoreTx.discard();
-		blockStoreTx.discard();
-		txIdToPointerTx.discard();
+		blobStoreBatch.discard();
+		blockStoreBatch.discard();
+		txIdToPointerBatch.discard();
 		console.error("Failed to append block body:", reason);
 		Deno.exit(1);
 	}

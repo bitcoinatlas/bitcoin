@@ -43,14 +43,14 @@ async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 		valueCodec: new BytesCodec({ size: VALUE_SIZE }),
 	});
 
-	// Writes — batch tx → WAL save → WAL apply → WAL discard
+	// Writes — batch → WAL save → WAL apply → WAL discard
 	console.log("    Writing...");
 	const writeStart = performance.now();
 	for (let i = 0; i < KV_TOTAL; i += KV_BATCH_SIZE) {
 		const end = Math.min(i + KV_BATCH_SIZE, KV_TOTAL);
-		const tx = store.transaction();
-		for (let j = i; j < end; j++) tx.set(keys[j]!, values[j]!);
-		tx.apply();
+		const batch = store.batch();
+		for (let j = i; j < end; j++) batch.set(keys[j]!, values[j]!);
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -158,9 +158,9 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 	const writeStart = performance.now();
 	for (let i = 0; i < ARRAY_TOTAL; i += ARRAY_BATCH_SIZE) {
 		const end = Math.min(i + ARRAY_BATCH_SIZE, ARRAY_TOTAL);
-		const tx = store.transaction();
-		for (let j = i; j < end; j++) tx.append(items[j]!);
-		tx.apply();
+		const batch = store.batch();
+		for (let j = i; j < end; j++) batch.append(items[j]!);
+		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
 		await wal.discard();
@@ -209,13 +209,13 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 		path: "data/bench_blob",
 	});
 
-	// Writes — one transaction for all blobs, record pointers
+	// Writes — one batch for all blobs, record pointers
 	console.log("    Writing...");
 	const pointers: number[] = [];
 	const writeStart = performance.now();
-	const tx = store.transaction();
-	for (let i = 0; i < BLOB_TOTAL; i++) pointers.push(tx.append(blobs[i]!));
-	tx.apply();
+	const batch = store.batch();
+	for (let i = 0; i < BLOB_TOTAL; i++) pointers.push(batch.append(blobs[i]!));
+	batch.apply();
 	const wal = await store.createWAL();
 	await wal.apply();
 	await wal.discard();
