@@ -2,7 +2,7 @@
 - [ ] in a tick some stuff should work in parallel. sequentially.
 - [x] Download should queue blocks in memory, and another loop should append them from a block pool in order.
 - [x] use "push" for array store and "append" for blob store
-- [ ] on stores instead of "transaction" use the term, "batch", so it doesnt become confusing and mixed with bitcoin
+- [x] on stores instead of "transaction" use the term, "batch", so it doesnt become confusing and mixed with bitcoin
       txs.
 - [ ] verify should be seperated complately to its own height meta data, and worker shouldnt effect the main thread and
       storage stuff.
