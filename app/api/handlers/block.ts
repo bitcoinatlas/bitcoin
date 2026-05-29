@@ -1,3 +1,4 @@
+import { decodeHex } from "@std/encoding";
 import { endpointRouter } from "~/api/router.ts";
 import {
 	getBlockByHeight,
@@ -49,11 +50,12 @@ endpointRouter.registerHandler("GET /v1/block/tip", async () => {
 });
 
 function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { kind: "hash"; hash: Uint8Array } {
-	if (/^[0-9]+$/.test(raw)) {
-		return { kind: "height", height: Number(raw) };
+	if (raw.length === 64 && raw.startsWith("0")) {
+		const hash = Uint8Array.from(decodeHex(raw).reverse());
+		return { kind: "hash", hash };
 	}
-	const hash = Uint8Array.from(raw.match(/.{2}/g)!.map((b: string) => parseInt(b, 16)).reverse());
-	return { kind: "hash", hash };
+	const height = Number(raw);
+	return { kind: "height", height };
 }
 
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params }) => {

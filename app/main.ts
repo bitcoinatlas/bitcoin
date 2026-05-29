@@ -1,5 +1,5 @@
 import { delay } from "@std/async";
-import { atomicSave } from "~/chain.ts";
+import { atomicSave, appendStorageSnapshot } from "~/chain.ts";
 import { syncBodiesFromPeers } from "~/bodies.ts";
 import { syncHeadersFromPeers } from "~/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
@@ -9,7 +9,7 @@ const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 const HTTP_PORT = 3000;
 const SAVE_INTERVAL_MS = 2 * 60_000;
-const SAVE_HEAP_HEADROOM = 1 * 1024 * 1024 * 1024; // 1 GB above baseline
+const SAVE_HEAP_HEADROOM = 1.5 * 1024 * 1024 * 1024; // 1 GB above baseline
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
 
@@ -35,7 +35,7 @@ let lastSave = Date.now();
 while (true) {
 	try {
 		await delay(0);
-		// await tick();
+		await tick();
 	} catch (error) {
 		console.error("[main] tick error:", error);
 	}
@@ -44,7 +44,7 @@ while (true) {
 async function tick() {
 	// await maintain(); // uncomment for production peer management
 	await syncHeadersFromPeers();
-	await syncBodiesFromPeers();
+	const lastBody = await syncBodiesFromPeers();
 
 	const heapUsed = Deno.memoryUsage().heapUsed;
 	const elapsed = Date.now() - lastSave;
@@ -57,6 +57,8 @@ async function tick() {
 		lastSave = Date.now();
 		baselineHeap = Deno.memoryUsage().heapUsed;
 		SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
+
+		if (lastBody) await appendStorageSnapshot(lastBody.height, lastBody.timestamp);
 	}
 }
 

@@ -2,7 +2,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import { Codec, U32, U32LE } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
-import { BASE_DATA_DIR } from "~/config.ts";
+import { BASE_DATA_DIR, BASE_DIR } from "~/config.ts";
 import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { PeerChain } from "~/lib/chain/PeerChain.ts";
 import { PeerChainNode } from "~/lib/chain/PeerChainNode.ts";
@@ -414,4 +414,71 @@ export async function getChainTip(): Promise<{ height: number; block: StoredBloc
 export async function getTxOutputByPointer(pointer: number): Promise<Codec.InferOutput<typeof StoredTxOutput>> {
 	const output = await blobStore.get(pointer, StoredTxOutput);
 	return output;
+}
+
+// ---------------------------------------------------------------------------
+// Storage snapshot — appended to STORAGE.md after every atomicSave
+// ---------------------------------------------------------------------------
+
+async function dirSizeMiB(dir: string): Promise<number> {
+	let bytes = 0;
+	try {
+		for await (const entry of Deno.readDir(dir)) {
+			if (entry.isFile) {
+				const stat = await Deno.stat(join(dir, entry.name));
+				bytes += stat.size;
+			} else if (entry.isDirectory) {
+				bytes += await dirSizeMiB(join(dir, entry.name)) * 1024 * 1024;
+			}
+		}
+	} catch {
+		// dir may not exist yet
+	}
+	return bytes / (1024 * 1024);
+}
+
+const STORAGE_MD = join(BASE_DIR, "STORAGE.md");
+const SATOSHI_JSON = join(BASE_DIR, "satoshi-client-blocks-size.json");
+
+let _satoshiData: Array<{ x: number; y: number }> | null = null;
+async function getSatoshiData(): Promise<Array<{ x: number; y: number }>> {
+	if (_satoshiData) return _satoshiData;
+	const json = JSON.parse(await Deno.readTextFile(SATOSHI_JSON));
+	_satoshiData = json["blocks-size"];
+	return _satoshiData!;
+}
+
+/** Return the largest entry whose timestamp is strictly before blockTimestampSec. */
+async function satoshiMiBAtTimestamp(blockTimestampSec: number): Promise<number | null> {
+	const data = await getSatoshiData();
+	const blockMs = blockTimestampSec * 1000;
+	let floor: { x: number; y: number } | null = null;
+	for (const entry of data) {
+		if (entry.x < blockMs) floor = entry;
+		else break;
+	}
+	if (!floor) return null;
+	return floor.y; // already in MiB
+}
+
+/** Measure disk usage and append a row to STORAGE.md. */
+export async function appendStorageSnapshot(height: number, blockTimestampSec: number): Promise<void> {
+	const txsMiB = await dirSizeMiB(join(BASE_DATA_DIR, "txs"));
+	const totalMiB = await dirSizeMiB(BASE_DATA_DIR);
+	const satoshiMiB = await satoshiMiBAtTimestamp(blockTimestampSec);
+
+	const fmt = (v: number) => `~${Math.round(v).toLocaleString("en-US")}`;
+	const savedMiB = satoshiMiB !== null ? satoshiMiB - txsMiB : null;
+	const savedPct = satoshiMiB !== null && satoshiMiB > 0 ? (savedMiB! / satoshiMiB) * 100 : null;
+
+	const col1 = satoshiMiB !== null ? fmt(satoshiMiB) : "-";
+	const col2 = fmt(txsMiB);
+	const col3 = savedMiB !== null ? fmt(savedMiB) : "-";
+	const col4 = savedPct !== null ? `~${savedPct.toFixed(1)}%` : "-";
+	const col5 = fmt(totalMiB);
+
+	const row = `| ${height} | ${col1} | ${col2} | ${col3} | ${col4} | ${col5} |\n`;
+
+	await Deno.writeTextFile(STORAGE_MD, row, { append: true });
+	console.log(`[storage] snapshot height=${height} txs=${fmt(txsMiB)}MiB total=${fmt(totalMiB)}MiB satoshi=${col1}MiB`);
 }

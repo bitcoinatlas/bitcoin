@@ -50,9 +50,9 @@ type PoolEntry = {
  *     (TICK_BYTE_LIMIT reached or all blocks appended) it sets `abort = true`
  *     so the download loop does not continue firing getdata needlessly.
  */
-export async function syncBodiesFromPeers(): Promise<void> {
+export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp: number } | null> {
 	const peer = peers().find((p) => p.connected);
-	if (!peer) return;
+	if (!peer) return null;
 
 	const invType = MSG_WITNESS_BLOCK;
 
@@ -69,7 +69,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 		// Collect enough to fill several windows worth of work per tick.
 		if (allPending.length >= DOWNLOAD_AHEAD * 4) break;
 	}
-	if (allPending.length === 0) return;
+	if (allPending.length === 0) return null;
 
 	if (_sessionStart === 0) _sessionStart = Date.now();
 
@@ -149,23 +149,31 @@ export async function syncBodiesFromPeers(): Promise<void> {
 	let appendedCount = 0;
 	let firstAppendHeight: number | undefined;
 	let lastAppendHeight: number | undefined;
+	let lastAppendTimestamp: number | undefined;
 
 	const verifyLoop = (async () => {
 		for (const { height, hash } of allPending) {
 			// Wait until the block lands in the pool.
 			// Deadline is relative to when the download loop sent the getdata,
 			// or now if we haven't sent it yet (shouldn't happen in normal flow).
+			let timedOut = false;
 			while (!pool.has(hash)) {
 				if (!peer.connected) break;
 				const sentAt = requestedAt.get(hash);
 				if (sentAt !== undefined && Date.now() - sentAt >= BLOCK_TIMEOUT_MS) {
 					console.warn(`[bodies] timeout waiting for block height=${height}`);
+					timedOut = true;
 					break;
 				}
 				await new Promise<void>((r) => setTimeout(r, 5));
 			}
 
 			verifiedCount++; // advance the window regardless of whether we got the block
+
+			// On timeout, stop processing this tick entirely — continuing would
+			// cause every subsequent block (whose requestedAt timestamps are now
+			// stale) to time out immediately, skipping them all.
+			if (timedOut) break;
 
 			const entry = pool.get(hash);
 			if (!entry) continue;
@@ -178,6 +186,7 @@ export async function syncBodiesFromPeers(): Promise<void> {
 				appendedCount++;
 				if (firstAppendHeight === undefined) firstAppendHeight = height;
 				lastAppendHeight = height;
+				lastAppendTimestamp = entry.block.header.timestamp;
 				pool.delete(hash);
 				requestedAt.delete(hash);
 			} catch (e) {
@@ -217,6 +226,11 @@ export async function syncBodiesFromPeers(): Promise<void> {
 	} finally {
 		unlistenBlocks();
 	}
+
+	if (lastAppendHeight !== undefined && lastAppendTimestamp !== undefined) {
+		return { height: lastAppendHeight, timestamp: lastAppendTimestamp };
+	}
+	return null;
 }
 
 function fmtBytes(bytes: number): string {
