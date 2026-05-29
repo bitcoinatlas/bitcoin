@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { Codec, U32, U32LE } from "@nomadshiba/codec";
+import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { BASE_DATA_DIR } from "~/config.ts";
 import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
@@ -275,13 +276,18 @@ export async function appendBlockTxs(
 
 		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
-		const blockPointer = blobStoreBatch.append(txCountBytes);
+
+		const encodedTxs = txs.map((tx) => encodeStoredTxWithOutputOffsets(tx.toStore()));
+		const fullBlob = concat([txCountBytes, ...encodedTxs.map((e) => e.bytes)]);
+
+		const blockPointer = blobStoreBatch.append(fullBlob);
 		blockStoreBatch.set(height, { header: block.header, pointer: blockPointer });
 
-		for (const tx of txs) {
-			const storedTx = tx.toStore();
-			const { bytes, voutOffsets } = encodeStoredTxWithOutputOffsets(storedTx);
-			const txPointer = blobStoreBatch.append(bytes);
+		let offset = txCountBytes.length;
+		for (let t = 0; t < txs.length; t++) {
+			const tx = txs[t]!;
+			const { bytes, voutOffsets } = encodedTxs[t]!;
+			const txPointer = blockPointer + offset;
 			txIdToPointerBatch.set(tx.data.txId, txPointer);
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
@@ -295,6 +301,7 @@ export async function appendBlockTxs(
 					pubKeyToPointerBatch.set(hash, txPointer + voutOffsets[i]!);
 				}
 			}
+			offset += bytes.length;
 		}
 
 		return blockPointer;
