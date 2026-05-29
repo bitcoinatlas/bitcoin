@@ -35,7 +35,7 @@ let lastSave = Date.now();
 while (true) {
 	try {
 		await delay(0);
-		await tick();
+		// await tick();
 	} catch (error) {
 		console.error("[main] tick error:", error);
 	}

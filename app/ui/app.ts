@@ -4,7 +4,7 @@ import { api } from "~/ui/api.ts";
 import { awaited } from "~/ui/utils/awaited.ts";
 import { useReplaceChildren } from "~/ui/utils/bind.ts";
 import { css } from "~/ui/utils/css.ts";
-import { formatBtc, formatHash } from "~/ui/utils/format.ts";
+import { formatBtc, formatHash, formatLocktime, formatSequence } from "~/ui/utils/format.ts";
 import type { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import appCss from "./app.css" with { type: "text" };
 
@@ -83,6 +83,10 @@ function TxRow(tx: WireTx, index: number) {
 			dd().textContent(formatHash(tx.txId)),
 			dt().textContent("Version"),
 			dd().textContent(String(tx.version)),
+			dt().textContent("Locktime"),
+			dd().textContent(formatLocktime(tx.locktime)),
+			dt().textContent("Segwit"),
+			dd().textContent(tx.witness.length > 0 ? "yes" : "no"),
 		),
 		details().append$(
 			summary().textContent(`Inputs (${tx.inputs.length})`),
@@ -90,16 +94,24 @@ function TxRow(tx: WireTx, index: number) {
 				...tx.inputs.map((inp, i) => {
 					const coinbaseInput = isCoinbase && i === 0;
 					return li().append$(
-						dl().append$(
-							dt().textContent("Index"),
-							dd().textContent(String(i)),
-						dt().textContent("Prev TxID"),
-						dd().textContent(coinbaseInput ? "coinbase" : formatHash(inp.prevOut.txId)),
-							dt().textContent("Vout"),
-							dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
-							dt().textContent("ScriptSig"),
-							dd().textContent(encodeHex(inp.scriptSig)),
-						),
+					dl().append$(
+						dt().textContent("Index"),
+						dd().textContent(String(i)),
+					dt().textContent("Prev TxID"),
+					dd().textContent(coinbaseInput ? "coinbase" : formatHash(inp.prevOut.txId)),
+						dt().textContent("Vout"),
+						dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
+						dt().textContent("ScriptSig"),
+						dd().textContent(encodeHex(inp.scriptSig)),
+						dt().textContent("Sequence"),
+						dd().textContent(formatSequence(inp.sequence)),
+						...(tx.witness[i] && tx.witness[i]!.length > 0
+							? [
+								dt().textContent("Witness"),
+								dd().textContent(tx.witness[i]!.map((w) => encodeHex(w)).join(", ")),
+							]
+							: []),
+					),
 					);
 				}),
 			),

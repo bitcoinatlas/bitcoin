@@ -126,8 +126,18 @@ function decodeWitness(data: Uint8Array, inputCount: number): [Uint8Array[][], n
 
 export type WireTx = Codec.InferOutput<typeof WireTx>;
 export const WireTx = new WireTxCodec().transform((value, bytes) => {
+	// txId must be computed from non-witness serialization (BIP141)
+	// even if the bytes include witness data (segwit tx)
+	const hasWitness = value.witness.length > 0;
+	let hashBytes: Uint8Array;
+	if (!hasWitness) {
+		hashBytes = bytes;
+	} else {
+		// Re-encode without witness to get the non-witness serialization
+		hashBytes = new WireTxCodec().encode({ ...value, witness: [] });
+	}
 	return {
-		txId: sha256(sha256(bytes)),
+		txId: sha256(sha256(hashBytes)),
 		...value,
 	};
 });

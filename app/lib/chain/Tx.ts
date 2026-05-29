@@ -42,7 +42,7 @@ export class Tx {
 				scriptSig: input.data.scriptSig,
 				sequence: input.data.sequence,
 			});
-			witness.push(input.data.witness);
+			if (this.data.witness) witness.push(input.data.witness);
 		}
 
 		const outputs: WireTxOutput[] = [];

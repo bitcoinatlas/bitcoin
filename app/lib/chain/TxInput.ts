@@ -1,4 +1,3 @@
-import { getTxByPointer } from "~/chain.ts";
 import { SequenceLock } from "~/lib/codec/SequenceLock.ts";
 import { COINBASE_TXID } from "~/constants.ts";
 
@@ -32,6 +31,7 @@ export class TxInput {
 		}
 
 		if (kind === "pointer") {
+			const { getTxByPointer } = await import("~/chain.ts");
 			return await getTxByPointer(value).then((tx) => tx.data.txId);
 		}
 

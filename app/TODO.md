@@ -4,8 +4,10 @@
 - [x] use "push" for array store and "append" for blob store
 - [x] on stores instead of "transaction" use the term, "batch", so it doesnt become confusing and mixed with bitcoin
       txs.
+- [ ] forgot to seperate between txid and wtxid, do that. then fully sync check the full chain size. then fucking
+      refactor everything, codebase has kinda become a mess.
 - [ ] verify should be seperated complately to its own height meta data, and worker shouldnt effect the main thread and
-      storage stuff. so it shouldn't effect raw download and write speed we have without verification. 
+      storage stuff. so it shouldn't effect raw download and write speed we have without verification.
 - [ ] block txs start pointer shouldnt be packed with the header. limits parallelism. instead it should have a seperate
       arraystore like before.
 - [ ] put all the sync logic in a simplified way into a single file or directory

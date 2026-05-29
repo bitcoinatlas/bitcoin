@@ -15,6 +15,7 @@
     "jsr:@std/cli@^1.0.29": "1.0.29",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/data-structures@^1.0.11": "1.0.11",
+    "jsr:@std/encoding@*": "1.0.10",
     "jsr:@std/encoding@1.0.10": "1.0.10",
     "jsr:@std/encoding@^1.0.10": "1.0.10",
     "jsr:@std/fmt@^1.0.10": "1.0.10",

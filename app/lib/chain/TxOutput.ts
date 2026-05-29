@@ -1,5 +1,4 @@
 import { rawScriptPubKey, ScriptPubKey } from "./ScriptPubKey.ts";
-import { getTxOutputByPointer } from "~/chain.ts";
 
 export type TxOutputData = {
 	value: bigint;
@@ -18,6 +17,7 @@ export class TxOutput {
 
 	async getScriptPubKey(): Promise<ScriptPubKey> {
 		if (this.data.scriptPubKey.kind === "pointer") {
+			const { getTxOutputByPointer } = await import("~/chain.ts");
 			const output = await getTxOutputByPointer(this.data.scriptPubKey.value);
 			if (output.data.scriptPubKey.kind === "pointer") {
 				throw new Error([
