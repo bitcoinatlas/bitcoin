@@ -102,6 +102,7 @@ export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
 
+// TODO: Rename to headers
 const blockStore = await createArrayStore({
 	name: "blocks",
 	path: join(BASE_DATA_DIR, "blocks"),
@@ -109,6 +110,7 @@ const blockStore = await createArrayStore({
 	counter: U32,
 });
 
+// TODO: Rename to txs
 const blobStore = await createBlobStore({
 	name: "txs",
 	path: join(BASE_DATA_DIR, "txs"),
