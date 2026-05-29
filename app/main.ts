@@ -8,7 +8,8 @@ import { serve } from "~/serve.ts";
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 const HTTP_PORT = 3000;
-const SAVE_EVERY_N_TICK = 4;
+const SAVE_INTERVAL_MS = 60_000;       // flush at least every 1 minute
+const SAVE_HEAP_HEADROOM = 1 * 1024 * 1024 * 1024; // 1 GB above baseline
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
 
@@ -22,15 +23,17 @@ serve(HTTP_PORT);
 await addPeer("192.168.1.10", P2P_PORT, MAGIC);
 // await maintain();
 
-let ticks = 0;
+let baselineHeap = Deno.memoryUsage().heapUsed;
+let SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
+console.log(`[main] baseline heap=${(baselineHeap / 1024 / 1024).toFixed(1)}MB save threshold=${(SAVE_HEAP_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
+
+let lastSave = Date.now();
 while (true) {
 	try {
 		await delay(0);
 		await tick();
 	} catch (error) {
 		console.error("[main] tick error:", error);
-	} finally {
-		ticks++;
 	}
 }
 
@@ -39,9 +42,17 @@ async function tick() {
 	await syncHeadersFromPeers();
 	await syncBodiesFromPeers();
 
-	if (ticks % SAVE_EVERY_N_TICK === 0) {
-		ticks = 0;
+	const heapUsed = Deno.memoryUsage().heapUsed;
+	const elapsed = Date.now() - lastSave;
+	if (elapsed >= SAVE_INTERVAL_MS || heapUsed >= SAVE_HEAP_THRESHOLD) {
+		const reason = heapUsed >= SAVE_HEAP_THRESHOLD
+			? `heap=${(heapUsed / 1024 / 1024).toFixed(1)}MB >= ${SAVE_HEAP_THRESHOLD / 1024 / 1024}MB`
+			: `elapsed=${(elapsed / 1000).toFixed(0)}s >= ${SAVE_INTERVAL_MS / 1000}s`;
+		console.log(`[main] saving (${reason})`);
 		await atomicSave();
+		lastSave = Date.now();
+		baselineHeap = Deno.memoryUsage().heapUsed;
+		SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
 	}
 }
 

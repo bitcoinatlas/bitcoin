@@ -1,102 +1,174 @@
 import { equals } from "@std/bytes";
 import { appendBlockTxs, localChain } from "~/chain.ts";
-import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
 import { type PeerMessageEvent } from "~/lib/peer/Peer.ts";
 import { BlockMessage } from "~/lib/peer/messages/Block.ts";
-import { GetDataMessage, MSG_BLOCK } from "~/lib/peer/messages/GetData.ts";
+import { GetDataMessage, MSG_WITNESS_BLOCK } from "~/lib/peer/messages/GetData.ts";
 import { peers } from "~/peers.ts";
 
-const BATCH_SIZE = 32;
+/**
+ * How many blocks ahead of the verified tip the download loop is allowed to
+ * run.  Keeping this bounded limits in-flight memory while still giving the
+ * download loop plenty of work to hide network round-trip latency.
+ */
+const DOWNLOAD_AHEAD = 100;
+
+/**
+ * How many block hashes we pack into a single getdata message.  Smaller
+ * batches pipeline more naturally and avoid stalling on a single slow block.
+ */
+const DOWNLOAD_BATCH = 16;
+
+/** How long to wait for any single block before giving up on it. */
 const BLOCK_TIMEOUT_MS = 30_000;
-const TICK_BYTE_LIMIT = MAX_BLOCK_WEIGHT * BATCH_SIZE;
 
 // Cumulative stats for smoothed speed / ETA across ticks.
 let _sessionStart = 0;
 let _sessionBlocks = 0;
 let _sessionBytes = 0;
 
-type PoolBlock = { height: number; payload: Uint8Array; block: ReturnType<typeof WireBlock.decode>[0] };
+type PoolEntry = {
+	height: number;
+	payload: Uint8Array;
+	block: ReturnType<typeof WireBlock.decode>[0];
+};
 
-/** Call once per tick. Downloads block bodies until TICK_BYTE_LIMIT bytes received or tip reached. */
+/**
+ * Call once per tick.
+ *
+ * Runs two concurrent loops that share a pool map (block hash → decoded block):
+ *
+ *   • **Download loop** — walks allPending from the front, staying at most
+ *     DOWNLOAD_AHEAD blocks ahead of the verified tip.  Emits getdata in
+ *     DOWNLOAD_BATCH-sized chunks and records when each block was requested.
+ *     Stops immediately when the verify loop signals it is done (via `abort`).
+ *
+ *   • **Verify loop** — drains the pool in strict height order, calling
+ *     appendBlockTxs for each block as soon as it lands, then bumping the
+ *     verified counter so the download loop can advance.  When it is done
+ *     (TICK_BYTE_LIMIT reached or all blocks appended) it sets `abort = true`
+ *     so the download loop does not continue firing getdata needlessly.
+ */
 export async function syncBodiesFromPeers(): Promise<void> {
 	const peer = peers().find((p) => p.connected);
 	if (!peer) return;
 
-	// Collect all headers missing a body for this tick.
+	const invType = MSG_WITNESS_BLOCK;
+
+	// Collect heights that are still missing a body, in order.
+	// We cap at DOWNLOAD_AHEAD * a generous multiplier — the loop will re-run
+	// on the next tick to continue, so there is no need to enumerate the entire
+	// remaining chain upfront.
 	type Pending = { height: number; hash: Uint8Array };
-	const pending: Pending[] = [];
+	const allPending: Pending[] = [];
 	for (const [height, node] of localChain.entries()) {
 		if (height === 0) continue; // genesis already seeded
 		if (node.pointer !== null) continue;
-		pending.push({ height, hash: node.header.hash });
-		if (pending.length >= BATCH_SIZE) break;
+		allPending.push({ height, hash: node.header.hash });
+		// Collect enough to fill several windows worth of work per tick.
+		if (allPending.length >= DOWNLOAD_AHEAD * 4) break;
 	}
-	if (pending.length === 0) return;
+	if (allPending.length === 0) return;
 
-	const pool = new Uint8ArrayMap<PoolBlock>(pending.length);
-	let downloadedBytes = 0;
-	let downloadFinished = false;
+	if (_sessionStart === 0) _sessionStart = Date.now();
 
-	// Download: send getdata and fill the pool as blocks arrive.
-	const downloadDone = new Promise<void>((resolve) => {
-		const remaining = new Set(pending.map(({ height }) => height));
+	// Shared pool populated by the message listener, drained by the verify loop.
+	const pool = new Uint8ArrayMap<PoolEntry>(DOWNLOAD_AHEAD * 2);
 
-		const tid = setTimeout(() => {
-			unlisten();
-			if (remaining.size > 0) console.warn(`[bodies] timeout — ${remaining.size} block(s) not received`);
-			downloadFinished = true;
-			resolve();
-		}, BLOCK_TIMEOUT_MS);
+	// verifiedCount: how many entries from allPending the verify loop has processed.
+	// The download loop reads this to enforce the DOWNLOAD_AHEAD window.
+	let verifiedCount = 0;
 
-		const unlisten = peer.onMessage((msg: PeerMessageEvent) => {
-			if (msg.command !== BlockMessage.command) return;
+	// abort: set by the verify loop when it is done so the download loop stops.
+	let abort = false;
 
-			let block;
-			try {
-				[block] = WireBlock.decode(msg.payload);
-			} catch (e) {
-				console.error("[bodies] block decode error:", e);
-				return;
-			}
+	// requestedAt: set by the download loop when it fires getdata for a block.
+	// The verify loop reads this to compute per-block deadlines.
+	const requestedAt = new Uint8ArrayMap<number>(DOWNLOAD_AHEAD * 2);
 
-			const entry = pending.find(({ hash }) => equals(hash, block.header.hash));
-			if (!entry) return;
+	// ── Message listener ──────────────────────────────────────────────────────
 
-			pool.set(block.header.hash, { height: entry.height, payload: msg.payload, block });
-			downloadedBytes += msg.payload.length;
+	const unlistenBlocks = peer.onMessage((msg: PeerMessageEvent) => {
+		if (msg.command !== BlockMessage.command) return;
 
-			remaining.delete(entry.height);
-			if (remaining.size === 0) {
-				clearTimeout(tid);
-				unlisten();
-				downloadFinished = true;
-				resolve();
-			}
-		});
+		let block;
+		try {
+			[block] = WireBlock.decode(msg.payload);
+		} catch (e) {
+			console.error("[bodies] block decode error:", e);
+			return;
+		}
 
-		peer.send(GetDataMessage, {
-			inventory: pending.map(({ hash }) => ({ type: MSG_BLOCK, hash })),
-		});
+		const entry = allPending.find(({ hash }) => equals(hash, block.header.hash));
+		if (!entry) return;
+		if (pool.has(entry.hash)) return; // deduplicate
+
+		pool.set(entry.hash, { height: entry.height, payload: msg.payload, block });
 	});
 
-	// Append: drain pool in height order as blocks become available.
+	// ── Download loop ─────────────────────────────────────────────────────────
+
+	const downloadLoop = (async () => {
+		let nextIdx = 0;
+
+		while (nextIdx < allPending.length && !abort && peer.connected) {
+			const inFlight = nextIdx - verifiedCount;
+			if (inFlight >= DOWNLOAD_AHEAD) {
+				await new Promise<void>((r) => setTimeout(r, 5));
+				continue;
+			}
+
+			const batchEnd = Math.min(
+				nextIdx + DOWNLOAD_BATCH,
+				nextIdx + (DOWNLOAD_AHEAD - inFlight),
+				allPending.length,
+			);
+			const batch = allPending.slice(nextIdx, batchEnd);
+			nextIdx = batchEnd;
+
+			// Record request times before sending so the verify loop can
+			// compute deadlines as soon as blocks are in scope.
+			const now = Date.now();
+			for (const { hash } of batch) requestedAt.set(hash, now);
+
+			try {
+				await peer.send(GetDataMessage, {
+					inventory: batch.map(({ hash }) => ({ type: invType, hash })),
+				});
+			} catch (e) {
+				if (!abort) console.error("[bodies] getdata send error:", e);
+				break;
+			}
+		}
+	})();
+
+	// ── Verify loop ───────────────────────────────────────────────────────────
+
 	let appendedBytes = 0;
 	let appendedCount = 0;
 	let firstAppendHeight: number | undefined;
 	let lastAppendHeight: number | undefined;
-	if (_sessionStart === 0) _sessionStart = Date.now();
-	const appendDone = (async () => {
-		for (const { height, hash } of pending) {
-			// Wait until this block is in the pool or download finishes.
+
+	const verifyLoop = (async () => {
+		for (const { height, hash } of allPending) {
+			// Wait until the block lands in the pool.
+			// Deadline is relative to when the download loop sent the getdata,
+			// or now if we haven't sent it yet (shouldn't happen in normal flow).
 			while (!pool.has(hash)) {
-				if (downloadFinished || downloadedBytes >= TICK_BYTE_LIMIT) break;
-				await new Promise((r) => setTimeout(r, 10));
+				if (!peer.connected) break;
+				const sentAt = requestedAt.get(hash);
+				if (sentAt !== undefined && Date.now() - sentAt >= BLOCK_TIMEOUT_MS) {
+					console.warn(`[bodies] timeout waiting for block height=${height}`);
+					break;
+				}
+				await new Promise<void>((r) => setTimeout(r, 5));
 			}
 
+			verifiedCount++; // advance the window regardless of whether we got the block
+
 			const entry = pool.get(hash);
-			if (!entry) continue; // timed out or not received
+			if (!entry) continue;
 
 			try {
 				const { pointer } = await appendBlockTxs(entry.block.txs, height);
@@ -107,12 +179,15 @@ export async function syncBodiesFromPeers(): Promise<void> {
 				if (firstAppendHeight === undefined) firstAppendHeight = height;
 				lastAppendHeight = height;
 				pool.delete(hash);
+				requestedAt.delete(hash);
 			} catch (e) {
 				console.error(`[bodies] appendBlockTxs failed at height=${height}:`, e);
 			}
-
-			if (appendedBytes >= TICK_BYTE_LIMIT) break;
 		}
+
+		// Tell the download loop to stop — we are done for this tick.
+		abort = true;
+
 		if (appendedCount > 0) {
 			_sessionBlocks += appendedCount;
 			_sessionBytes += appendedBytes;
@@ -120,7 +195,6 @@ export async function syncBodiesFromPeers(): Promise<void> {
 			const blocksPerSec = elapsedSec > 0 ? _sessionBlocks / elapsedSec : 0;
 			const bytesPerSec = elapsedSec > 0 ? _sessionBytes / elapsedSec : 0;
 
-			// Remaining blocks that still need bodies (excluding this batch).
 			const remaining = [...localChain.entries()].filter(
 				([h, n]) => h > 0 && n.pointer === null,
 			).length;
@@ -132,12 +206,17 @@ export async function syncBodiesFromPeers(): Promise<void> {
 
 			console.log(
 				`[bodies] appended blocks=${appendedCount} heights=${firstAppendHeight}-${lastAppendHeight}` +
-				` bytes=${appendedBytes} speed=${fmtBytes(bytesPerSec)}/s blocks/s=${blocksPerSec.toFixed(1)} ${etaStr}`,
+					` bytes=${appendedBytes} speed=${fmtBytes(bytesPerSec)}/s` +
+					` blocks/s=${blocksPerSec.toFixed(1)} ${etaStr}`,
 			);
 		}
 	})();
 
-	await Promise.all([downloadDone, appendDone]);
+	try {
+		await Promise.all([downloadLoop, verifyLoop]);
+	} finally {
+		unlistenBlocks();
+	}
 }
 
 function fmtBytes(bytes: number): string {
@@ -152,4 +231,3 @@ function fmtDuration(seconds: number): string {
 	if (s < 3_600) return `${Math.floor(s / 60)}m${s % 60}s`;
 	return `${Math.floor(s / 3_600)}h${Math.floor((s % 3_600) / 60)}m`;
 }
-

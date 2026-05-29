@@ -3,6 +3,10 @@ import { CompactSize } from "~/lib/codec/primitives.ts";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
 
 export const MSG_BLOCK = 2;
+/** Request block including segwit witness data. Requires peer version ≥ 70013 and NODE_WITNESS service. */
+export const MSG_WITNESS_BLOCK = 0x40000002;
+/** NODE_WITNESS service flag — peer supports segwit (BIP 144). */
+export const NODE_WITNESS = 0x8n;
 
 export type InvVector = {
 	type: number; // MSG_TX=1, MSG_BLOCK=2

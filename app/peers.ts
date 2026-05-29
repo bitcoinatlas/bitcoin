@@ -187,10 +187,15 @@ export async function addPeersFromDNS(seedHost: string, port: number): Promise<n
  * Also installs a one-shot handler to reply verack if the remote sends version first.
  */
 export async function handshake(peer: Peer): Promise<void> {
-	// Handle inbound version — reply with verack
+	// Handle inbound version — capture capabilities and reply with verack
 	const unlisten = peer.onMessage((msg) => {
 		if (msg.command !== "version") return;
 		unlisten();
+		try {
+			const [remoteVer] = VersionMessage.codec.decode(msg.payload);
+			peer.remoteVersion = remoteVer.version;
+			peer.remoteServices = remoteVer.services;
+		} catch { /* ignore malformed version */ }
 		peer.send(VerackMessage, null).catch(() => {});
 	});
 

@@ -58,6 +58,11 @@ export class Peer {
 	#listeners = new Set<(msg: PeerMessageEvent) => void>();
 	#disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
 
+	/** Remote peer's version payload, populated after handshake. */
+	remoteVersion: number = 0;
+	/** Remote peer's advertised services bitmask, populated after handshake. */
+	remoteServices: bigint = 0n;
+
 	get connected(): boolean {
 		return this.#connected;
 	}
