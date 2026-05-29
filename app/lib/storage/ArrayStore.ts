@@ -15,7 +15,7 @@ export interface ArrayStore<T extends FixedCodec> extends Store<ArrayStoreBatch<
 export interface ArrayStoreBatch<T extends FixedCodec> extends Batch {
 	get(index: number): Promise<Codec.InferOutput<T>>;
 	set(index: number, value: Codec.InferInput<T>): void;
-	append(value: Codec.InferInput<T>): number;
+	push(value: Codec.InferInput<T>): number;
 	length(): number;
 }
 
@@ -204,7 +204,7 @@ export async function createArrayStore<T extends FixedCodec>(
 					batchSets.set(index, codec.encode(value));
 				}
 			},
-			append(value: Codec.InferInput<T>): number {
+			push(value: Codec.InferInput<T>): number {
 				const index = batchBaseLength + batchAppends.length;
 				batchAppends.push(codec.encode(value));
 				return index;

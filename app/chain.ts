@@ -102,14 +102,6 @@ export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
 
-export const KNOWN_ADDRESS_TYPES = [
-	"p2pkh",
-	"p2sh",
-	"p2wpkh",
-	"p2wsh",
-	"p2tr",
-] as const;
-
 const blockStore = await createArrayStore({
 	name: "blocks",
 	path: join(BASE_DATA_DIR, "blocks"),
@@ -233,7 +225,7 @@ export function appendBlockHeader(
 
 	const op = () => {
 		for (const header of headers) {
-			const height = blockStoreBatch.append({ header, pointer: 0 });
+			const height = blockStoreBatch.push({ header, pointer: 0 });
 			blockHashToHeightBatch.set(header.hash, height);
 		}
 	};

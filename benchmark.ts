@@ -57,7 +57,11 @@ async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 
 		const elapsed = (performance.now() - writeStart) / 1000;
 		const rate = end / elapsed;
-		console.log(`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${rate.toFixed(0)} ops/sec)`);
+		console.log(
+			`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
 	}
 	const writeOps = KV_TOTAL / ((performance.now() - writeStart) / 1000);
 	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
@@ -110,7 +114,11 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
 
 		const elapsed = (performance.now() - writeStart) / 1000;
 		const rate = end / elapsed;
-		console.log(`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${rate.toFixed(0)} ops/sec)`);
+		console.log(
+			`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
 	}
 	const writeOps = KV_TOTAL / ((performance.now() - writeStart) / 1000);
 	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
@@ -159,7 +167,7 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 	for (let i = 0; i < ARRAY_TOTAL; i += ARRAY_BATCH_SIZE) {
 		const end = Math.min(i + ARRAY_BATCH_SIZE, ARRAY_TOTAL);
 		const batch = store.batch();
-		for (let j = i; j < end; j++) batch.append(items[j]!);
+		for (let j = i; j < end; j++) batch.push(items[j]!);
 		batch.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
@@ -167,7 +175,11 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 
 		const elapsed = (performance.now() - writeStart) / 1000;
 		const rate = end / elapsed;
-		console.log(`      ${(end / ARRAY_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} items (${rate.toFixed(0)} ops/sec)`);
+		console.log(
+			`      ${(end / ARRAY_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} items (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
 	}
 	const writeOps = ARRAY_TOTAL / ((performance.now() - writeStart) / 1000);
 	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
@@ -296,7 +308,9 @@ async function main() {
 	console.log(
 		`${arrayResult.name.padEnd(17)} ${arrayResult.writeOps.toFixed(0).padStart(9)} ${
 			arrayResult.readOps.toFixed(0).padStart(11)
-		} ${arrayResult.rangeOps.toFixed(0).padStart(11)} ${(arrayResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
+		} ${arrayResult.rangeOps.toFixed(0).padStart(11)} ${
+			(arrayResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
+		}MB`,
 	);
 
 	// ── BlobStore benchmark ────────────────────────────────────────────────────
@@ -317,7 +331,8 @@ async function main() {
 		`${blobResult.name.padEnd(17)} ${blobResult.writeOps.toFixed(0).padStart(9)} ${
 			blobResult.writeMBps.toFixed(1).padStart(11)
 		} ${blobResult.readOps.toFixed(0).padStart(9)} ${blobResult.readMBps.toFixed(1).padStart(9)} ${
-			(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
+			(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
+		}MB`,
 	);
 
 	await Deno.remove("data", { recursive: true }).catch(() => {});
