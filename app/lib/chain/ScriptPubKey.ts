@@ -1,5 +1,3 @@
-import { Codec, Stride } from "@nomadshiba/codec";
-
 export type ScriptPubKey = { kind: "raw" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
 
 export const SCRIPTPUBKEY_PATTERN = {
@@ -44,7 +42,7 @@ export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "
 };
 
 /** Try to detect the known script type from raw bytes. Falls back to "raw" kind. */
-export function detectScriptPubKey(raw: Uint8Array): ScriptPubKey {
+export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
 	if (raw.length === SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen) {
 		let match = true;
 		for (let i = 0; i < SCRIPTPUBKEY_PATTERN.p2pkh.prefix.length; i++) {
@@ -126,7 +124,7 @@ export function detectScriptPubKey(raw: Uint8Array): ScriptPubKey {
 }
 
 /** Reconstruct raw script bytes from a ScriptPubKey. */
-export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array {
+export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array<ArrayBuffer> {
 	switch (parsed.kind) {
 		case "raw":
 			return parsed.value.slice();
@@ -175,20 +173,5 @@ export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array {
 /** Normalize: if kind is "raw", try to detect the actual type. */
 export function normalizeScriptPubKey(parsed: ScriptPubKey): ScriptPubKey {
 	if (parsed.kind !== "raw") return parsed;
-	return detectScriptPubKey(parsed.value);
+	return parseScriptPubKey(parsed.value);
 }
-
-export class ScriptPubKeyCodec extends Codec<ScriptPubKey> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
-
-	encode(value: ScriptPubKey): Uint8Array<ArrayBuffer> {
-		return rawScriptPubKey(normalizeScriptPubKey(value)) as Uint8Array<ArrayBuffer>;
-	}
-
-	decode(bytes: Uint8Array): [ScriptPubKey, number] {
-		const result = detectScriptPubKey(bytes);
-		return [result, bytes.length];
-	}
-}
-
-export const ScriptPubKey = new ScriptPubKeyCodec();
