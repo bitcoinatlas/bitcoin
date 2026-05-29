@@ -8,7 +8,7 @@ import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
 import type { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
-import { ScriptPubKey, rawScriptPubKey } from "./ScriptPubKey.ts";
+import { parseScriptPubKey, rawScriptPubKey } from "./ScriptPubKey.ts";
 
 export type TxData = {
 	txId: Uint8Array;
@@ -87,7 +87,7 @@ export class Tx {
 
 		const outputs: TxOutput[] = [];
 		for (const wireOutput of wireTx.outputs) {
-			const [scriptPubKey] = ScriptPubKey.decode(wireOutput.scriptPubKey);
+			const scriptPubKey = parseScriptPubKey(wireOutput.scriptPubKey);
 			const output = new TxOutput({
 				value: wireOutput.value,
 				spent: false,
