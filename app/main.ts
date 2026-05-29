@@ -8,7 +8,7 @@ import { serve } from "~/serve.ts";
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 const HTTP_PORT = 3000;
-const SAVE_INTERVAL_MS = 60_000;       // flush at least every 1 minute
+const SAVE_INTERVAL_MS = 2 * 60_000;
 const SAVE_HEAP_HEADROOM = 1 * 1024 * 1024 * 1024; // 1 GB above baseline
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
@@ -25,7 +25,11 @@ await addPeer("192.168.1.10", P2P_PORT, MAGIC);
 
 let baselineHeap = Deno.memoryUsage().heapUsed;
 let SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
-console.log(`[main] baseline heap=${(baselineHeap / 1024 / 1024).toFixed(1)}MB save threshold=${(SAVE_HEAP_THRESHOLD / 1024 / 1024).toFixed(1)}MB`);
+console.log(
+	`[main] baseline heap=${(baselineHeap / 1024 / 1024).toFixed(1)}MB save threshold=${
+		(SAVE_HEAP_THRESHOLD / 1024 / 1024).toFixed(1)
+	}MB`,
+);
 
 let lastSave = Date.now();
 while (true) {
