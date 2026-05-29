@@ -4,16 +4,13 @@ import { api } from "~/ui/api.ts";
 import { awaited } from "~/ui/utils/awaited.ts";
 import { useReplaceChildren } from "~/ui/utils/bind.ts";
 import { css } from "~/ui/utils/css.ts";
+import { formatBtc, formatHash } from "~/ui/utils/format.ts";
 import type { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import appCss from "./app.css" with { type: "text" };
 
 const appSheet = new CSSStyleSheet();
 appSheet.replaceSync(appCss);
 document.adoptedStyleSheets.push(appSheet);
-
-function hex(bytes: Uint8Array) {
-	return encodeHex(bytes.toReversed());
-}
 
 function BlockDetailsContent(height: number | null) {
 	const { p, div, dl, dt, dd, ul, li } = tags;
@@ -37,15 +34,15 @@ function BlockDetailsContent(height: number | null) {
 
 		const headerSection = dl().append$(
 			dt().textContent("Hash"),
-			dd().textContent(hex(h.hash)),
+			dd().textContent(formatHash(h.hash)),
 			dt().textContent("Height"),
 			dd().textContent(String(block.height)),
 			dt().textContent("Time"),
 			dd().textContent(timestamp),
 			dt().textContent("Merkle Root"),
-			dd().textContent(hex(h.merkleRoot)),
+			dd().textContent(formatHash(h.merkleRoot)),
 			dt().textContent("Prev Hash"),
-			dd().textContent(hex(h.prevHash)),
+			dd().textContent(formatHash(h.prevHash)),
 			dt().textContent("Version"),
 			dd().textContent("0x" + h.version.toString(16)),
 			dt().textContent("Bits"),
@@ -77,13 +74,13 @@ function TxRow(tx: WireTx, index: number) {
 	return details().append$(
 		summary().append$(
 			span().textContent(`#${index} `),
-			span().textContent(hex(tx.txId)),
-			span().textContent(` | ${tx.inputs.length} in, ${tx.outputs.length} out | ${totalOut} sat`),
+			span().textContent(formatHash(tx.txId)),
+			span().textContent(` | ${tx.inputs.length} in, ${tx.outputs.length} out | ${formatBtc(totalOut)}`),
 			isCoinbase ? span().textContent(" [coinbase]") : null,
 		),
 		dl().append$(
 			dt().textContent("TxID"),
-			dd().textContent(hex(tx.txId)),
+			dd().textContent(formatHash(tx.txId)),
 			dt().textContent("Version"),
 			dd().textContent(String(tx.version)),
 		),
@@ -96,8 +93,8 @@ function TxRow(tx: WireTx, index: number) {
 						dl().append$(
 							dt().textContent("Index"),
 							dd().textContent(String(i)),
-							dt().textContent("Prev TxID"),
-							dd().textContent(coinbaseInput ? "coinbase" : hex(inp.prevOut.txId)),
+						dt().textContent("Prev TxID"),
+						dd().textContent(coinbaseInput ? "coinbase" : formatHash(inp.prevOut.txId)),
 							dt().textContent("Vout"),
 							dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
 							dt().textContent("ScriptSig"),
@@ -115,10 +112,10 @@ function TxRow(tx: WireTx, index: number) {
 						dl().append$(
 							dt().textContent("Index"),
 							dd().textContent(String(i)),
-							dt().textContent("Value"),
-							dd().textContent(`${out.value} sat`),
-							dt().textContent("ScriptPubKey"),
-							dd().textContent(encodeHex(out.scriptPubKey)),
+						dt().textContent("Value"),
+						dd().textContent(formatBtc(out.value)),
+						dt().textContent("ScriptPubKey"),
+						dd().textContent(encodeHex(out.scriptPubKey)),
 						),
 					)
 				),
@@ -151,7 +148,7 @@ export function App() {
 				return li().append$(
 					button().type("button")
 						.onclick(() => location.assign(new URL(`#${block.height}`, location.href)))
-						.textContent(`${block.height}: ${hex(block.header.hash)}`),
+						.textContent(`${block.height}: ${formatHash(block.header.hash)}`),
 				);
 			})
 		)))),
