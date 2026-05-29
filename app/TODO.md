@@ -21,8 +21,8 @@
       because V8.
 - [ ] on IBD a tick can go on non stop. so make saves based on staged size as well, and also time based.
 - [ ] during WAL dont throw, instead await. or dont wait at all if posibble.
-- [ ] create the pubkey index to use it for pointers. repeating pubkeys stored once, referenced by pointer everywhere.
-- [ ] maybe dont hide pubkey enum type, and have a method to get the raw thing like prevout, so we dont have to keep
+- [x] create the pubkey index to use it for pointers. repeating pubkeys stored once, referenced by pointer everywhere.
+- [x] maybe dont hide pubkey enum type, and have a method to get the raw thing like prevout, so we dont have to keep
       checking its type over and over again in multiple places.
 - [ ] we dont need blockhash index on disk probably, we can index it in memory
 - [ ] ETA calculation should be based on remaining bytes (from historical size dataset), not remaining block count.
