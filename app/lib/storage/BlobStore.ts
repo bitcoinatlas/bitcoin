@@ -13,7 +13,12 @@ import { writeFile } from "~/lib/utils/fs.ts";
  * Staged appends are held in memory. On WAL create, blobs are written to a WAL file
  * and staged is cleared. On WAL apply, blobs are appended to chunk files in order.
  *
- * WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
+ * WAL format: [u64 base_offset LE][u32 count LE]([u32 blob_length LE][bytes])...
+ *
+ * base_offset is the committed totalLength at WAL creation time. On apply(), chunk files are
+ * first truncated back to base_offset, then all blobs are replayed from the WAL. This makes
+ * apply() idempotent: calling it multiple times (e.g. after a crash mid-apply) always produces
+ * the same correct result.
  */
 export interface BlobStore extends Store<BlobStoreBatch> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
@@ -244,17 +249,35 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		totalLength = pointer + data.length;
 	}
 
+	async function truncateDiskToOffset(offset: number): Promise<void> {
+		for await (const entry of Deno.readDir(path)) {
+			if (!entry.isFile || !entry.name.startsWith("chunk_")) continue;
+			const i = parseInt(entry.name.slice(6), 10);
+			if (isNaN(i)) continue;
+			const chunkStart = i * chunkByteSize;
+			if (chunkStart >= offset) {
+				await Deno.remove(join(path, entry.name));
+			} else if (chunkStart + chunkByteSize > offset) {
+				await Deno.truncate(join(path, entry.name), offset - chunkStart);
+			}
+			// else: chunk is fully before offset — leave it
+		}
+		totalLength = offset;
+	}
+
 	async function createWAL(): Promise<WAL> {
 		if (self.wal) throw new Error("WAL already exists");
 		if (batch) throw new Error("Can't create a WAL while a batch is in progress");
 
-		// WAL format: [u32 count LE]([u32 blob_length LE][bytes])...
-		let totalSize = 4;
+		// WAL format: [u64 base_offset LE][u32 count LE]([u32 blob_length LE][bytes])...
+		const baseOffset = totalLength;
+		let totalSize = 8 + 4; // base_offset (u64) + count (u32)
 		for (const { data } of stagedAppends) totalSize += 4 + data.length;
 		const buf = new Uint8Array(totalSize);
 		const view = new DataView(buf.buffer);
-		view.setUint32(0, stagedAppends.length, true);
-		let pos = 4;
+		view.setBigUint64(0, BigInt(baseOffset), true);
+		view.setUint32(8, stagedAppends.length, true);
+		let pos = 12;
 		for (const { data } of stagedAppends) {
 			view.setUint32(pos, data.length, true);
 			pos += 4;
@@ -277,8 +300,13 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			async apply(): Promise<void> {
 				const buf = await Deno.readFile(walPath);
 				const view = new DataView(buf.buffer);
-				const count = view.getUint32(0, true);
-				let pos = 4;
+
+				// Read base_offset and truncate disk back to it before replaying
+				const baseOffset = Number(view.getBigUint64(0, true));
+				await truncateDiskToOffset(baseOffset);
+
+				const count = view.getUint32(8, true);
+				let pos = 12;
 				for (let i = 0; i < count; i++) {
 					const len = view.getUint32(pos, true);
 					pos += 4;

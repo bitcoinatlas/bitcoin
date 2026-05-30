@@ -27,10 +27,15 @@ export type ArrayStoreOptions<T extends FixedCodec> = {
 };
 
 /**
- * WAL binary format (two sections, appends first):
+ * WAL binary format:
  *
+ *   [base_length: varint]                                   ← item count on disk when WAL was created
  *   [appends_count: varint][value bytes * appends_count]
  *   [sets_count: varint][{index: varint, value: bytes} * sets_count]
+ *
+ * On apply(): data.bin is first truncated back to base_length items, then appends and sets are
+ * replayed from the WAL. This makes apply() idempotent: calling it multiple times (e.g. after
+ * a crash mid-apply) always produces the same correct result.
  *
  * Appends have no index — they are packed raw bytes applied as a single bulk write.
  * Sets carry an explicit index and are applied after appends so index arithmetic is stable.
@@ -244,6 +249,10 @@ export async function createArrayStore<T extends FixedCodec>(
 			throw new Error("Can't create a WAL while a batch is in progress");
 		}
 
+		// Section 0: base_length — item count on disk at WAL creation time
+		const baseLength = diskLengthCache;
+		const baseLengthBytes = countCodec.encode(baseLength);
+
 		// Section 1: appends — count + packed raw bytes
 		const appendCount = stagedAppends.length;
 		const appendCountBytes = countCodec.encode(appendCount);
@@ -257,10 +266,14 @@ export async function createArrayStore<T extends FixedCodec>(
 		const setDataSize = setData.reduce((s, b) => s + b.length, 0);
 
 		const buf = new Uint8Array(
-			appendCountBytes.length + appendDataSize +
+			baseLengthBytes.length +
+				appendCountBytes.length + appendDataSize +
 				setCountBytes.length + setDataSize,
 		);
 		let pos = 0;
+
+		buf.set(baseLengthBytes, pos);
+		pos += baseLengthBytes.length;
 
 		buf.set(appendCountBytes, pos);
 		pos += appendCountBytes.length;
@@ -295,6 +308,12 @@ export async function createArrayStore<T extends FixedCodec>(
 			async apply(): Promise<void> {
 				const buf = await Deno.readFile(walPath);
 				let pos = 0;
+
+				// Section 0: base_length — truncate disk back to this before replaying
+				const [baseLength, baseLengthLen] = countCodec.decode(buf.subarray(pos));
+				pos += baseLengthLen;
+				await file.truncate(baseLength * codec.stride.size);
+				diskLengthCache = baseLength;
 
 				// Section 1: appends
 				const [appendCount, appendCountLen] = countCodec.decode(buf.subarray(pos));
