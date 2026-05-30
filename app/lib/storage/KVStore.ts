@@ -14,7 +14,15 @@ import { readFile, writeFile } from "~/lib/utils/fs.ts";
  * Reads:  hash(key) % slotCount → seek → read slot → linear probe on collision. O(1), 1-3 seeks.
  * Writes: buffered in memory (raw key+value pairs), slot resolution + disk write on WAL flush.
  *
- * Growth: each shard grows independently by SLOTS_GROWTH_PER_SHARD when load > 0.75.
+ * Growth: each shard grows independently by slotsGrowthPerShard when load > 0.75.
+ * Growth is crash-safe via a multi-step protocol using temp files and a grow.json marker:
+ *   1. Write grow.json { fromSlots, toSlots }
+ *   2. Build data.new.bin (fully re-inserted new hash table)
+ *   3. Rename data.bin → data.old.bin
+ *   4. Rename data.new.bin → data.bin
+ *   5. Delete data.old.bin
+ *   6. Delete grow.json
+ * Recovery at startup detects which step was reached and resumes or rolls back accordingly.
  *
  * Shard meta format: [u32 slotCount LE][u32 liveCount LE]
  * WAL format: [u16 shardCount LE]([u8 shardIdx][u32 entryCount LE]([u32 slotIdx LE][slotBytes])...)
@@ -64,14 +72,55 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	await Deno.mkdir(path, { recursive: true });
 
-	// Open / init all 256 shards
+	// Open / init all 256 shards, recovering any interrupted grows first.
 	const shards: ShardState[] = [];
 	for (let s = 0; s < NUM_SHARDS; s++) {
 		const shardDir = join(path, `shard_${s}`);
 		await Deno.mkdir(shardDir, { recursive: true });
 
-		const dataPath = join(shardDir, "data.bin");
-		const metaPath = join(shardDir, "meta.bin");
+		const dataPath    = join(shardDir, "data.bin");
+		const metaPath    = join(shardDir, "meta.bin");
+		const newPath     = join(shardDir, "data.new.bin");
+		const oldPath     = join(shardDir, "data.old.bin");
+		const growPath    = join(shardDir, "grow.json");
+
+		// --- crash recovery for interrupted grow ---
+		if (await exists(growPath)) {
+			const grow: { fromSlots: number; toSlots: number } = JSON.parse(
+				new TextDecoder().decode(await Deno.readFile(growPath)),
+			);
+			const newSize = grow.toSlots * slotSize;
+			const hasNew = await exists(newPath);
+			const hasOld = await exists(oldPath);
+
+			if (!hasNew && !hasOld) {
+				// Step 6 didn't finish (or crashed right after step 5): grow is complete, just clean up.
+				await Deno.remove(growPath);
+			} else if (hasOld && !hasNew) {
+				// Steps 3+4 done but step 5 didn't finish: data.bin is the new file, delete data.old.bin.
+				await Deno.remove(oldPath);
+				await Deno.remove(growPath);
+			} else if (hasOld && hasNew) {
+				// Step 3 done but step 4 didn't finish: redo rename data.new.bin → data.bin.
+				await Deno.rename(newPath, dataPath);
+				await Deno.remove(oldPath);
+				await Deno.remove(growPath);
+			} else if (hasNew && !hasOld) {
+				// Crashed before step 3 (data.new.bin written but no rename yet).
+				// Check if data.bin is already the new size (step 3+4 done without data.old.bin somehow).
+				const dataSize = (await Deno.stat(dataPath).catch(() => ({ size: 0 }))).size;
+				if (dataSize === newSize) {
+					// data.bin is already the grown file — clean up leftovers.
+					await Deno.remove(newPath);
+					await Deno.remove(growPath);
+				} else {
+					// data.new.bin is incomplete or data.bin is still the old file.
+					// Safest: discard data.new.bin and let grow re-run from data.bin.
+					await Deno.remove(newPath);
+					await Deno.remove(growPath);
+				}
+			}
+		}
 
 		let slotCount: number;
 		let liveCount: number;
@@ -184,7 +233,17 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 		console.log(`[KVStore:${name}] shard ${s} growing: live=${projected} slots=${shard.slotCount} → ${newSlotCount}`);
 
-		// Read all live entries
+		const shardDir  = join(path, `shard_${s}`);
+		const dataPath  = join(shardDir, "data.bin");
+		const metaPath  = join(shardDir, "meta.bin");
+		const newPath   = join(shardDir, "data.new.bin");
+		const oldPath   = join(shardDir, "data.old.bin");
+		const growPath  = join(shardDir, "grow.json");
+
+		// Step 1: write grow marker so recovery knows a grow is in progress.
+		await Deno.writeTextFile(growPath, JSON.stringify({ fromSlots: shard.slotCount, toSlots: newSlotCount }));
+
+		// Step 2: read all live entries from the current data file.
 		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = [];
 		for (let i = 0; i < shard.slotCount; i++) {
 			const buf = await readSlot(s, i);
@@ -196,31 +255,63 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			}
 		}
 
-		// Expand file (zeros = empty slots)
+		// Step 2 cont: build data.new.bin — a fresh hash table at the new size.
+		// Use a temporary in-memory slot count on a scratch shard state so we can
+		// reuse slotHash without touching the real shard yet.
 		const newSize = newSlotCount * slotSize;
-		await withLock(s, async () => {
-			await shard.file.truncate(0);
-			await shard.file.truncate(newSize);
-		});
-		shard.slotCount = newSlotCount;
-		shard.liveCount = 0;
+		const newFile = await Deno.open(newPath, { read: true, write: true, create: true, truncate: true });
+		await newFile.truncate(newSize);
 
-		// Write meta with new slotCount immediately so crash-recovery sees the correct layout.
-		const shardDir = join(path, `shard_${s}`);
-		await writeMeta(join(shardDir, "meta.bin"), newSlotCount, 0);
+		// Re-insert all entries into the new file directly (no walSlots needed here).
+		const scratchSlotCount = { value: newSlotCount };
+		async function findSlotInNew(keyBytes: Uint8Array): Promise<number> {
+			const start = slotHash(keyBytes, scratchSlotCount.value);
+			let i = start;
+			do {
+				await newFile.seek(i * slotSize, Deno.SeekMode.Start);
+				const buf = await readFile(newFile, slotSize);
+				if (buf[0] === OCCUPIED_EMPTY) return i;
+				i = (i + 1) % scratchSlotCount.value;
+			} while (i !== start);
+			throw new Error(`[KVStore:${name}] shard ${s} new file is full during grow (bug)`);
+		}
 
-		// Re-insert all old entries
 		for (const { key, value } of entries) {
-			const { slotIdx } = await findSlot(s, key, null);
+			const slotIdx = await findSlotInNew(key);
 			const buf = new Uint8Array(slotSize);
 			buf[0] = OCCUPIED_LIVE;
 			buf.set(key, 1);
 			buf.set(value, 1 + keyStride);
-			await writeSlotDirect(s, slotIdx, buf);
-			shard.liveCount++;
+			await newFile.seek(slotIdx * slotSize, Deno.SeekMode.Start);
+			await writeFile(newFile, buf);
 		}
+		newFile.close();
 
-		await writeMeta(join(shardDir, "meta.bin"), newSlotCount, shard.liveCount);
+		// Step 3: rename data.bin → data.old.bin (preserve old file until fully done).
+		// Close the shard file first so Windows doesn't complain about open handles.
+		await withLock(s, async () => { shard.file.close(); });
+		await Deno.rename(dataPath, oldPath);
+
+		// Step 4: rename data.new.bin → data.bin.
+		await Deno.rename(newPath, dataPath);
+
+		// Step 5: delete data.old.bin.
+		await Deno.remove(oldPath);
+
+		// Reopen data.bin and update in-memory shard state.
+		const reopened = await Deno.open(dataPath, { read: true, write: true });
+		shard.file = reopened;
+		shard.slotCount = newSlotCount;
+		shard.liveCount = entries.length;
+		// Invalidate the io lock for this shard so future withLock calls use the new file.
+		ioLocks[s] = Promise.resolve();
+
+		// Update meta to reflect new layout.
+		await writeMeta(metaPath, newSlotCount, shard.liveCount);
+
+		// Step 6: delete grow marker — grow is complete.
+		await Deno.remove(growPath);
+
 		console.log(`[KVStore:${name}] shard ${s} grown to ${newSlotCount} slots`);
 	}
 
