@@ -6,6 +6,7 @@ import { useReplaceChildren } from "~/ui/utils/bind.ts";
 import { css } from "~/ui/utils/css.ts";
 import { formatBtc, formatHash, formatLocktime, formatSequence } from "~/ui/utils/format.ts";
 import type { WireTx } from "~/lib/codec/wire/WireTx.ts";
+import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import appCss from "./app.css" with { type: "text" };
 
 const appSheet = new CSSStyleSheet();
@@ -54,7 +55,7 @@ function BlockDetailsContent(height: number | null) {
 		);
 
 		const txsSection = ul().append$(
-			...txs.map((tx: WireTx, i: number) => li().append$(TxRow(tx, i))),
+			...txs.map((tx: { wire: WireTx; stored: StoredTx }, i: number) => li().append$(TxRow(tx, i))),
 		);
 
 		return div().append$(headerSection, txsSection);
@@ -63,36 +64,37 @@ function BlockDetailsContent(height: number | null) {
 	return div().append$(title, content);
 }
 
-function TxRow(tx: WireTx, index: number) {
+function TxRow(tx: { wire: WireTx; stored: StoredTx }, index: number) {
 	const { details, summary, dl, dt, dd, ul, li, span } = tags;
 
-	const totalOut = tx.outputs.reduce((acc, o) => acc + o.value, 0n);
-	const isCoinbase = tx.inputs.length === 1 &&
-		tx.inputs[0]!.prevOut.txId.every((b) => b === 0) &&
-		tx.inputs[0]!.prevOut.vout === 0xffffffff;
+	const totalOut = tx.wire.outputs.reduce((acc, o) => acc + o.value, 0n);
+	const isCoinbase = tx.wire.inputs.length === 1 &&
+		tx.wire.inputs[0]!.prevOut.txId.every((b) => b === 0) &&
+		tx.wire.inputs[0]!.prevOut.vout === 0xffffffff;
 
 	return details().append$(
 		summary().append$(
 			span().textContent(`#${index} `),
-			span().textContent(formatHash(tx.txId)),
-			span().textContent(` | ${tx.inputs.length} in, ${tx.outputs.length} out | ${formatBtc(totalOut)}`),
+			span().textContent(formatHash(tx.wire.txId)),
+			span().textContent(` | ${tx.wire.inputs.length} in, ${tx.wire.outputs.length} out | ${formatBtc(totalOut)}`),
 			isCoinbase ? span().textContent(" [coinbase]") : null,
 		),
 		dl().append$(
 			dt().textContent("TxID"),
-			dd().textContent(formatHash(tx.txId)),
+			dd().textContent(formatHash(tx.wire.txId)),
 			dt().textContent("Version"),
-			dd().textContent(String(tx.version)),
+			dd().textContent(String(tx.wire.version)),
 			dt().textContent("Locktime"),
-			dd().textContent(formatLocktime(tx.locktime)),
+			dd().textContent(formatLocktime(tx.wire.locktime)),
 			dt().textContent("Segwit"),
-			dd().textContent(tx.witness.length > 0 ? "yes" : "no"),
+			dd().textContent(tx.wire.witness.length > 0 ? "yes" : "no"),
 		),
 		details().append$(
-			summary().textContent(`Inputs (${tx.inputs.length})`),
+			summary().textContent(`Inputs (${tx.wire.inputs.length})`),
 			ul().append$(
-				...tx.inputs.map((inp, i) => {
+				...tx.wire.inputs.map((inp, i) => {
 					const coinbaseInput = isCoinbase && i === 0;
+					const storedIn = tx.stored.vin[i];
 					return li().append$(
 					dl().append$(
 						dt().textContent("Index"),
@@ -105,10 +107,16 @@ function TxRow(tx: WireTx, index: number) {
 						dd().textContent(encodeHex(inp.scriptSig)),
 						dt().textContent("Sequence"),
 						dd().textContent(formatSequence(inp.sequence)),
-						...(tx.witness[i] && tx.witness[i]!.length > 0
+						...(tx.wire.witness[i] && tx.wire.witness[i]!.length > 0
 							? [
 								dt().textContent("Witness"),
-								dd().textContent(tx.witness[i]!.map((w) => encodeHex(w)).join(", ")),
+								dd().textContent(tx.wire.witness[i]!.map((w) => encodeHex(w)).join(", ")),
+							]
+							: []),
+						...(storedIn
+							? [
+								dt().textContent("Stored PrevOut"),
+								dd().textContent(JSON.stringify(storedIn.prevOut.txId, (_k, v) => v instanceof Uint8Array ? encodeHex(v) : v)),
 							]
 							: []),
 					),
@@ -117,10 +125,11 @@ function TxRow(tx: WireTx, index: number) {
 			),
 		),
 		details().append$(
-			summary().textContent(`Outputs (${tx.outputs.length})`),
+			summary().textContent(`Outputs (${tx.wire.outputs.length})`),
 			ul().append$(
-				...tx.outputs.map((out, i) =>
-					li().append$(
+				...tx.wire.outputs.map((out, i) => {
+					const storedOut = tx.stored.vout[i];
+					return li().append$(
 						dl().append$(
 							dt().textContent("Index"),
 							dd().textContent(String(i)),
@@ -128,9 +137,17 @@ function TxRow(tx: WireTx, index: number) {
 						dd().textContent(formatBtc(out.value)),
 						dt().textContent("ScriptPubKey"),
 						dd().textContent(encodeHex(out.scriptPubKey)),
+						...(storedOut
+							? [
+								dt().textContent("Stored ScriptPubKey"),
+								dd().textContent(JSON.stringify(storedOut.scriptPubKey, (_k, v) => v instanceof Uint8Array ? encodeHex(v) : v)),
+								dt().textContent("Spent"),
+								dd().textContent(storedOut.spent ? "yes" : "no"),
+							]
+							: []),
 						),
-					)
-				),
+					);
+				}),
 			),
 		),
 	);

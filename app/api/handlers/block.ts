@@ -5,6 +5,7 @@ import {
 	getBlocksByHeightRange,
 	getChainTip,
 	getHeightByHash,
+	getTxById,
 	getTxsByBlockHash,
 	getTxsByBlockHeight,
 } from "~/chain.ts";
@@ -88,6 +89,13 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 	}
 
 	if (!txs) return { status: "OK", data: [] };
-	const wireTxs = await Promise.all(txs.map((tx) => tx.toWire()));
+	const wireTxs = await Promise.all(txs.map(async (tx) => ({ wire: await tx.toWire(), stored: tx.toStore() })));
 	return { status: "OK", data: wireTxs };
+});
+
+endpointRouter.registerHandler("GET /v1/tx/:txId", async ({ params }) => {
+	const txId = Uint8Array.from(decodeHex(params.pathname.txId).reverse());
+	const tx = await getTxById(txId);
+	if (!tx) return { status: "OK", data: null };
+	return { status: "OK", data: { wire: await tx.toWire(), stored: tx.toStore() } };
 });

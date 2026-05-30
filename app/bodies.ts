@@ -154,26 +154,32 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 	const verifyLoop = (async () => {
 		for (const { height, hash } of allPending) {
 			// Wait until the block lands in the pool.
-			// Deadline is relative to when the download loop sent the getdata,
-			// or now if we haven't sent it yet (shouldn't happen in normal flow).
+			// Deadline is measured from when the verify loop starts actively waiting
+			// for this block, not from when the batch was sent — large blocks take
+			// time to process and the sent timestamp goes stale while the verify
+			// loop is busy with prior blocks.
 			let timedOut = false;
+			let waitStart: number | undefined;
 			while (!pool.has(hash)) {
 				if (!peer.connected) break;
 				const sentAt = requestedAt.get(hash);
-				if (sentAt !== undefined && Date.now() - sentAt >= BLOCK_TIMEOUT_MS) {
-					console.warn(`[bodies] timeout waiting for block height=${height}`);
-					timedOut = true;
-					break;
+				if (sentAt !== undefined) {
+					if (waitStart === undefined) waitStart = Date.now();
+					if (Date.now() - waitStart >= BLOCK_TIMEOUT_MS) {
+						console.warn(`[bodies] timeout waiting for block height=${height}`);
+						timedOut = true;
+						break;
+					}
 				}
 				await new Promise<void>((r) => setTimeout(r, 5));
 			}
-
-			verifiedCount++; // advance the window regardless of whether we got the block
 
 			// On timeout, stop processing this tick entirely — continuing would
 			// cause every subsequent block (whose requestedAt timestamps are now
 			// stale) to time out immediately, skipping them all.
 			if (timedOut) break;
+
+			verifiedCount++; // advance the download window
 
 			const entry = pool.get(hash);
 			if (!entry) continue;
