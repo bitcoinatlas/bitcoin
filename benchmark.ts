@@ -1,5 +1,5 @@
-import { BytesCodec } from "@nomadshiba/codec";
 import { Database } from "@db/sqlite";
+import { BytesCodec } from "@nomadshiba/codec";
 import { DatabaseSync } from "node:sqlite";
 import { createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { createBlobStore } from "~/lib/storage/BlobStore.ts";
@@ -55,6 +55,7 @@ async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Ar
 		path: `${dir}/bench_kv`,
 		keyCodec: new BytesCodec({ size: KEY_SIZE }),
 		valueCodec: new BytesCodec({ size: VALUE_SIZE }),
+		shards: 16,
 	});
 
 	// Writes — batch → WAL save → WAL apply → WAL discard
@@ -305,7 +306,7 @@ async function benchmarkDbSQLiteWithWAL(dir: string, keys: Uint8Array[], values:
 	const stat = await Deno.stat(dbPath);
 	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "@db/sqlite+CustomWAL", writeOps, readOps, batchReadOps, fileSize: stat.size };
+	return { name: "@db/sqlite+WAL", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 // ─── Deno KV ──────────────────────────────────────────────────────────────────

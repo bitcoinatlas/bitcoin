@@ -1,28 +1,26 @@
 import { assertEquals } from "@std/assert";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
-import { TxOutput } from "~/lib/chain/TxOutput.ts";
-import { TxInput } from "~/lib/chain/TxInput.ts";
+import type { TxOutput } from "~/lib/chain/TxOutput.ts";
+import type { TxInput } from "~/lib/chain/TxInput.ts";
 
 function makeTx(fill: number): import("~/lib/codec/stored/StoredTx.ts").StoredTx {
+	const output: TxOutput = {
+		value: BigInt(fill) * 1000n,
+		spent: false,
+		scriptPubKey: { kind: "p2pkh", value: new Uint8Array(20).fill(fill) },
+	};
+	const input: TxInput = {
+		prevOut: { txId: { kind: "coinbase" }, vout: 0xffffffff },
+		scriptSig: new Uint8Array([fill]),
+		sequence: { kind: "final" },
+		witness: [],
+	};
 	return {
 		txId: new Uint8Array(32).fill(fill),
 		version: 1,
 		lockTime: { kind: "none" },
-		vout: [
-			new TxOutput({
-				value: BigInt(fill) * 1000n,
-				spent: false,
-				scriptPubKey: { kind: "p2pkh", value: new Uint8Array(20).fill(fill) },
-			}),
-		],
-		vin: [
-			new TxInput({
-				prevOut: { txId: { kind: "coinbase" }, vout: 0xffffffff },
-				scriptSig: new Uint8Array([fill]),
-				sequence: { kind: "final" },
-				witness: [],
-			}),
-		],
+		vout: [output],
+		vin: [input],
 	};
 }
 

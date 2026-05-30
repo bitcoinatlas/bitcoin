@@ -200,6 +200,12 @@
       "tarball": "https://npm.jsr.io/~/11/@jsr/nomadshiba__codec/0.2.0.tgz"
     }
   },
+  "redirects": {
+    "https://esm.sh/@types/cuint@~0.2.4/index.d.ts": "https://esm.sh/@types/cuint@0.2.4/index.d.ts",
+    "https://esm.sh/@types/xxhashjs@~0.2.4/index.d.ts": "https://esm.sh/@types/xxhashjs@0.2.4/index.d.ts",
+    "https://esm.sh/cuint@^0.2.2?target=denonext": "https://esm.sh/cuint@0.2.2?target=denonext",
+    "https://esm.sh/xxhashjs@^0.2.2": "https://esm.sh/xxhashjs@0.2.2"
+  },
   "remote": {
     "https://deno.land/x/sqlite@v3.9.1/build/sqlite.js": "2afc7875c7b9c85d89730c4a311ab3a304e5d1bf761fbadd8c07bbdf130f5f9b",
     "https://deno.land/x/sqlite@v3.9.1/build/vfs.js": "7f7778a9fe499cd10738d6e43867340b50b67d3e39142b0065acd51a84cd2e03",
@@ -209,7 +215,11 @@
     "https://deno.land/x/sqlite@v3.9.1/src/error.ts": "f7a15cb00d7c3797da1aefee3cf86d23e0ae92e73f0ba3165496c3816ab9503a",
     "https://deno.land/x/sqlite@v3.9.1/src/function.ts": "bc778cab7a6d771f690afa27264c524d22fcb96f1bb61959ade7922c15a4ab8d",
     "https://deno.land/x/sqlite@v3.9.1/src/query.ts": "d58abda928f6582d77bad685ecf551b1be8a15e8e38403e293ec38522e030cad",
-    "https://deno.land/x/sqlite@v3.9.1/src/wasm.ts": "e79d0baa6e42423257fb3c7cc98091c54399254867e0f34a09b5bdef37bd9487"
+    "https://deno.land/x/sqlite@v3.9.1/src/wasm.ts": "e79d0baa6e42423257fb3c7cc98091c54399254867e0f34a09b5bdef37bd9487",
+    "https://esm.sh/cuint@0.2.2/denonext/cuint.mjs": "6625127de736cdf41eaadcb18c9091a32e14582e58da6f20bd05491e10628de1",
+    "https://esm.sh/cuint@0.2.2?target=denonext": "df715ef6d6e829094f363f273d607f5773628e64bd316b4e00e5d80f9b5e40b0",
+    "https://esm.sh/xxhashjs@0.2.2": "f1872f4fa9dbd3157a92bd4301d7237f9f5d97ff6bec014ae8d4ba14c12cc91f",
+    "https://esm.sh/xxhashjs@0.2.2/denonext/xxhashjs.mjs": "f52b6b66fc64d5c46184fd9ffe212035a09f952da692ef8153b42e4125add245"
   },
   "workspace": {
     "dependencies": [

@@ -1,5 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { Codec, U32, U32LE } from "@nomadshiba/codec";
+import { Codec, U32 } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { BASE_DATA_DIR, BASE_DIR } from "~/config.ts";
@@ -20,6 +20,7 @@ import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import { ArrayStoreBatch, createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { BlobStoreBatch, createBlobStore } from "~/lib/storage/BlobStore.ts";
 import { createKVStore, KVStoreBatch } from "~/lib/storage/KVStore.ts";
+import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
 import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
 
@@ -118,13 +119,6 @@ const blobStore = await createBlobStore({
 	path: join(BASE_DATA_DIR, "txs"),
 });
 
-const blockHashToHeight = await createKVStore({
-	name: "hashToHeight",
-	path: join(BASE_DATA_DIR, "hashToHeight"),
-	keyCodec: Bytes32,
-	valueCodec: U32LE,
-});
-
 const txIdToPointer = await createKVStore({
 	name: "txIdToPointer",
 	path: join(BASE_DATA_DIR, "txIdToPointer"),
@@ -138,14 +132,13 @@ const pubKeyToPointer = await createKVStore({
 	path: join(BASE_DATA_DIR, "scriptPubKeyToPointer"),
 	keyCodec: Bytes32,
 	valueCodec: StoredPointer,
-	shards: 32,
+	shards: 16,
 });
 
 const stores: readonly Store[] = [
 	blobStore,
 	blockStore,
 	txIdToPointer,
-	blockHashToHeight,
 	pubKeyToPointer,
 ];
 
@@ -162,6 +155,14 @@ export const localChain = new PeerChain([]);
 console.log(`[chain] loading blocks count=${blockStore.length()} ${heapMB()}`);
 const blocks = await blockStore.slice(0, blockStore.length());
 console.log(`[chain] blocks loaded ${heapMB()}`);
+
+// In-memory hash → height index. Rebuilt from blockStore on every startup.
+// No persistence needed — blockStore is the source of truth.
+const hashToHeight = new Uint8ArrayMap<number>(Math.max(256, blocks.length * 2));
+for (let i = 0; i < blocks.length; i++) {
+	hashToHeight.set(blocks[i]!.header.hash, i);
+}
+
 localChain.clear();
 if (blocks.length > 0) {
 	let cumulativeWork = 0n;
@@ -181,17 +182,16 @@ if (blocks.length > 0) {
 	await blockStore.truncate(0);
 	await blobStore.truncate(0);
 	await txIdToPointer.clear();
-	await blockHashToHeight.clear();
 	await pubKeyToPointer.clear();
+	hashToHeight.clear();
 	const [genesisBlock] = WireBlock.decode(GENESIS_BLOCK);
 	const cumulativeWork = workFromHeader(genesisBlock.header);
 	const blockStoreBatch = blockStore.batch();
 	const blobStoreBatch = blobStore.batch();
 	const txIdToPointerBatch = txIdToPointer.batch();
-	const blockHashToHeightBatch = blockHashToHeight.batch();
 	const pubKeyToPointerBatch = pubKeyToPointer.batch();
 
-	appendBlockHeader([genesisBlock.header], { blockStoreBatch, blockHashToHeightBatch });
+	appendBlockHeader([genesisBlock.header], { blockStoreBatch });
 	const { pointer } = await appendBlockTxs(genesisBlock.txs, 0, {
 		blobStoreBatch,
 		blockStoreBatch,
@@ -203,7 +203,6 @@ if (blocks.length > 0) {
 	blockStoreBatch.apply();
 	blobStoreBatch.apply();
 	txIdToPointerBatch.apply();
-	blockHashToHeightBatch.apply();
 	pubKeyToPointerBatch.apply();
 	await atomicSave();
 }
@@ -221,18 +220,16 @@ export function appendBlockHeader(
 	headers: WireBlockHeader[],
 	storeBatches?: {
 		blockStoreBatch: ArrayStoreBatch<typeof StoredBlock>;
-		blockHashToHeightBatch: KVStoreBatch<Uint8Array, number>;
 	},
 ): { height: number } {
-	const { blockStoreBatch, blockHashToHeightBatch } = storeBatches ?? {
+	const { blockStoreBatch } = storeBatches ?? {
 		blockStoreBatch: blockStore.batch(),
-		blockHashToHeightBatch: blockHashToHeight.batch(),
 	};
 
 	const op = () => {
 		for (const header of headers) {
 			const height = blockStoreBatch.push({ header, pointer: 0 });
-			blockHashToHeightBatch.set(header.hash, height);
+			hashToHeight.set(header.hash, height);
 		}
 	};
 
@@ -244,11 +241,9 @@ export function appendBlockHeader(
 	try {
 		op();
 		blockStoreBatch.apply();
-		blockHashToHeightBatch.apply();
 		return { height: blockStoreBatch.length() - 1 };
 	} catch (reason) {
 		blockStoreBatch.discard();
-		blockHashToHeightBatch.discard();
 		console.error("Failed to append block header:", reason);
 		Deno.exit(1);
 	}
@@ -386,7 +381,7 @@ export async function getBlocksByHeightRange(
 }
 
 export async function getBlockByHash(hash: Uint8Array): Promise<StoredBlock | undefined> {
-	const height = await blockHashToHeight.get(hash);
+	const height = hashToHeight.get(hash);
 	if (height === undefined) return undefined;
 	return await getBlockByHeight(height);
 }
@@ -415,13 +410,13 @@ export async function getTxsByBlockHeight(height: number): Promise<Tx[] | undefi
 }
 
 export async function getTxsByBlockHash(hash: Uint8Array): Promise<Tx[] | undefined> {
-	const height = await blockHashToHeight.get(hash);
+	const height = hashToHeight.get(hash);
 	if (height === undefined) return undefined;
 	return await getTxsByBlockHeight(height);
 }
 
 export async function getHeightByHash(hash: Uint8Array): Promise<number | undefined> {
-	return await blockHashToHeight.get(hash);
+	return hashToHeight.get(hash);
 }
 
 export async function getHashByHeight(height: number): Promise<Uint8Array | undefined> {
@@ -439,7 +434,7 @@ export async function getBlockPointerByHeight(height: number): Promise<StoredPoi
 }
 
 export async function getBlockPointerByHash(hash: Uint8Array): Promise<StoredPointer | undefined> {
-	const height = await blockHashToHeight.get(hash);
+	const height = hashToHeight.get(hash);
 	if (height === undefined) return undefined;
 	return await getBlockPointerByHeight(height);
 }

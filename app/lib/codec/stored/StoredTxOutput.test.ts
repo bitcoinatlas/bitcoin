@@ -1,22 +1,22 @@
 import { assertEquals } from "@std/assert";
 import { StoredTxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
-import { TxOutput } from "~/lib/chain/TxOutput.ts";
+import type { TxOutput } from "~/lib/chain/TxOutput.ts";
 
 function makeOutput(value: bigint, spent: boolean, scriptPubKey: import("~/lib/codec/stored/StoredTxOutput.ts").StoredScriptPubKey): TxOutput {
-	return new TxOutput({ value, spent, scriptPubKey });
+	return { value, spent, scriptPubKey };
 }
 
 function assertOutputEqual(a: TxOutput, b: TxOutput) {
-	assertEquals(a.data.value, b.data.value);
-	assertEquals(a.data.spent, b.data.spent);
-	assertEquals(a.data.scriptPubKey.kind, b.data.scriptPubKey.kind);
-	if (a.data.scriptPubKey.kind !== "pointer" && b.data.scriptPubKey.kind !== "pointer") {
+	assertEquals(a.value, b.value);
+	assertEquals(a.spent, b.spent);
+	assertEquals(a.scriptPubKey.kind, b.scriptPubKey.kind);
+	if (a.scriptPubKey.kind !== "pointer" && b.scriptPubKey.kind !== "pointer") {
 		assertEquals(
-			(a.data.scriptPubKey as { value: Uint8Array }).value,
-			(b.data.scriptPubKey as { value: Uint8Array }).value,
+			(a.scriptPubKey as { value: Uint8Array }).value,
+			(b.scriptPubKey as { value: Uint8Array }).value,
 		);
-	} else if (a.data.scriptPubKey.kind === "pointer" && b.data.scriptPubKey.kind === "pointer") {
-		assertEquals(a.data.scriptPubKey.value, b.data.scriptPubKey.value);
+	} else if (a.scriptPubKey.kind === "pointer" && b.scriptPubKey.kind === "pointer") {
+		assertEquals(a.scriptPubKey.value, b.scriptPubKey.value);
 	}
 }
 
@@ -79,14 +79,14 @@ Deno.test("StoredTxOutput roundtrip - zero value", () => {
 	const hash = new Uint8Array(20).fill(0x00);
 	const out = makeOutput(0n, false, { kind: "p2pkh", value: hash });
 	const [decoded] = StoredTxOutput.decode(StoredTxOutput.encode(out));
-	assertEquals(decoded.data.value, 0n);
+	assertEquals(decoded.value, 0n);
 });
 
 Deno.test("StoredTxOutput roundtrip - max 51-bit value", () => {
 	const hash = new Uint8Array(20).fill(0xff);
 	const out = makeOutput((1n << 51n) - 1n, false, { kind: "p2pkh", value: hash });
 	const [decoded] = StoredTxOutput.decode(StoredTxOutput.encode(out));
-	assertEquals(decoded.data.value, (1n << 51n) - 1n);
+	assertEquals(decoded.value, (1n << 51n) - 1n);
 });
 
 Deno.test("StoredTxOutput encode is deterministic", () => {

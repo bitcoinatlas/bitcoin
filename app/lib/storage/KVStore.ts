@@ -1,14 +1,23 @@
+import { Database } from "@db/sqlite";
 import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { Database } from "@db/sqlite";
 import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
+
+function fnv1a32(bytes: Uint8Array): number {
+	let h = 0x811c9dc5;
+	for (let i = 0; i < bytes.length; i++) {
+		h ^= bytes[i]!;
+		h = Math.imul(h, 0x01000193) >>> 0;
+	}
+	return h;
+}
 
 /**
  * A persistent key-value store backed by N SQLite databases (shards).
  *
- * Keys are routed to shards by `keyBytes[0] % shardCount`. Default shard
+ * Keys are routed to shards by `fnv1a32(keyBytes) % shardCount`. Default shard
  * count is 16; override with `options.shards`. Shard count is persisted in
  * `meta.json` so reopening with the wrong value is caught at startup.
  *
@@ -18,10 +27,20 @@ import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
  * All shards run in rollback-journal mode (DELETE) so they do not interfere
  * with our own WAL protocol.
  *
- * WAL file format: [u32 entryCount LE]([keyBytes][valueBytes])...
- * Both key and value are fixed-size (keyStride / valueStride bytes) — no
- * per-entry length prefix needed. Shard routing is re-derived from keyBytes[0]
- * at apply time, so no shard index is stored in the WAL.
+ * Stage layout:
+ *
+ *   stagedMap: Uint8ArrayMap<Uint8Array>  — key → raw value bytes
+ *
+ *   Entries are upserted into stagedMap on batch.apply().  Duplicate keys are
+ *   overwritten in-place by the map, so no stale entries accumulate and reads
+ *   are always O(1) regardless of how many batches have been applied.
+ *
+ *   pendingBuf: flat Uint8Array  — active batch entries only (reset on apply/discard)
+ *   pendingBuf layout: [key0|val0][key1|val1]…  (no header, offset 0)
+ *
+ * batch.apply()  → upsert pendingBuf entries into stagedMap; reset pendingBuf
+ * batch.discard() → reset pendingBuf
+ * createWAL()    → serialize stagedMap into a contiguous buffer; write file
  */
 
 export interface KVStore<K, V> extends Store<KVStoreBatch<K, V>> {
@@ -42,8 +61,8 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
-	/** Number of SQLite shard files. Must be 1–256. Default: 16. */
-	shards?: number;
+	/** Number of SQLite shard files. Must be 1–256. */
+	shards: number;
 };
 
 type ShardDB = {
@@ -53,9 +72,11 @@ type ShardDB = {
 	stmtClear: ReturnType<Database["prepare"]>;
 };
 
+const WAL_HEADER = 4; // bytes reserved at the front of the WAL buffer for the u32 entryCount
+
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	const { name, path, keyCodec, valueCodec } = options;
-	const shardCount = options.shards ?? 16;
+	const shardCount = options.shards;
 
 	if (shardCount < 1 || shardCount > 256 || !Number.isInteger(shardCount)) {
 		throw new Error(`shards must be an integer 1–256, got ${shardCount}`);
@@ -98,35 +119,67 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	const shards: ShardDB[] = Array.from({ length: shardCount }, (_, i) => openShard(i));
 
-	// Committed on batch.apply(), flushed to disk on createWAL()
-	const staged = new Uint8ArrayMap<Uint8Array>(256);
+	// ── Stage: map-based, always O(1) reads ────────────────────────────────────
+	//
+	// stagedMap holds all committed-but-not-yet-flushed entries as key → value
+	// bytes.  Duplicate keys are overwritten in-place on batch.apply(), so the
+	// map never accumulates stale entries and no index rebuild is ever needed.
 
-	function shardOf(keyBytes: Uint8Array): ShardDB {
-		return shards[(keyBytes[0] as number) % shardCount]!;
+	const stagedMap = new Uint8ArrayMap<Uint8Array>(256);
+
+	// ── Pending buffer: active batch entries only ───────────────────────────────
+	//
+	// Layout: [key0|val0][key1|val1]…  (offset 0, no header)
+	// Reset to a fresh allocation on every apply() / discard().
+
+	let pendingBuf = new Uint8Array(entryStride * 64);
+	let pendingCount = 0;
+
+	function shardIndexOf(keyBytes: Uint8Array): number {
+		return fnv1a32(keyBytes) % shardCount;
 	}
 
-	function getByBytes(keyBytes: Uint8Array, stagedPairs: Uint8ArrayMap<Uint8Array> | null): V | undefined {
-		if (stagedPairs) {
-			const s = stagedPairs.get(keyBytes);
-			if (s !== undefined) return valueCodec.decode(s)[0];
+	function shardOf(keyBytes: Uint8Array): ShardDB {
+		return shards[shardIndexOf(keyBytes)]!;
+	}
+
+	function getByBytes(
+		keyBytes: Uint8Array,
+		batchBufRef: Uint8Array | null,
+		batchIdx: Uint8ArrayMap<number> | null,
+	): V | undefined {
+		// 1. Pending batch entries
+		if (batchIdx !== null && batchBufRef !== null) {
+			const off = batchIdx.get(keyBytes);
+			if (off !== undefined) {
+				return valueCodec.decode(batchBufRef.subarray(off + keyStride, off + entryStride))[0];
+			}
 		}
+		// 2. Committed staged entries — always O(1), no rebuild needed
+		const stagedVal = stagedMap.get(keyBytes);
+		if (stagedVal !== undefined) {
+			return valueCodec.decode(stagedVal)[0];
+		}
+		// 3. SQLite
 		const row = shardOf(keyBytes).stmtGet.get<{ value: Uint8Array }>(keyBytes);
 		if (!row) return undefined;
 		return valueCodec.decode(row.value)[0];
 	}
 
 	async function get(key: K): Promise<V | undefined> {
-		return getByBytes(keyCodec.encode(key), staged);
+		return getByBytes(keyCodec.encode(key), null, null);
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
-		return keys.map((k) => getByBytes(keyCodec.encode(k), staged));
+		return keys.map((k) => getByBytes(keyCodec.encode(k), null, null));
 	}
 
 	async function clear(): Promise<void> {
 		if (self.wal) throw new Error("Can't clear while WAL is in progress");
 		if (batch) throw new Error("Can't clear while batch is in progress");
-		staged.clear();
+		stagedMap.clear();
+		pendingBuf = new Uint8Array(entryStride * 64);
+		pendingCount = 0;
 		for (const shard of shards) shard.stmtClear.run();
 	}
 
@@ -143,28 +196,60 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		if (batch) throw new Error("Batch already in progress");
 		if (self.wal) throw new Error("Can't start batch while WAL is in progress");
 
-		const batchStaged = new Uint8ArrayMap<Uint8Array>(64);
+		// batchIndex: key → byte offset in pendingBuf.
+		// Used for intra-batch get() and in-place value updates on duplicate set().
+		const batchIndex = new Uint8ArrayMap<number>(64);
 
 		batch = {
 			async get(key: K): Promise<V | undefined> {
-				const keyBytes = keyCodec.encode(key);
-				const b = batchStaged.get(keyBytes);
-				if (b !== undefined) return valueCodec.decode(b)[0];
-				return getByBytes(keyBytes, staged);
+				return getByBytes(keyCodec.encode(key), pendingBuf, batchIndex);
 			},
 			async getMany(keys: K[]): Promise<(V | undefined)[]> {
 				return Promise.all(keys.map((k) => batch!.get(k)));
 			},
 			set(key: K, value: V): void {
-				batchStaged.set(keyCodec.encode(key), valueCodec.encode(value));
+				const kBytes = keyCodec.encode(key);
+				const vBytes = valueCodec.encode(value);
+
+				// If key already pending in this batch, overwrite value in-place — no new entry.
+				const existing = batchIndex.get(kBytes);
+				if (existing !== undefined) {
+					pendingBuf.set(vBytes, existing + keyStride);
+					return;
+				}
+
+				// Grow pendingBuf if needed (2× amortised).
+				const needed = (pendingCount + 1) * entryStride;
+				if (needed > pendingBuf.length) {
+					const next = new Uint8Array(Math.max(needed, pendingBuf.length * 2));
+					next.set(pendingBuf);
+					pendingBuf = next;
+				}
+
+				const off = pendingCount * entryStride;
+				pendingBuf.set(kBytes, off);
+				pendingBuf.set(vBytes, off + keyStride);
+				batchIndex.set(kBytes, off);
+				pendingCount++;
 			},
 			apply(): void {
-				for (const [k, v] of batchStaged) staged.set(k, v);
-				batchStaged.clear();
+				// Upsert all pending entries into stagedMap.
+				// Duplicate keys overwrite in-place — no stale entries accumulate.
+				for (let i = 0; i < pendingCount; i++) {
+					const off = i * entryStride;
+					const k = pendingBuf.subarray(off, off + keyStride);
+					const v = pendingBuf.subarray(off + keyStride, off + entryStride);
+					stagedMap.set(k, v.slice());
+				}
+				pendingBuf = new Uint8Array(entryStride * 64);
+				pendingCount = 0;
+				batchIndex.clear();
 				batch = null;
 			},
 			discard(): void {
-				batchStaged.clear();
+				pendingBuf = new Uint8Array(entryStride * 64);
+				pendingCount = 0;
+				batchIndex.clear();
 				batch = null;
 			},
 		};
@@ -181,16 +266,17 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 		// One pass: open transactions lazily per shard, insert via subarray views, commit all.
 		const active = new Uint8Array(shardCount); // 1 = transaction open for this shard
-		let pos = 4;
+		let pos = WAL_HEADER;
 		for (let i = 0; i < entryCount; i++) {
-			const s = (buffer[pos] as number) % shardCount;
+			const keySlice = buffer.subarray(pos, pos + keyStride);
+			const s = shardIndexOf(keySlice);
 			const shard = shards[s]!;
 			if (!active[s]) {
 				shard.db.exec("BEGIN");
 				active[s] = 1;
 			}
 			shard.stmtInsert.run(
-				buffer.subarray(pos, pos + keyStride),
+				keySlice,
 				buffer.subarray(pos + keyStride, pos + entryStride),
 			);
 			pos += entryStride;
@@ -205,20 +291,20 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		if (self.wal) throw new Error("WAL already exists");
 		if (batch) throw new Error("Can't create WAL while batch is in progress");
 
-		// Serialize staged entries: [u32 entryCount LE]([keyBytes][valueBytes])...
-		const entryCount = staged.size;
-		const buf = new Uint8Array(4 + entryCount * entryStride);
-		new DataView(buf.buffer).setUint32(0, entryCount, true);
-		let pos = 4;
-		for (const [keyBytes, valueBytes] of staged) {
-			buf.set(keyBytes, pos);
-			buf.set(valueBytes, pos + keyStride);
+		// Serialize stagedMap into a contiguous WAL buffer.
+		const entryCount = stagedMap.size;
+		const walBuf = new Uint8Array(WAL_HEADER + entryCount * entryStride);
+		new DataView(walBuf.buffer).setUint32(0, entryCount, true);
+		let pos = WAL_HEADER;
+		for (const [k, v] of stagedMap) {
+			walBuf.set(k, pos);
+			walBuf.set(v, pos + keyStride);
 			pos += entryStride;
 		}
 
-		await Deno.writeFile(walPath, buf, { create: true });
+		await Deno.writeFile(walPath, walBuf, { create: true });
 
-		const wal = makeWAL(buf);
+		const wal = makeWAL(walBuf);
 		self.wal = wal;
 		return wal;
 	}
@@ -227,12 +313,16 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		return {
 			async apply(): Promise<void> {
 				applyBuffer(buffer);
-				staged.clear();
+				stagedMap.clear();
+				pendingBuf = new Uint8Array(entryStride * 64);
+				pendingCount = 0;
 				self.wal = null;
 			},
 			async discard(): Promise<void> {
 				self.wal = null;
-				staged.clear();
+				stagedMap.clear();
+				pendingBuf = new Uint8Array(entryStride * 64);
+				pendingCount = 0;
 				await Deno.remove(walPath).catch(() => {});
 			},
 		};

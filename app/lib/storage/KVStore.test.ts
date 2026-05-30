@@ -61,7 +61,7 @@ async function withStore<T>(
 ): Promise<T> {
 	const dir = await Deno.makeTempDir({ prefix: "kvstore_test_" });
 	try {
-		const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec });
+		const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
 		try {
 			return await fn(store, dir);
 		} finally {
@@ -231,7 +231,7 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 	try {
 		// First session: write WAL but do NOT apply (simulate crash after WAL write)
 		{
-			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec });
+			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
 			const b = store.batch();
 			b.set(1, 111n);
 			b.set(2, 222n);
@@ -242,7 +242,7 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 
 		// Second session: should replay WAL on open
 		{
-			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec });
+			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
 			// WAL replay happens externally (via Store.recover), but createKVStore opens any
 			// existing WAL as self.wal. Apply it manually here to simulate recover().
 			if (store.wal) {
@@ -454,6 +454,77 @@ Deno.test("store.get reads staged value between batch.apply() and wal.apply()", 
 	});
 });
 
+Deno.test("store.get reads staged entries without ever flushing (lazy index)", async () => {
+	// Exercises the ensureStagedIndex() lazy-build path: multiple keys applied to staged,
+	// then read back via store.get() before any WAL is created.
+	await withStore(async (store) => {
+		const pairs: [number, bigint][] = [[1, 111n], [2, 222n], [3, 333n], [100, 100n], [255, 255n]];
+
+		const b = store.batch();
+		for (const [k, v] of pairs) b.set(k, v);
+		b.apply(); // staged only — no WAL, no SQLite yet
+
+		for (const [k, v] of pairs) {
+			assertEquals(await store.get(k), v, `staged key ${k} must be readable without flush`);
+		}
+		assertEquals(await store.get(999), undefined, "missing key must return undefined from staged");
+
+		// Flush to clean up
+		const wal = await store.createWAL();
+		await wal.apply();
+		await wal.discard();
+	});
+});
+
+Deno.test("store.getMany reads staged entries without ever flushing", async () => {
+	await withStore(async (store) => {
+		const b = store.batch();
+		b.set(10, 10n);
+		b.set(20, 20n);
+		b.set(30, 30n);
+		b.apply();
+
+		const result = await store.getMany([30, 999, 10, 20, 888]);
+		assertEquals(result, [30n, undefined, 10n, 20n, undefined]);
+
+		const wal = await store.createWAL();
+		await wal.apply();
+		await wal.discard();
+	});
+});
+
+Deno.test("store.get sees latest value when key updated across batches without flush", async () => {
+	// Apply three batches without flushing between them; last write to a key must win.
+	await withStore(async (store) => {
+		const b1 = store.batch();
+		b1.set(7, 1n);
+		b1.set(8, 1n);
+		b1.apply();
+
+		const b2 = store.batch();
+		b2.set(7, 2n); // overwrite key 7
+		b2.apply();
+
+		const b3 = store.batch();
+		b3.set(7, 3n); // overwrite again
+		b3.set(9, 9n); // new key
+		b3.apply();
+
+		assertEquals(await store.get(7), 3n, "last write across unflushed batches must win");
+		assertEquals(await store.get(8), 1n, "untouched key must retain original staged value");
+		assertEquals(await store.get(9), 9n, "key added in third batch must be readable");
+
+		const wal = await store.createWAL();
+		await wal.apply();
+		await wal.discard();
+
+		// Values must survive flush too
+		assertEquals(await store.get(7), 3n);
+		assertEquals(await store.get(8), 1n);
+		assertEquals(await store.get(9), 9n);
+	});
+});
+
 Deno.test("clear() while WAL active throws", async () => {
 	await withStore(async (store) => {
 		const b = store.batch();
@@ -642,6 +713,7 @@ Deno.test("large-volume debug: single Bytes32 key roundtrip", async () => {
 			path: dir,
 			keyCodec: new Bytes32Codec(),
 			valueCodec: new U64LECodec(),
+			shards: 16,
 		});
 		try {
 			const key0 = makeKey(0);
@@ -672,6 +744,7 @@ Deno.test("large-volume debug: 2-key shard-0 batch survives WAL", async () => {
 			path: dir,
 			keyCodec: new Bytes32Codec(),
 			valueCodec: new U64LECodec(),
+			shards: 16,
 		});
 		try {
 			const key0 = makeKey(0);
@@ -704,6 +777,7 @@ Deno.test("large-volume debug: find which cycle kills key 0", async () => {
 			path: dir,
 			keyCodec: new Bytes32Codec(),
 			valueCodec: new U64LECodec(),
+			shards: 16,
 		});
 		try {
 			const TOTAL = 100_000;
@@ -745,6 +819,7 @@ Deno.test("large-volume: 100k txId-like 32-byte keys survive multiple WAL cycles
 			path: dir,
 			keyCodec: new Bytes32Codec(),
 			valueCodec: new U64LECodec(),
+			shards: 16,
 		});
 		try {
 			const TOTAL = 100_000;

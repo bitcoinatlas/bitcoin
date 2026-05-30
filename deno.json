@@ -24,7 +24,8 @@
 		"dev": "deno task build && (deno run -A --watch ./app/main.ts & deno task dev:build)",
 		"build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts",
 		"dev:build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts --watch",
-		"check": "deno check && deno lint && deno test"
+		"test": "deno test --allow-env --allow-read --allow-write --allow-ffi",
+		"check": "deno check && deno lint && deno task test"
 	},
 	"unstable": ["raw-imports", "kv"],
 	"compilerOptions": {
