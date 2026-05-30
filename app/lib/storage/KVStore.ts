@@ -174,14 +174,17 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		const projected = shard.liveCount + newEntryCount;
 		if (projected / shard.slotCount < LOAD_FACTOR_THRESHOLD) return;
 
-		console.log(`[KVStore:${name}] shard ${s} growing: live=${projected} slots=${shard.slotCount}`);
+		// Compute target slot count: keep growing until projected load is safely below threshold.
+		let newSlotCount = shard.slotCount;
+		while (projected / newSlotCount >= LOAD_FACTOR_THRESHOLD) {
+			newSlotCount += SLOTS_GROWTH_PER_SHARD;
+		}
 
-		const oldSlotCount = shard.slotCount;
-		const newSlotCount = oldSlotCount + SLOTS_GROWTH_PER_SHARD;
+		console.log(`[KVStore:${name}] shard ${s} growing: live=${projected} slots=${shard.slotCount} → ${newSlotCount}`);
 
 		// Read all live entries
 		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = [];
-		for (let i = 0; i < oldSlotCount; i++) {
+		for (let i = 0; i < shard.slotCount; i++) {
 			const buf = await readSlot(s, i);
 			if (buf[0] === OCCUPIED_LIVE) {
 				entries.push({
@@ -200,6 +203,10 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		shard.slotCount = newSlotCount;
 		shard.liveCount = 0;
 
+		// Write meta with new slotCount immediately so crash-recovery sees the correct layout.
+		const shardDir = join(path, `shard_${s}`);
+		await writeMeta(join(shardDir, "meta.bin"), newSlotCount, 0);
+
 		// Re-insert all old entries
 		for (const { key, value } of entries) {
 			const { slotIdx } = await findSlot(s, key, null);
@@ -211,7 +218,6 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			shard.liveCount++;
 		}
 
-		const shardDir = join(path, `shard_${s}`);
 		await writeMeta(join(shardDir, "meta.bin"), newSlotCount, shard.liveCount);
 		console.log(`[KVStore:${name}] shard ${s} grown to ${newSlotCount} slots`);
 	}

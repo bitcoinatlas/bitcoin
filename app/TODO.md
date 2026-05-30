@@ -5,8 +5,12 @@
 - [x] on stores instead of "transaction" use the term, "batch", so it doesnt become confusing and mixed with bitcoin
       txs.
 - [x] forgot to seperate between txid and wtxid, do that.
+- [ ] blob store read tries to read from disk even if the data is in the stage only rn and not flushed. fix it. uses
+      `getFromDiskWithCodec` while it should read from staged.
 - [ ] then fully sync check the full chain size. then fucking refactor everything, codebase has kinda become a mess.
 - [ ] need a better kv impl
+- [ ] for blob store, staged can just be a big uint8array probably. or "parts" of it. would make reading from staged
+      easier to handle. then updates can also update on those parts etc... like dynamic sized small chunks in memory.
 - [ ] verify should be seperated complately to its own height meta data, and worker shouldnt effect the main thread and
       storage stuff. so it shouldn't effect raw download and write speed we have without verification.
 - [ ] block txs start pointer shouldnt be packed with the header. limits parallelism. instead it should have a seperate
