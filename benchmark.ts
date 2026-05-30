@@ -1,4 +1,5 @@
 import { BytesCodec } from "@nomadshiba/codec";
+import { Database } from "@db/sqlite";
 import { DatabaseSync } from "node:sqlite";
 import { createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { createBlobStore } from "~/lib/storage/BlobStore.ts";
@@ -10,8 +11,6 @@ const VALUE_SIZE = 128;
 const KV_TOTAL = 1_000_000;
 const KV_READ_SAMPLES = 10_000;
 const KV_BATCH_SIZE = 100_000;
-const NUM_SHARDS = 256;
-const LOAD_FACTOR_THRESHOLD = 0.75;
 
 // ─── ArrayStore constants ─────────────────────────────────────────────────────
 const ARRAY_ITEM_SIZE = 64;
@@ -56,7 +55,6 @@ async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Ar
 		path: `${dir}/bench_kv`,
 		keyCodec: new BytesCodec({ size: KEY_SIZE }),
 		valueCodec: new BytesCodec({ size: VALUE_SIZE }),
-		initialSlotsPerShard: Math.ceil(KV_TOTAL / NUM_SHARDS / LOAD_FACTOR_THRESHOLD) * 2,
 	});
 
 	// Writes — batch → WAL save → WAL apply → WAL discard
@@ -113,16 +111,17 @@ async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Arr
 	const db = new DatabaseSync(`${dir}/bench_sqlite.db`);
 	db.exec(`PRAGMA journal_mode = WAL`);
 	db.exec(`PRAGMA synchronous = NORMAL`);
+	db.exec(`PRAGMA cache_size=-262144`);
 	db.exec(`CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)`);
 
 	// Writes
 	console.log("    Writing...");
 	const writeStart = performance.now();
+	const insertStmt = db.prepare("INSERT INTO kv (key, value) VALUES (?, ?)");
 	for (let i = 0; i < KV_TOTAL; i += KV_BATCH_SIZE) {
 		const end = Math.min(i + KV_BATCH_SIZE, KV_TOTAL);
 		db.exec("BEGIN");
-		const stmt = db.prepare("INSERT INTO kv (key, value) VALUES (?, ?)");
-		for (let j = i; j < end; j++) stmt.run(keys[j]!, values[j]!);
+		for (let j = i; j < end; j++) insertStmt.run(keys[j]!, values[j]!);
 		db.exec("COMMIT");
 
 		const elapsed = (performance.now() - writeStart) / 1000;
@@ -160,7 +159,153 @@ async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Arr
 	const stat = await Deno.stat(`${dir}/bench_sqlite.db`);
 	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "SQLite", writeOps, readOps, batchReadOps, fileSize: stat.size };
+	return { name: "SQLite (node)", writeOps, readOps, batchReadOps, fileSize: stat.size };
+}
+
+// ─── @db/sqlite ───
+
+async function benchmarkDbSQLite(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
+	console.log("\n  @db/sqlite");
+	const db = new Database(`${dir}/bench_db_sqlite.db`);
+	db.exec(`PRAGMA journal_mode = WAL`);
+	db.exec(`PRAGMA synchronous = NORMAL`);
+	db.exec(`PRAGMA cache_size=-262144`);
+	db.exec(`CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)`);
+
+	// Writes
+	console.log("    Writing...");
+	const writeStart = performance.now();
+	const insertStmt = db.prepare("INSERT INTO kv (key, value) VALUES (?, ?)");
+	for (let i = 0; i < KV_TOTAL; i += KV_BATCH_SIZE) {
+		const end = Math.min(i + KV_BATCH_SIZE, KV_TOTAL);
+		db.transaction(() => {
+			for (let j = i; j < end; j++) insertStmt.run(keys[j]!, values[j]!);
+		})();
+
+		const elapsed = (performance.now() - writeStart) / 1000;
+		const rate = end / elapsed;
+		console.log(
+			`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
+	}
+	const writeOps = KV_TOTAL / ((performance.now() - writeStart) / 1000);
+	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
+
+	// Reads (single)
+	console.log("    Reading (single)...");
+	const readStart = performance.now();
+	const selectStmt = db.prepare("SELECT value FROM kv WHERE key = ?");
+	for (let i = 0; i < KV_READ_SAMPLES; i++) selectStmt.get(keys[i]!);
+	const readOps = KV_READ_SAMPLES / ((performance.now() - readStart) / 1000);
+	console.log(`      ${readOps.toFixed(0)} ops/sec`);
+
+	// Reads (batch)
+	console.log("    Reading (batch)...");
+	const batchReadStart = performance.now();
+	const placeholders = new Array(100).fill("?").join(",");
+	const batchStmt = db.prepare(`SELECT value FROM kv WHERE key IN (${placeholders})`);
+	for (let i = 0; i < KV_READ_SAMPLES; i += 100) {
+		batchStmt.all(...keys.slice(i, Math.min(i + 100, KV_READ_SAMPLES)));
+	}
+	const batchReadOps = KV_READ_SAMPLES / ((performance.now() - batchReadStart) / 1000);
+	console.log(`      ${batchReadOps.toFixed(0)} ops/sec`);
+
+	db.close();
+
+	const stat = await Deno.stat(`${dir}/bench_db_sqlite.db`);
+	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
+
+	return { name: "@db/sqlite", writeOps, readOps, batchReadOps, fileSize: stat.size };
+}
+
+// ─── @db/sqlite + WAL overhead (mirrors KVStore internals exactly) ────────────
+
+async function benchmarkDbSQLiteWithWAL(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
+	console.log("\n  @db/sqlite + WAL");
+	const dbPath = `${dir}/bench_db_sqlite_wal.db`;
+	const walPath = `${dir}/bench_db_sqlite.wal`;
+	const db = new Database(dbPath);
+	db.exec(`PRAGMA journal_mode = DELETE`);
+	db.exec(`PRAGMA synchronous = NORMAL`);
+	db.exec(`PRAGMA cache_size=-262144`);
+	db.exec(`CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)`);
+
+	const KEY_SIZE = keys[0]!.length;
+	const VALUE_SIZE = values[0]!.length;
+	const entryStride = KEY_SIZE + VALUE_SIZE;
+	const stmtInsert = db.prepare("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)");
+	const txInsert = db.transaction((entryCount: number, buffer: Uint8Array) => {
+		let pos = 0;
+		for (let i = 0; i < entryCount; i++) {
+			stmtInsert.run(buffer.subarray(pos, pos + KEY_SIZE), buffer.subarray(pos + KEY_SIZE, pos + entryStride));
+			pos += entryStride;
+		}
+	});
+
+	// Writes — serialize to WAL buffer, write file, txInsert, delete file
+	console.log("    Writing...");
+	const writeStart = performance.now();
+	for (let i = 0; i < KV_TOTAL; i += KV_BATCH_SIZE) {
+		const end = Math.min(i + KV_BATCH_SIZE, KV_TOTAL);
+		const entryCount = end - i;
+
+		// Serialize
+		const buf = new Uint8Array(4 + entryCount * entryStride);
+		new DataView(buf.buffer).setUint32(0, entryCount, true);
+		let pos = 4;
+		for (let j = i; j < end; j++) {
+			buf.set(keys[j]!, pos);
+			buf.set(values[j]!, pos + KEY_SIZE);
+			pos += entryStride;
+		}
+
+		// WAL write
+		await Deno.writeFile(walPath, buf, { create: true });
+
+		// SQLite transaction
+		txInsert(entryCount, buf.subarray(4));
+
+		// WAL delete
+		await Deno.remove(walPath);
+
+		const elapsed = (performance.now() - writeStart) / 1000;
+		const rate = end / elapsed;
+		console.log(
+			`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
+	}
+	const writeOps = KV_TOTAL / ((performance.now() - writeStart) / 1000);
+	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
+
+	// Reads (single)
+	console.log("    Reading (single)...");
+	const readStart = performance.now();
+	const selectStmt = db.prepare("SELECT value FROM kv WHERE key = ?");
+	for (let i = 0; i < KV_READ_SAMPLES; i++) selectStmt.get(keys[i]!);
+	const readOps = KV_READ_SAMPLES / ((performance.now() - readStart) / 1000);
+	console.log(`      ${readOps.toFixed(0)} ops/sec`);
+
+	// Reads (batch)
+	console.log("    Reading (batch)...");
+	const batchReadStart = performance.now();
+	const placeholders = new Array(100).fill("?").join(",");
+	const batchStmt = db.prepare(`SELECT value FROM kv WHERE key IN (${placeholders})`);
+	for (let i = 0; i < KV_READ_SAMPLES; i += 100) {
+		batchStmt.all(...keys.slice(i, Math.min(i + 100, KV_READ_SAMPLES)));
+	}
+	const batchReadOps = KV_READ_SAMPLES / ((performance.now() - batchReadStart) / 1000);
+	console.log(`      ${batchReadOps.toFixed(0)} ops/sec`);
+
+	db.close();
+
+	const stat = await Deno.stat(dbPath);
+	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
+
+	return { name: "@db/sqlite+CustomWAL", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 // ─── Deno KV ──────────────────────────────────────────────────────────────────
@@ -347,7 +492,9 @@ async function main() {
 		const kvResults = [
 			await benchmarkKVStore(dir, keys, values),
 			await benchmarkSQLite(dir, keys, values),
-			await benchmarkDenoKV(dir, keys, values),
+			await benchmarkDbSQLite(dir, keys, values),
+			await benchmarkDbSQLiteWithWAL(dir, keys, values),
+			// await benchmarkDenoKV(dir, keys, values), // too slow, skipped
 		];
 
 		console.log("\n" + "=".repeat(62));

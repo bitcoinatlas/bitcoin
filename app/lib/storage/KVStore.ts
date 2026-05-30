@@ -1,31 +1,27 @@
 import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
+import { Database } from "@db/sqlite";
 import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
-import { readFile, writeFile } from "~/lib/utils/fs.ts";
 
 /**
- * A persistent key-value store backed by a sharded on-disk open-addressing hash table.
+ * A persistent key-value store backed by N SQLite databases (shards).
  *
- * 256 shards keyed by first byte of encoded key. Each shard is a flat file of fixed-size slots:
- *   [occupied: u8][key: keyStride bytes][value: valueStride bytes]
+ * Keys are routed to shards by `keyBytes[0] % shardCount`. Default shard
+ * count is 16; override with `options.shards`. Shard count is persisted in
+ * `meta.json` so reopening with the wrong value is caught at startup.
  *
- * Reads:  hash(key) % slotCount → seek → read slot → linear probe on collision. O(1), 1-3 seeks.
- * Writes: buffered in memory (raw key+value pairs), slot resolution + disk write on WAL flush.
+ * Each shard is a separate SQLite file (`shard-{i}.db`) with schema:
+ *   CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)
  *
- * Growth: each shard grows independently by slotsGrowthPerShard when load > 0.75.
- * Growth is crash-safe via a multi-step protocol using temp files and a grow.json marker:
- *   1. Write grow.json { fromSlots, toSlots }
- *   2. Build data.new.bin (fully re-inserted new hash table)
- *   3. Rename data.bin → data.old.bin
- *   4. Rename data.new.bin → data.bin
- *   5. Delete data.old.bin
- *   6. Delete grow.json
- * Recovery at startup detects which step was reached and resumes or rolls back accordingly.
+ * All shards run in rollback-journal mode (DELETE) so they do not interfere
+ * with our own WAL protocol.
  *
- * Shard meta format: [u32 slotCount LE][u32 liveCount LE]
- * WAL format: [u16 shardCount LE]([u8 shardIdx][u32 entryCount LE]([u32 slotIdx LE][slotBytes])...)
+ * WAL file format: [u32 entryCount LE]([keyBytes][valueBytes])...
+ * Both key and value are fixed-size (keyStride / valueStride bytes) — no
+ * per-entry length prefix needed. Shard routing is re-derived from keyBytes[0]
+ * at apply time, so no shard index is stored in the WAL.
  */
 
 export interface KVStore<K, V> extends Store<KVStoreBatch<K, V>> {
@@ -46,313 +42,100 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
-	initialSlotsPerShard?: number;
-	slotsGrowthPerShard?: number;
+	/** Number of SQLite shard files. Must be 1–256. Default: 16. */
+	shards?: number;
 };
 
-const NUM_SHARDS = 256;
-const OCCUPIED_EMPTY = 0;
-const OCCUPIED_LIVE = 1;
-const SLOTS_GROWTH_PER_SHARD = 4096;
-const INITIAL_SLOTS_PER_SHARD = SLOTS_GROWTH_PER_SHARD;
-const LOAD_FACTOR_THRESHOLD = 0.75;
-const META_SIZE = 8; // u32 slotCount + u32 liveCount
-
-type ShardState = {
-	file: Deno.FsFile;
-	slotCount: number;
-	liveCount: number;
+type ShardDB = {
+	db: Database;
+	stmtGet: ReturnType<Database["prepare"]>;
+	stmtInsert: ReturnType<Database["prepare"]>;
+	stmtClear: ReturnType<Database["prepare"]>;
 };
 
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	const { name, path, keyCodec, valueCodec } = options;
-	const slotsGrowthPerShard = options.slotsGrowthPerShard ?? SLOTS_GROWTH_PER_SHARD;
-	const initialSlotsPerShard = options.initialSlotsPerShard ?? INITIAL_SLOTS_PER_SHARD;
+	const shardCount = options.shards ?? 16;
+
+	if (shardCount < 1 || shardCount > 256 || !Number.isInteger(shardCount)) {
+		throw new Error(`shards must be an integer 1–256, got ${shardCount}`);
+	}
+
 	const keyStride = keyCodec.stride.size;
 	const valueStride = valueCodec.stride.size;
-	const slotSize = 1 + keyStride + valueStride;
+	const entryStride = keyStride + valueStride;
 
 	await Deno.mkdir(path, { recursive: true });
 
-	// Open / init all 256 shards, recovering any interrupted grows first.
-	const shards: ShardState[] = [];
-	for (let s = 0; s < NUM_SHARDS; s++) {
-		const shardDir = join(path, `shard_${s}`);
-		await Deno.mkdir(shardDir, { recursive: true });
-
-		const dataPath    = join(shardDir, "data.bin");
-		const metaPath    = join(shardDir, "meta.bin");
-		const newPath     = join(shardDir, "data.new.bin");
-		const oldPath     = join(shardDir, "data.old.bin");
-		const growPath    = join(shardDir, "grow.json");
-
-		// --- crash recovery for interrupted grow ---
-		if (await exists(growPath)) {
-			const grow: { fromSlots: number; toSlots: number } = JSON.parse(
-				new TextDecoder().decode(await Deno.readFile(growPath)),
+	// Persist shard count in meta.json so reopening with a different value is caught.
+	const metaPath = join(path, "meta.json");
+	if (await exists(metaPath)) {
+		const meta = JSON.parse(await Deno.readTextFile(metaPath)) as { shards: number };
+		if (meta.shards !== shardCount) {
+			throw new Error(
+				`KVStore at ${path} was created with shards=${meta.shards}, ` +
+					`but reopened with shards=${shardCount}`,
 			);
-			const newSize = grow.toSlots * slotSize;
-			const hasNew = await exists(newPath);
-			const hasOld = await exists(oldPath);
-
-			if (!hasNew && !hasOld) {
-				// Step 6 didn't finish (or crashed right after step 5): grow is complete, just clean up.
-				await Deno.remove(growPath);
-			} else if (hasOld && !hasNew) {
-				// Steps 3+4 done but step 5 didn't finish: data.bin is the new file, delete data.old.bin.
-				await Deno.remove(oldPath);
-				await Deno.remove(growPath);
-			} else if (hasOld && hasNew) {
-				// Step 3 done but step 4 didn't finish: redo rename data.new.bin → data.bin.
-				await Deno.rename(newPath, dataPath);
-				await Deno.remove(oldPath);
-				await Deno.remove(growPath);
-			} else if (hasNew && !hasOld) {
-				// Crashed before step 3 (data.new.bin written but no rename yet).
-				// Check if data.bin is already the new size (step 3+4 done without data.old.bin somehow).
-				const dataSize = (await Deno.stat(dataPath).catch(() => ({ size: 0 }))).size;
-				if (dataSize === newSize) {
-					// data.bin is already the grown file — clean up leftovers.
-					await Deno.remove(newPath);
-					await Deno.remove(growPath);
-				} else {
-					// data.new.bin is incomplete or data.bin is still the old file.
-					// Safest: discard data.new.bin and let grow re-run from data.bin.
-					await Deno.remove(newPath);
-					await Deno.remove(growPath);
-				}
-			}
 		}
-
-		let slotCount: number;
-		let liveCount: number;
-
-		if (await exists(metaPath)) {
-			const buf = await Deno.readFile(metaPath);
-			const view = new DataView(buf.buffer);
-			slotCount = view.getUint32(0, true);
-			liveCount = view.getUint32(4, true);
-		} else {
-			slotCount = initialSlotsPerShard;
-			liveCount = 0;
-			await writeMeta(metaPath, slotCount, liveCount);
-		}
-
-		const file = await Deno.open(dataPath, { read: true, write: true, create: true });
-		const expectedSize = slotCount * slotSize;
-		const actualSize = (await file.stat()).size;
-		if (actualSize < expectedSize) await file.truncate(expectedSize);
-
-		shards.push({ file, slotCount, liveCount });
+	} else {
+		await Deno.writeTextFile(metaPath, JSON.stringify({ shards: shardCount }));
 	}
 
-	// Per-shard I/O mutex
-	const ioLocks: Promise<void>[] = shards.map(() => Promise.resolve());
-	function withLock<T>(s: number, fn: () => Promise<T>): Promise<T> {
-		const next = ioLocks[s]!.then(fn);
-		ioLocks[s] = next.then(() => {}, () => {});
-		return next;
+	const walPath = join(path, "data.wal");
+
+	function openShard(i: number): ShardDB {
+		const db = new Database(join(path, `shard-${i}.db`));
+		db.exec(`CREATE TABLE IF NOT EXISTS kv (key BLOB PRIMARY KEY, value BLOB)`);
+		db.exec(`PRAGMA journal_mode=DELETE`);
+		db.exec(`PRAGMA synchronous=NORMAL`);
+		// 16MB cache per shard (× 16 shards = 256MB total, same as before).
+		db.exec(`PRAGMA cache_size=-16384`);
+		const stmtGet = db.prepare(`SELECT value FROM kv WHERE key = ?`);
+		const stmtInsert = db.prepare(`INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`);
+		const stmtClear = db.prepare(`DELETE FROM kv`);
+		return { db, stmtGet, stmtInsert, stmtClear };
 	}
 
-	// --- disk helpers ---
-
-	async function readSlot(s: number, slotIdx: number): Promise<Uint8Array> {
-		const shard = shards[s]!;
-		return withLock(s, async () => {
-			await shard.file.seek(slotIdx * slotSize, Deno.SeekMode.Start);
-			return readFile(shard.file, slotSize);
-		});
-	}
-
-	async function writeSlotDirect(s: number, slotIdx: number, buf: Uint8Array): Promise<void> {
-		const shard = shards[s]!;
-		await withLock(s, async () => {
-			await shard.file.seek(slotIdx * slotSize, Deno.SeekMode.Start);
-			await writeFile(shard.file, buf);
-		});
-	}
-
-	/**
-	 * Find slot for keyBytes in shard s.
-	 * walSlots: slots being written in current WAL (slot index → slotBuf), checked before disk.
-	 * Returns { slotIdx, found }.
-	 */
-	async function findSlot(
-		s: number,
-		keyBytes: Uint8Array,
-		walSlots: Map<number, Uint8Array> | null,
-	): Promise<{ slotIdx: number; found: boolean }> {
-		const shard = shards[s]!;
-		const start = slotHash(keyBytes, shard.slotCount);
-		let i = start;
-		do {
-			if (walSlots?.has(i)) {
-				const buf = walSlots.get(i)!;
-				if (buf[0] === OCCUPIED_EMPTY) return { slotIdx: i, found: false };
-				if (bytesEqual(buf.subarray(1, 1 + keyStride), keyBytes)) return { slotIdx: i, found: true };
-				i = (i + 1) % shard.slotCount;
-				continue;
-			}
-			const buf = await readSlot(s, i);
-			if (buf[0] === OCCUPIED_EMPTY) return { slotIdx: i, found: false };
-			if (buf[0] === OCCUPIED_LIVE && bytesEqual(buf.subarray(1, 1 + keyStride), keyBytes)) {
-				return { slotIdx: i, found: true };
-			}
-			i = (i + 1) % shard.slotCount;
-		} while (i !== start);
-		throw new Error(`[KVStore:${name}] shard ${s} is full`);
-	}
-
-	async function getByBytes(
-		keyBytes: Uint8Array,
-		stagedPairs: Uint8ArrayMap<Uint8Array> | null,
-	): Promise<V | undefined> {
-		if (stagedPairs) {
-			const staged = stagedPairs.get(keyBytes);
-			if (staged !== undefined) return valueCodec.decode(staged)[0];
-		}
-		const s = shardIndex(keyBytes);
-		const { found, slotIdx } = await findSlot(s, keyBytes, null);
-		if (!found) return undefined;
-		const buf = await readSlot(s, slotIdx);
-		return valueCodec.decode(buf.subarray(1 + keyStride))[0];
-	}
+	const shards: ShardDB[] = Array.from({ length: shardCount }, (_, i) => openShard(i));
 
 	// Committed on batch.apply(), flushed to disk on createWAL()
-	const staged: Uint8ArrayMap<Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Uint8ArrayMap(64));
+	const staged = new Uint8ArrayMap<Uint8Array>(256);
 
-	// --- grow shard if needed (called during createWAL before slot resolution) ---
-	async function maybeGrow(s: number, newEntryCount: number): Promise<void> {
-		const shard = shards[s]!;
-		const projected = shard.liveCount + newEntryCount;
-		if (projected / shard.slotCount < LOAD_FACTOR_THRESHOLD) return;
-
-		// Compute target slot count: keep growing until projected load is safely below threshold.
-		let newSlotCount = shard.slotCount;
-		while (projected / newSlotCount >= LOAD_FACTOR_THRESHOLD) {
-			newSlotCount += slotsGrowthPerShard;
-		}
-
-		console.log(`[KVStore:${name}] shard ${s} growing: live=${projected} slots=${shard.slotCount} → ${newSlotCount}`);
-
-		const shardDir  = join(path, `shard_${s}`);
-		const dataPath  = join(shardDir, "data.bin");
-		const metaPath  = join(shardDir, "meta.bin");
-		const newPath   = join(shardDir, "data.new.bin");
-		const oldPath   = join(shardDir, "data.old.bin");
-		const growPath  = join(shardDir, "grow.json");
-
-		// Step 1: write grow marker so recovery knows a grow is in progress.
-		await Deno.writeTextFile(growPath, JSON.stringify({ fromSlots: shard.slotCount, toSlots: newSlotCount }));
-
-		// Step 2: read all live entries from the current data file.
-		const entries: Array<{ key: Uint8Array; value: Uint8Array }> = [];
-		for (let i = 0; i < shard.slotCount; i++) {
-			const buf = await readSlot(s, i);
-			if (buf[0] === OCCUPIED_LIVE) {
-				entries.push({
-					key: new Uint8Array(buf.subarray(1, 1 + keyStride)),
-					value: new Uint8Array(buf.subarray(1 + keyStride)),
-				});
-			}
-		}
-
-		// Step 2 cont: build data.new.bin — a fresh hash table at the new size.
-		// Use a temporary in-memory slot count on a scratch shard state so we can
-		// reuse slotHash without touching the real shard yet.
-		const newSize = newSlotCount * slotSize;
-		const newFile = await Deno.open(newPath, { read: true, write: true, create: true, truncate: true });
-		await newFile.truncate(newSize);
-
-		// Re-insert all entries into the new file directly (no walSlots needed here).
-		const scratchSlotCount = { value: newSlotCount };
-		async function findSlotInNew(keyBytes: Uint8Array): Promise<number> {
-			const start = slotHash(keyBytes, scratchSlotCount.value);
-			let i = start;
-			do {
-				await newFile.seek(i * slotSize, Deno.SeekMode.Start);
-				const buf = await readFile(newFile, slotSize);
-				if (buf[0] === OCCUPIED_EMPTY) return i;
-				i = (i + 1) % scratchSlotCount.value;
-			} while (i !== start);
-			throw new Error(`[KVStore:${name}] shard ${s} new file is full during grow (bug)`);
-		}
-
-		for (const { key, value } of entries) {
-			const slotIdx = await findSlotInNew(key);
-			const buf = new Uint8Array(slotSize);
-			buf[0] = OCCUPIED_LIVE;
-			buf.set(key, 1);
-			buf.set(value, 1 + keyStride);
-			await newFile.seek(slotIdx * slotSize, Deno.SeekMode.Start);
-			await writeFile(newFile, buf);
-		}
-		newFile.close();
-
-		// Step 3: rename data.bin → data.old.bin (preserve old file until fully done).
-		// Close the shard file first so Windows doesn't complain about open handles.
-		await withLock(s, async () => { shard.file.close(); });
-		await Deno.rename(dataPath, oldPath);
-
-		// Step 4: rename data.new.bin → data.bin.
-		await Deno.rename(newPath, dataPath);
-
-		// Step 5: delete data.old.bin.
-		await Deno.remove(oldPath);
-
-		// Reopen data.bin and update in-memory shard state.
-		const reopened = await Deno.open(dataPath, { read: true, write: true });
-		shard.file = reopened;
-		shard.slotCount = newSlotCount;
-		shard.liveCount = entries.length;
-		// Invalidate the io lock for this shard so future withLock calls use the new file.
-		ioLocks[s] = Promise.resolve();
-
-		// Update meta to reflect new layout.
-		await writeMeta(metaPath, newSlotCount, shard.liveCount);
-
-		// Step 6: delete grow marker — grow is complete.
-		await Deno.remove(growPath);
-
-		console.log(`[KVStore:${name}] shard ${s} grown to ${newSlotCount} slots`);
+	function shardOf(keyBytes: Uint8Array): ShardDB {
+		return shards[(keyBytes[0] as number) % shardCount]!;
 	}
 
-	// --- public get/getMany ---
+	function getByBytes(keyBytes: Uint8Array, stagedPairs: Uint8ArrayMap<Uint8Array> | null): V | undefined {
+		if (stagedPairs) {
+			const s = stagedPairs.get(keyBytes);
+			if (s !== undefined) return valueCodec.decode(s)[0];
+		}
+		const row = shardOf(keyBytes).stmtGet.get<{ value: Uint8Array }>(keyBytes);
+		if (!row) return undefined;
+		return valueCodec.decode(row.value)[0];
+	}
 
 	async function get(key: K): Promise<V | undefined> {
-		const keyBytes = keyCodec.encode(key);
-		return getByBytes(keyBytes, staged[shardIndex(keyBytes)]!);
+		return getByBytes(keyCodec.encode(key), staged);
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
-		return Promise.all(keys.map((k) => {
-			const keyBytes = keyCodec.encode(k);
-			return getByBytes(keyBytes, staged[shardIndex(keyBytes)]!);
-		}));
+		return keys.map((k) => getByBytes(keyCodec.encode(k), staged));
 	}
 
 	async function clear(): Promise<void> {
 		if (self.wal) throw new Error("Can't clear while WAL is in progress");
 		if (batch) throw new Error("Can't clear while batch is in progress");
-		for (let s = 0; s < NUM_SHARDS; s++) {
-			const shard = shards[s]!;
-			staged[s]!.clear();
-			await withLock(s, async () => {
-				await shard.file.truncate(0);
-				await shard.file.truncate(shard.slotCount * slotSize);
-			});
-			shard.liveCount = 0;
-			const shardDir = join(path, `shard_${s}`);
-			await writeMeta(join(shardDir, "meta.bin"), shard.slotCount, 0);
-		}
+		staged.clear();
+		for (const shard of shards) shard.stmtClear.run();
 	}
 
 	function close(): void {
 		if (self.wal) throw new Error("Can't close while WAL is in progress");
-		for (const shard of shards) shard.file.close();
+		for (const shard of shards) shard.db.close();
 	}
 
-	// --- batch: buffers raw pairs, no disk I/O ---
+	// --- batch ---
 
 	let batch: KVStoreBatch<K, V> | null = null;
 
@@ -360,37 +143,28 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		if (batch) throw new Error("Batch already in progress");
 		if (self.wal) throw new Error("Can't start batch while WAL is in progress");
 
-		const batchStaged: Uint8ArrayMap<Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Uint8ArrayMap(64));
+		const batchStaged = new Uint8ArrayMap<Uint8Array>(64);
 
 		batch = {
 			async get(key: K): Promise<V | undefined> {
 				const keyBytes = keyCodec.encode(key);
-				const s = shardIndex(keyBytes);
-				// batch staged → store staged → disk
-				const batchVal = batchStaged[s]!.get(keyBytes);
-				if (batchVal !== undefined) return valueCodec.decode(batchVal)[0];
-				return getByBytes(keyBytes, staged[s]!);
+				const b = batchStaged.get(keyBytes);
+				if (b !== undefined) return valueCodec.decode(b)[0];
+				return getByBytes(keyBytes, staged);
 			},
 			async getMany(keys: K[]): Promise<(V | undefined)[]> {
 				return Promise.all(keys.map((k) => batch!.get(k)));
 			},
 			set(key: K, value: V): void {
-				const keyBytes = keyCodec.encode(key);
-				const valueBytes = valueCodec.encode(value);
-				batchStaged[shardIndex(keyBytes)]!.set(keyBytes, valueBytes);
+				batchStaged.set(keyCodec.encode(key), valueCodec.encode(value));
 			},
 			apply(): void {
-				// Move batch staged → store staged. No disk I/O.
-				for (let s = 0; s < NUM_SHARDS; s++) {
-					for (const [keyBytes, valueBytes] of batchStaged[s]!) {
-						staged[s]!.set(keyBytes, valueBytes);
-					}
-					batchStaged[s]!.clear();
-				}
+				for (const [k, v] of batchStaged) staged.set(k, v);
+				batchStaged.clear();
 				batch = null;
 			},
 			discard(): void {
-				for (let s = 0; s < NUM_SHARDS; s++) batchStaged[s]!.clear();
+				batchStaged.clear();
 				batch = null;
 			},
 		};
@@ -398,111 +172,76 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		return batch;
 	}
 
-	// --- WAL: resolve slots for all staged pairs, write WAL file ---
+	// --- WAL ---
 
-	const walPath = join(path, "data.wal");
+	function applyBuffer(buffer: Uint8Array): void {
+		const view = new DataView(buffer.buffer, buffer.byteOffset);
+		const entryCount = view.getUint32(0, true);
+		if (entryCount === 0) return;
+
+		// One pass: open transactions lazily per shard, insert via subarray views, commit all.
+		const active = new Uint8Array(shardCount); // 1 = transaction open for this shard
+		let pos = 4;
+		for (let i = 0; i < entryCount; i++) {
+			const s = (buffer[pos] as number) % shardCount;
+			const shard = shards[s]!;
+			if (!active[s]) {
+				shard.db.exec("BEGIN");
+				active[s] = 1;
+			}
+			shard.stmtInsert.run(
+				buffer.subarray(pos, pos + keyStride),
+				buffer.subarray(pos + keyStride, pos + entryStride),
+			);
+			pos += entryStride;
+		}
+
+		for (let s = 0; s < shardCount; s++) {
+			if (active[s]) shards[s]!.db.exec("COMMIT");
+		}
+	}
 
 	async function createWAL(): Promise<WAL> {
 		if (self.wal) throw new Error("WAL already exists");
 		if (batch) throw new Error("Can't create WAL while batch is in progress");
 
-		// Per-shard: resolve slot indices for all staged pairs
-		// walSlots[s]: slotIdx → slotBuf (what to write to disk)
-		const walSlots: Map<number, Uint8Array>[] = Array.from({ length: NUM_SHARDS }, () => new Map());
-
-		for (let s = 0; s < NUM_SHARDS; s++) {
-			const shardStaged = staged[s]!;
-			if (shardStaged.size === 0) continue;
-
-			// Pre-grow using staged.size as an upper bound on new entries, ensuring there is
-			// enough capacity before any findSlot calls. This avoids the "shard is full" error
-			// that occurred when maybeGrow was called only after slot resolution.
-			await maybeGrow(s, shardStaged.size);
-
-			// Single pass: resolve slot indices for all staged pairs.
-			// walSlots is populated incrementally so that subsequent findSlot calls in the same
-			// pass probe past already-claimed slots (handles intra-batch hash collisions).
-			for (const [keyBytes, valueBytes] of shardStaged) {
-				const { slotIdx } = await findSlot(s, keyBytes, walSlots[s]!);
-				const buf = new Uint8Array(slotSize);
-				buf[0] = OCCUPIED_LIVE;
-				buf.set(keyBytes, 1);
-				buf.set(valueBytes, 1 + keyStride);
-				walSlots[s]!.set(slotIdx, buf);
-			}
+		// Serialize staged entries: [u32 entryCount LE]([keyBytes][valueBytes])...
+		const entryCount = staged.size;
+		const buf = new Uint8Array(4 + entryCount * entryStride);
+		new DataView(buf.buffer).setUint32(0, entryCount, true);
+		let pos = 4;
+		for (const [keyBytes, valueBytes] of staged) {
+			buf.set(keyBytes, pos);
+			buf.set(valueBytes, pos + keyStride);
+			pos += entryStride;
 		}
 
-		// Serialize WAL
-		const parts: Uint8Array[] = [];
-		let shardCount = 0;
-		for (let s = 0; s < NUM_SHARDS; s++) {
-			if (walSlots[s]!.size === 0) continue;
-			shardCount++;
-			const header = new Uint8Array(5);
-			header[0] = s;
-			new DataView(header.buffer).setUint32(1, walSlots[s]!.size, true);
-			parts.push(header);
-			for (const [slotIdx, buf] of walSlots[s]!) {
-				const entry = new Uint8Array(4 + slotSize);
-				new DataView(entry.buffer).setUint32(0, slotIdx, true);
-				entry.set(buf, 4);
-				parts.push(entry);
-			}
-		}
+		await Deno.writeFile(walPath, buf, { create: true });
 
-		const totalSize = 2 + parts.reduce((a, p) => a + p.length, 0);
-		const walBuf = new Uint8Array(totalSize);
-		new DataView(walBuf.buffer).setUint16(0, shardCount, true);
-		let pos = 2;
-		for (const p of parts) {
-			walBuf.set(p, pos);
-			pos += p.length;
-		}
-
-		await Deno.writeFile(walPath, walBuf, { create: true });
-
-		const wal = await getWAL();
-		if (!wal) throw new Error("Failed to read WAL after write");
+		const wal = makeWAL(buf);
 		self.wal = wal;
 		return wal;
 	}
 
-	async function getWAL(): Promise<WAL | null> {
-		if (!await exists(walPath)) return null;
+	function makeWAL(buffer: Uint8Array): WAL {
 		return {
 			async apply(): Promise<void> {
-				const buf = await Deno.readFile(walPath);
-				const view = new DataView(buf.buffer);
-				let pos = 0;
-				const shardCount = view.getUint16(pos, true);
-				pos += 2;
-				for (let si = 0; si < shardCount; si++) {
-					const s = buf[pos++]!;
-					const entryCount = view.getUint32(pos, true);
-					pos += 4;
-					const shard = shards[s]!;
-					for (let e = 0; e < entryCount; e++) {
-						const slotIdx = view.getUint32(pos, true);
-						pos += 4;
-						const slotBuf = buf.subarray(pos, pos + slotSize);
-						pos += slotSize;
-						// Only count as new entry if slot was previously empty.
-						// Reads old slot before overwriting to avoid double-counting updates.
-						const oldSlot = await readSlot(s, slotIdx);
-						await writeSlotDirect(s, slotIdx, slotBuf);
-						if (slotBuf[0] === OCCUPIED_LIVE && oldSlot[0] !== OCCUPIED_LIVE) shard.liveCount++;
-					}
-					const shardDir = join(path, `shard_${s}`);
-					await writeMeta(join(shardDir, "meta.bin"), shard.slotCount, shard.liveCount);
-				}
-				for (let s = 0; s < NUM_SHARDS; s++) staged[s]!.clear();
+				applyBuffer(buffer);
+				staged.clear();
+				self.wal = null;
 			},
 			async discard(): Promise<void> {
 				self.wal = null;
-				for (let s = 0; s < NUM_SHARDS; s++) staged[s]!.clear();
+				staged.clear();
 				await Deno.remove(walPath).catch(() => {});
 			},
 		};
+	}
+
+	async function getWAL(): Promise<WAL | null> {
+		if (!await exists(walPath)) return null;
+		const buf = await Deno.readFile(walPath);
+		return makeWAL(buf);
 	}
 
 	const self: KVStore<K, V> = {
@@ -517,33 +256,4 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	};
 
 	return self;
-}
-
-// --- helpers ---
-
-function shardIndex(keyBytes: Uint8Array): number {
-	return keyBytes[0]!;
-}
-
-function slotHash(keyBytes: Uint8Array, slotCount: number): number {
-	let h = 2166136261;
-	for (let i = 0; i < keyBytes.length; i++) {
-		h ^= keyBytes[i]!;
-		h = (Math.imul(h, 16777619)) >>> 0;
-	}
-	return h % slotCount;
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-	return true;
-}
-
-async function writeMeta(metaPath: string, slotCount: number, liveCount: number): Promise<void> {
-	const buf = new Uint8Array(META_SIZE);
-	const view = new DataView(buf.buffer);
-	view.setUint32(0, slotCount, true);
-	view.setUint32(4, liveCount, true);
-	await Deno.writeFile(metaPath, buf, { create: true });
 }

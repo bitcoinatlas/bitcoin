@@ -130,7 +130,7 @@ const txIdToPointer = await createKVStore({
 	path: join(BASE_DATA_DIR, "txIdToPointer"),
 	keyCodec: Bytes32,
 	valueCodec: StoredPointer,
-	slotsGrowthPerShard: 262144,
+	shards: 16,
 });
 
 const pubKeyToPointer = await createKVStore({
@@ -138,7 +138,7 @@ const pubKeyToPointer = await createKVStore({
 	path: join(BASE_DATA_DIR, "scriptPubKeyToPointer"),
 	keyCodec: Bytes32,
 	valueCodec: StoredPointer,
-	slotsGrowthPerShard: 262144,
+	shards: 32,
 });
 
 const stores: readonly Store[] = [

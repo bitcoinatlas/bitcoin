@@ -1,11 +1,9 @@
 /**
- * NASA-grade KVStore tests.
+ * KVStore tests.
  *
  * Covers:
  *  - Basic get/set/getMany across batch → WAL → apply lifecycle
  *  - liveCount correctness: inserts, updates, multi-WAL cycles
- *  - Hash-collision handling (intra-batch keys that collide in the same shard slot)
- *  - maybeGrow: load-factor threshold triggers growth, data survives rehash
  *  - WAL discard: staged data is discarded, store unchanged
  *  - WAL crash-recovery: WAL present on re-open is replayed
  *  - clear(): all data wiped, liveCount reset
@@ -87,11 +85,18 @@ async function commitPairs(
 	await wal.discard();
 }
 
-/** Read liveCount from meta.bin for shard s inside dir. */
-async function readLiveCount(dir: string, s: number): Promise<number> {
-	const metaPath = `${dir}/shard_${s}/meta.bin`;
-	const buf = await Deno.readFile(metaPath);
-	return new DataView(buf.buffer).getUint32(4, true);
+import { Database } from "@db/sqlite";
+
+/** Read total liveCount by summing COUNT(*) across all shard DBs in dir. */
+function readLiveCount(dir: string, shards = 16): number {
+	let total = 0;
+	for (let i = 0; i < shards; i++) {
+		const db = new Database(`${dir}/shard-${i}.db`);
+		const row = db.prepare("SELECT COUNT(*) as n FROM kv").get<{ n: number }>();
+		db.close();
+		total += row!.n;
+	}
+	return total;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,17 +123,12 @@ Deno.test("getMany preserves order and handles missing keys", async () => {
 
 Deno.test("update does not increase liveCount", async () => {
 	await withStore(async (store, dir) => {
-		// Key 0x01_00_00_00 goes to shard 1 (first byte = 1)
-		// Use key = 0x01000000 => shard index = 1
 		const key = 0x01_00_00_00;
 		await commitPairs(store, [[key, 42n]]);
+		const countAfterInsert = readLiveCount(dir);
 
-		const shard = 1;
-		const countAfterInsert = await readLiveCount(dir, shard);
-
-		// Update same key
 		await commitPairs(store, [[key, 99n]]);
-		const countAfterUpdate = await readLiveCount(dir, shard);
+		const countAfterUpdate = readLiveCount(dir);
 
 		assertEquals(countAfterInsert, countAfterUpdate, "liveCount must not grow on update");
 		assertEquals(await store.get(key), 99n, "updated value must be readable");
@@ -137,10 +137,8 @@ Deno.test("update does not increase liveCount", async () => {
 
 Deno.test("liveCount increments correctly for new inserts", async () => {
 	await withStore(async (store, dir) => {
-		// Insert 3 unique keys into shard 0 (keys with first byte = 0)
-		// u32 big-endian: first byte = (n >>> 24). For small n, first byte = 0 → shard 0.
 		await commitPairs(store, [[0, 1n], [1, 2n], [2, 3n]]);
-		const count = await readLiveCount(dir, 0);
+		const count = readLiveCount(dir);
 		assertEquals(count, 3);
 	});
 });
@@ -150,7 +148,7 @@ Deno.test("multiple WAL cycles accumulate liveCount correctly", async () => {
 		await commitPairs(store, [[0, 1n]]);
 		await commitPairs(store, [[1, 2n]]);
 		await commitPairs(store, [[2, 3n]]);
-		const count = await readLiveCount(dir, 0);
+		const count = readLiveCount(dir);
 		assertEquals(count, 3);
 	});
 });
@@ -158,13 +156,13 @@ Deno.test("multiple WAL cycles accumulate liveCount correctly", async () => {
 Deno.test("update across multiple WAL cycles does not inflate liveCount", async () => {
 	await withStore(async (store, dir) => {
 		await commitPairs(store, [[0, 1n]]);
-		const countAfter1 = await readLiveCount(dir, 0);
+		const countAfter1 = readLiveCount(dir);
 
 		// Update same key 5 times
 		for (let i = 0; i < 5; i++) {
 			await commitPairs(store, [[0, BigInt(i + 10)]]);
 		}
-		const countAfterUpdates = await readLiveCount(dir, 0);
+		const countAfterUpdates = readLiveCount(dir);
 
 		assertEquals(countAfter1, 1);
 		assertEquals(countAfterUpdates, 1, "repeated updates must not inflate liveCount");
@@ -223,7 +221,7 @@ Deno.test("clear wipes all data and resets liveCount", async () => {
 		assertEquals(await store.get(1), undefined);
 		assertEquals(await store.get(2), undefined);
 
-		const count = await readLiveCount(dir, 0);
+		const count = readLiveCount(dir);
 		assertEquals(count, 0, "liveCount must be 0 after clear");
 	});
 });
@@ -248,8 +246,9 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 			// WAL replay happens externally (via Store.recover), but createKVStore opens any
 			// existing WAL as self.wal. Apply it manually here to simulate recover().
 			if (store.wal) {
-				await store.wal.apply();
-				await store.wal.discard();
+				const wal = store.wal;
+				await wal.apply();
+				await wal.discard();
 			}
 			assertEquals(await store.get(1), 111n);
 			assertEquals(await store.get(2), 222n);
@@ -262,16 +261,12 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 
 Deno.test("intra-batch collision: multiple keys in same shard slot probe correctly", async () => {
 	await withStore(async (store) => {
-		// All u32 keys with first byte = 0 go to shard 0. Within the shard, they may
-		// collide at the same hash slot. Insert enough keys to force probing.
-		// INITIAL_SLOTS_PER_SHARD = 4096. Insert 100 keys into shard 0 in a single batch.
 		const pairs: [number, bigint][] = [];
 		for (let i = 0; i < 100; i++) {
-			// Keys 0x00000000 to 0x00000063 — all land in shard 0 (first byte = 0)
 			pairs.push([i, BigInt(i * 1000)]);
 		}
 
-		// Commit all 100 in a single batch (exercises intra-batch walSlots probing)
+		// Commit all 100 in a single batch
 		const b = store.batch();
 		for (const [k, v] of pairs) b.set(k, v);
 		b.apply();
@@ -296,7 +291,7 @@ Deno.test("intra-batch updates: later set() for same key wins, single liveCount 
 		await wal.apply();
 
 		assertEquals(await store.get(0), 2n);
-		assertEquals(await readLiveCount(dir, 0), 1, "duplicate key in batch must count as 1 live entry");
+		assertEquals(readLiveCount(dir), 1, "duplicate key in batch must count as 1 live entry");
 		await wal.discard();
 	});
 });
@@ -304,7 +299,7 @@ Deno.test("intra-batch updates: later set() for same key wins, single liveCount 
 Deno.test("large volume: 10000 unique keys all readable after apply", async () => {
 	await withStore(async (store) => {
 		const COUNT = 10_000;
-		// Generate 10000 unique u32 keys spread across all 256 shards.
+		// Generate 10000 unique u32 keys spread across all shards.
 		// key = i * 65537 (0x10001) gives distinct values with varying first bytes.
 		const pairs: [number, bigint][] = [];
 		for (let i = 0; i < COUNT; i++) {
@@ -369,9 +364,7 @@ Deno.test("cannot create second WAL while one is active", async () => {
 
 Deno.test("growth: exceeding load factor rehashes correctly", async () => {
 	await withStore(async (store, dir) => {
-		// INITIAL_SLOTS_PER_SHARD = 4096, LOAD_FACTOR_THRESHOLD = 0.75
-		// Insert 3073 keys into shard 0 (> 75% of 4096) to trigger growth.
-		// Keys with first byte 0: key = i for i in [0, 3072].
+		// SQLite handles growth automatically; verify all keys survive.
 		const COUNT = 3_073;
 		for (let offset = 0; offset < COUNT; offset += 500) {
 			const end = Math.min(offset + 500, COUNT);
@@ -383,26 +376,20 @@ Deno.test("growth: exceeding load factor rehashes correctly", async () => {
 			await wal.discard();
 		}
 
-		// After growth, all keys must still be readable
 		for (let i = 0; i < COUNT; i += 100) {
-			assertEquals(await store.get(i), BigInt(i), `key ${i} missing after shard growth`);
+			assertEquals(await store.get(i), BigInt(i), `key ${i} missing`);
 		}
 
-		// liveCount in shard 0 must equal COUNT
-		const liveCount = await readLiveCount(dir, 0);
-		assertEquals(liveCount, COUNT, "liveCount must match number of distinct keys after growth");
+		const liveCount = readLiveCount(dir);
+		assertEquals(liveCount, COUNT, "liveCount must match number of distinct keys");
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Deterministic collision tests
+// Collision tests (SQLite handles these transparently via BLOB PRIMARY KEY)
 // ---------------------------------------------------------------------------
-// Keys 966 and 2304 (u32 big-endian, first byte = 0 → shard 0) hash to the
-// same slot 1892 in a 4096-slot shard. This is proven by the slotHash function.
 
 Deno.test("deterministic collision: two keys at same slot hash are both retrievable", async () => {
-	// Keys 966 and 2304 both hash to slot 1892 in shard 0 (4096 slots).
-	// 2304 must be found at slot 1893 (or next empty) via linear probing.
 	await withStore(async (store) => {
 		await commitPairs(store, [[966, 111n], [2304, 222n]]);
 		assertEquals(await store.get(966), 111n);
@@ -410,8 +397,7 @@ Deno.test("deterministic collision: two keys at same slot hash are both retrieva
 	});
 });
 
-Deno.test("deterministic collision: intra-batch walSlots probing for known collision pair", async () => {
-	// Both keys in one batch — exercises the incremental walSlots population fix.
+Deno.test("deterministic collision: intra-batch for known pair", async () => {
 	await withStore(async (store) => {
 		const b = store.batch();
 		b.set(966, 100n);
@@ -439,10 +425,10 @@ Deno.test("deterministic collision: update of colliding key does not disturb the
 Deno.test("deterministic collision: liveCount stays correct with colliding pair", async () => {
 	await withStore(async (store, dir) => {
 		await commitPairs(store, [[966, 1n], [2304, 2n]]);
-		assertEquals(await readLiveCount(dir, 0), 2);
+		assertEquals(readLiveCount(dir), 2);
 		// Update both — liveCount must stay 2
 		await commitPairs(store, [[966, 10n], [2304, 20n]]);
-		assertEquals(await readLiveCount(dir, 0), 2, "liveCount must not grow on updates of colliding pair");
+		assertEquals(readLiveCount(dir), 2, "liveCount must not grow on updates of colliding pair");
 	});
 });
 
@@ -525,10 +511,10 @@ Deno.test("wal.apply() is idempotent: applying same WAL twice does not corrupt d
 		b.apply();
 		const wal = await store.createWAL();
 		await wal.apply();
-		const countAfterFirst = await readLiveCount(dir, 0);
+		const countAfterFirst = readLiveCount(dir);
 		// Apply again (WAL file still on disk, not discarded)
 		await wal.apply();
-		const countAfterSecond = await readLiveCount(dir, 0);
+		const countAfterSecond = readLiveCount(dir);
 		assertEquals(countAfterFirst, 1);
 		assertEquals(countAfterSecond, 1, "double apply must not inflate liveCount");
 		assertEquals(await store.get(0), 42n);
@@ -556,23 +542,18 @@ Deno.test("batch.getMany respects batch-staged and store-staged values", async (
 
 Deno.test("growth: staged-only entries survive when growth is triggered by a subsequent WAL", async () => {
 	// Scenario: batch A is applied (entries land in staged, not disk), then batch B
-	// triggers maybeGrow during its createWAL. maybeGrow reads only from disk, so
-	// batch A's keys are missing from the rehashed layout. After wal.apply() clears
-	// staged, batch A's keys should still be readable — but won't be if the bug exists.
+	// triggers a WAL flush. After wal.apply() clears staged, batch A's keys must
+	// still be readable from SQLite.
 	await withStore(async (store) => {
-		// Fill shard 0 to just below the growth threshold without flushing to disk.
-		// INITIAL_SLOTS_PER_SHARD = 4096, LOAD_FACTOR_THRESHOLD = 0.75 → threshold at 3072.
-		// We want to stage ~3060 entries without a WAL flush, then add ~20 more to trigger growth.
 		const STAGE_COUNT = 3060;
 		const b = store.batch();
 		for (let i = 0; i < STAGE_COUNT; i++) b.set(i, BigInt(i));
 		b.apply(); // staged in memory only — NOT on disk yet
 
-		// Now add more entries in a second batch whose createWAL will trigger growth.
 		const b2 = store.batch();
 		for (let i = STAGE_COUNT; i < STAGE_COUNT + 20; i++) b2.set(i, BigInt(i));
 		b2.apply();
-		const wal = await store.createWAL(); // growth fires here
+		const wal = await store.createWAL();
 		await wal.apply(); // staged cleared here
 		await wal.discard();
 
@@ -590,10 +571,7 @@ Deno.test("growth: staged-only entries survive when growth is triggered by a sub
 });
 
 Deno.test("growth: intra-batch post-rehash collision resolved correctly", async () => {
-	// Keys 1420 and 4352 both hash to slot 316 in an 8192-slot shard (post-growth).
-	// First fill shard 0 past the 0.75 load threshold (3073 keys) to force growth,
-	// then insert the two colliding keys in a single batch — this exercises the
-	// walSlots.clear() + incremental re-find path in the grew branch.
+	// Fill past 3073 keys then insert two more in a single batch — SQLite handles all of this.
 	await withStore(async (store) => {
 		// Fill to just below growth threshold in chunks, avoiding keys 1420 and 4352
 		const FILL = 3_073;
@@ -610,10 +588,7 @@ Deno.test("growth: intra-batch post-rehash collision resolved correctly", async 
 			await wal.discard();
 		}
 
-		// Now insert the collision pair in one batch — this batch will trigger growth
-		// (liveCount ≈ 3071, adding 2 new → projected ≥ 0.75 * 4096).
-		// After growth to 8192 slots, both keys must be re-resolved with incremental
-		// walSlots probing to handle their post-rehash collision at slot 316.
+		// Now insert the two keys in one batch.
 		const b = store.batch();
 		b.set(1420, 1420n);
 		b.set(4352, 4352n);
@@ -622,8 +597,8 @@ Deno.test("growth: intra-batch post-rehash collision resolved correctly", async 
 		await wal.apply();
 		await wal.discard();
 
-		assertEquals(await store.get(1420), 1420n, "first colliding key must be readable after growth");
-		assertEquals(await store.get(4352), 4352n, "second colliding key must be readable after growth");
+		assertEquals(await store.get(1420), 1420n, "first key must be readable");
+		assertEquals(await store.get(4352), 4352n, "second key must be readable");
 	});
 });
 
