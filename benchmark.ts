@@ -107,7 +107,7 @@ async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Ar
 // ─── SQLite ───────────────────────────────────────────────────────────────────
 
 async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
-	console.log("\n  SQLite");
+	console.log("\n  SQLite (node:sqlite)");
 	const db = new DatabaseSync(`${dir}/bench_sqlite.db`);
 	db.exec(`PRAGMA journal_mode = WAL`);
 	db.exec(`PRAGMA synchronous = NORMAL`);
@@ -159,13 +159,13 @@ async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Arr
 	const stat = await Deno.stat(`${dir}/bench_sqlite.db`);
 	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
-	return { name: "SQLite (node)", writeOps, readOps, batchReadOps, fileSize: stat.size };
+	return { name: "node:sqlite", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
 // ─── @db/sqlite ───
 
 async function benchmarkDbSQLite(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
-	console.log("\n  @db/sqlite");
+	console.log("\n SQlite (@db/sqlite)");
 	const db = new Database(`${dir}/bench_db_sqlite.db`);
 	db.exec(`PRAGMA journal_mode = WAL`);
 	db.exec(`PRAGMA synchronous = NORMAL`);
