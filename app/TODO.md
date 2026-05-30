@@ -10,8 +10,50 @@
 - [x] KV shard growth is not atomic, is not failsafe, doesnt survive power outage or termination. fix it.
 - [ ] then fully sync check the full chain size. then fucking refactor everything, codebase has kinda become a mess.
 - [ ] need a better kv impl
-- [ ] for blob store, staged can just be a big uint8array probably. or "parts" of it. would make reading from staged
+- [x] for blob store, staged can just be a big uint8array probably. or "parts" of it. would make reading from staged
       easier to handle. then updates can also update on those parts etc... like dynamic sized small chunks in memory.
+- [ ] blobstore need patch.
+
+---
+
+- [ ] output needs `spentBy` pointing to the spender tx with u48, then we can find the input in that tx.
+- [ ] we need a linked list for inputs and outputs. every input or output
+
+```ts
+[value: U51]
+[scriptTypeId: U4]	// OP_RETURN shouldn't have rest after payload
+[scriptpayload]
+[spentBy: U48]     	// which tx spent this output (find input O(N))
+[deposit_prev: U48]	// prev output with same scriptpubkey
+[deposit_next: U48]	// next output with same scriptpubkey
+```
+
+```ts
+[...existing_struct...]
+[withdraw_prev: U48]     // prev input spending same scriptpubkey
+[withdraw_next: U48]     // next input spending same scriptpubkey
+```
+
+```ts
+spk → [deposit_head: U48, deposit_tail: U48, withdraw_head: U48, withdraw_tail: U48]
+```
+
+`deposit_head` has the real data scriptpubkey, no pointer.
+
+An alternative might look like this:
+
+```ts
+spk → [deposit_head: U48]
+```
+
+since `deposit_head` points to the raw scriptpubkey, within it we can inlude the rest of:
+
+```ts
+[deposit_tail: U48, withdraw_head: U48, withdraw_tail: U48]
+```
+
+but i dont think that is gonna change much
+
 - [ ] verify should be seperated complately to its own height meta data, and worker shouldnt effect the main thread and
       storage stuff. so it shouldn't effect raw download and write speed we have without verification.
 - [ ] block txs start pointer shouldnt be packed with the header. limits parallelism. instead it should have a seperate
@@ -43,3 +85,6 @@
 - [ ] support Satoshi RPC endpoints.
 - [ ] rename mempool to txpool everywhere.
 - [ ] chunk compression for cold data (LZ4 or similar), with uncompressed cache for hot chunks.
+
+```
+```

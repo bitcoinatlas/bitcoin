@@ -33,12 +33,12 @@ function randomBytes(size: number): Uint8Array {
 
 // ─── KVStore ─────────────────────────────────────────────────────────────────
 
-async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
+async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
 	console.log("\n  KVStore");
 
 	const store = await createKVStore({
 		name: "bench_kv",
-		path: "data/bench_kv",
+		path: `${dir}/bench_kv`,
 		keyCodec: new BytesCodec({ size: KEY_SIZE }),
 		valueCodec: new BytesCodec({ size: VALUE_SIZE }),
 	});
@@ -85,8 +85,8 @@ async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 	store.close();
 
 	let fileSize = 0;
-	for await (const e of Deno.readDir("data/bench_kv")) {
-		if (e.isFile) fileSize += (await Deno.stat(`data/bench_kv/${e.name}`)).size;
+	for await (const e of Deno.readDir(`${dir}/bench_kv`)) {
+		if (e.isFile) fileSize += (await Deno.stat(`${dir}/bench_kv/${e.name}`)).size;
 	}
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
@@ -95,9 +95,9 @@ async function benchmarkKVStore(keys: Uint8Array[], values: Uint8Array[]) {
 
 // ─── SQLite ───────────────────────────────────────────────────────────────────
 
-async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
+async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
 	console.log("\n  SQLite");
-	const db = new DatabaseSync("data/bench_sqlite.db");
+	const db = new DatabaseSync(`${dir}/bench_sqlite.db`);
 	db.exec(`PRAGMA journal_mode = WAL`);
 	db.exec(`PRAGMA synchronous = NORMAL`);
 	db.exec(`CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)`);
@@ -144,7 +144,7 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
 
 	db.close();
 
-	const stat = await Deno.stat("data/bench_sqlite.db");
+	const stat = await Deno.stat(`${dir}/bench_sqlite.db`);
 	console.log(`      File: ${(stat.size / 1024 / 1024).toFixed(2)} MB`);
 
 	return { name: "SQLite", writeOps, readOps, batchReadOps, fileSize: stat.size };
@@ -152,12 +152,12 @@ async function benchmarkSQLite(keys: Uint8Array[], values: Uint8Array[]) {
 
 // ─── ArrayStore ───────────────────────────────────────────────────────────────
 
-async function benchmarkArrayStore(items: Uint8Array[]) {
+async function benchmarkArrayStore(dir: string, items: Uint8Array[]) {
 	console.log("\n  ArrayStore");
 
 	const store = await createArrayStore({
 		name: "bench_array",
-		path: "data/bench_array",
+		path: `${dir}/bench_array`,
 		codec: new BytesCodec({ size: ARRAY_ITEM_SIZE }),
 	});
 
@@ -203,8 +203,8 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 	store.close();
 
 	let fileSize = 0;
-	for await (const e of Deno.readDir("data/bench_array")) {
-		if (e.isFile) fileSize += (await Deno.stat(`data/bench_array/${e.name}`)).size;
+	for await (const e of Deno.readDir(`${dir}/bench_array`)) {
+		if (e.isFile) fileSize += (await Deno.stat(`${dir}/bench_array/${e.name}`)).size;
 	}
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
@@ -213,12 +213,12 @@ async function benchmarkArrayStore(items: Uint8Array[]) {
 
 // ─── BlobStore ────────────────────────────────────────────────────────────────
 
-async function benchmarkBlobStore(blobs: Uint8Array[]) {
+async function benchmarkBlobStore(dir: string, blobs: Uint8Array[]) {
 	console.log("\n  BlobStore");
 
 	const store = await createBlobStore({
 		name: "bench_blob",
-		path: "data/bench_blob",
+		path: `${dir}/bench_blob`,
 	});
 
 	// Writes — one batch for all blobs, record pointers
@@ -246,9 +246,9 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 	console.log(`      ${readOps.toFixed(0)} ops/sec  (${readMBps.toFixed(1)} MB/s)`);
 
 	let fileSize = 0;
-	for await (const e of Deno.readDir("data/bench_blob")) {
+	for await (const e of Deno.readDir(`${dir}/bench_blob`)) {
 		if (e.isFile && e.name.startsWith("chunk_")) {
-			fileSize += (await Deno.stat(`data/bench_blob/${e.name}`)).size;
+			fileSize += (await Deno.stat(`${dir}/bench_blob/${e.name}`)).size;
 		}
 	}
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
@@ -259,9 +259,8 @@ async function benchmarkBlobStore(blobs: Uint8Array[]) {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-	await Deno.remove("data", { recursive: true }).catch(() => {});
-	await Deno.mkdir("data", { recursive: true });
-
+	const dir = await Deno.makeTempDir({ prefix: "benchmark_" });
+	try {
 	// ── KV benchmarks ──────────────────────────────────────────────────────────
 	console.log(`KV Store Benchmark`);
 	console.log(`  Entries: ${KV_TOTAL.toLocaleString()}, Key: ${KEY_SIZE}B, Value: ${VALUE_SIZE}B`);
@@ -274,8 +273,8 @@ async function main() {
 	}
 
 	const kvResults = [
-		await benchmarkKVStore(keys, values),
-		await benchmarkSQLite(keys, values),
+		await benchmarkKVStore(dir, keys, values),
+		await benchmarkSQLite(dir, keys, values),
 	];
 
 	console.log("\n" + "=".repeat(62));
@@ -298,7 +297,7 @@ async function main() {
 	const arrayItems: Uint8Array[] = [];
 	for (let i = 0; i < ARRAY_TOTAL; i++) arrayItems.push(randomBytes(ARRAY_ITEM_SIZE));
 
-	const arrayResult = await benchmarkArrayStore(arrayItems);
+	const arrayResult = await benchmarkArrayStore(dir, arrayItems);
 
 	console.log("\n" + "=".repeat(62));
 	console.log("ARRAY RESULTS");
@@ -320,7 +319,7 @@ async function main() {
 	const blobItems: Uint8Array[] = [];
 	for (let i = 0; i < BLOB_TOTAL; i++) blobItems.push(randomBytes(BLOB_SIZE));
 
-	const blobResult = await benchmarkBlobStore(blobItems);
+	const blobResult = await benchmarkBlobStore(dir, blobItems);
 
 	console.log("\n" + "=".repeat(65));
 	console.log("BLOB RESULTS");
@@ -334,8 +333,9 @@ async function main() {
 			(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
 		}MB`,
 	);
-
-	await Deno.remove("data", { recursive: true }).catch(() => {});
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
 }
 
 main().catch(console.error);

@@ -1,5 +1,5 @@
 import { delay } from "@std/async";
-import { atomicSave, appendStorageSnapshot } from "~/chain.ts";
+import { appendStorageSnapshot, atomicSave } from "~/chain.ts";
 import { syncBodiesFromPeers } from "~/bodies.ts";
 import { syncHeadersFromPeers } from "~/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
@@ -8,8 +8,8 @@ import { serve } from "~/serve.ts";
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 const HTTP_PORT = 3000;
-const SAVE_INTERVAL_MS = 2 * 60_000;
-const SAVE_HEAP_HEADROOM = 1.5 * 1024 * 1024 * 1024; // 1 GB above baseline
+const SAVE_INTERVAL_MS = 5 * 60_000;
+const SAVE_HEAP_HEADROOM = 1.5 * 1024 * 1024 * 1024;
 const MAX_PEERS = 8;
 const FAILED_RETRY_MS = 5 * 60 * 1000;
 
