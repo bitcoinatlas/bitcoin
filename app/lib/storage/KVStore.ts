@@ -38,6 +38,7 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
+	slotsGrowthPerShard?: number;
 };
 
 const NUM_SHARDS = 256;
@@ -56,6 +57,7 @@ type ShardState = {
 
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	const { name, path, keyCodec, valueCodec } = options;
+	const slotsGrowthPerShard = options.slotsGrowthPerShard ?? SLOTS_GROWTH_PER_SHARD;
 	const keyStride = keyCodec.stride.size;
 	const valueStride = valueCodec.stride.size;
 	const slotSize = 1 + keyStride + valueStride;
@@ -177,7 +179,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		// Compute target slot count: keep growing until projected load is safely below threshold.
 		let newSlotCount = shard.slotCount;
 		while (projected / newSlotCount >= LOAD_FACTOR_THRESHOLD) {
-			newSlotCount += SLOTS_GROWTH_PER_SHARD;
+			newSlotCount += slotsGrowthPerShard;
 		}
 
 		console.log(`[KVStore:${name}] shard ${s} growing: live=${projected} slots=${shard.slotCount} → ${newSlotCount}`);
@@ -319,45 +321,21 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			const shardStaged = staged[s]!;
 			if (shardStaged.size === 0) continue;
 
-			// Single pass: resolve slot indices and count new entries for growth check.
+			// Pre-grow using staged.size as an upper bound on new entries, ensuring there is
+			// enough capacity before any findSlot calls. This avoids the "shard is full" error
+			// that occurred when maybeGrow was called only after slot resolution.
+			await maybeGrow(s, shardStaged.size);
+
+			// Single pass: resolve slot indices for all staged pairs.
 			// walSlots is populated incrementally so that subsequent findSlot calls in the same
 			// pass probe past already-claimed slots (handles intra-batch hash collisions).
-			// Saves N findSlot invocations + probe-loop iterations vs. the old two-pass approach;
-			// disk reads (readSlot) are the same either way since the old second pass hit walSlots.
-			const resolved: Array<{ keyBytes: Uint8Array; valueBytes: Uint8Array; slotIdx: number }> = [];
-			let newCount = 0;
 			for (const [keyBytes, valueBytes] of shardStaged) {
-				const { slotIdx, found } = await findSlot(s, keyBytes, walSlots[s]!);
-				if (!found) newCount++;
-				// Mark slot as claimed so later keys in this pass probe past it correctly.
-				const provisional = new Uint8Array(slotSize);
-				provisional[0] = OCCUPIED_LIVE;
-				provisional.set(keyBytes, 1);
-				walSlots[s]!.set(slotIdx, provisional);
-				resolved.push({ keyBytes, valueBytes, slotIdx });
-			}
-
-			const slotCountBefore = shards[s]!.slotCount;
-			await maybeGrow(s, newCount);
-			const grew = shards[s]!.slotCount !== slotCountBefore;
-
-			if (grew) {
-				// Shard layout changed — all cached slot indices are stale. Clear walSlots and re-find
-				// from scratch, again populating incrementally to handle intra-batch collisions.
-				walSlots[s]!.clear();
-				for (const { keyBytes, valueBytes } of resolved) {
-					const { slotIdx } = await findSlot(s, keyBytes, walSlots[s]!);
-					const buf = new Uint8Array(slotSize);
-					buf[0] = OCCUPIED_LIVE;
-					buf.set(keyBytes, 1);
-					buf.set(valueBytes, 1 + keyStride);
-					walSlots[s]!.set(slotIdx, buf);
-				}
-			} else {
-				// No growth — fill in real valueBytes over the provisional buffers.
-				for (const { valueBytes, slotIdx } of resolved) {
-					walSlots[s]!.get(slotIdx)!.set(valueBytes, 1 + keyStride);
-				}
+				const { slotIdx } = await findSlot(s, keyBytes, walSlots[s]!);
+				const buf = new Uint8Array(slotSize);
+				buf[0] = OCCUPIED_LIVE;
+				buf.set(keyBytes, 1);
+				buf.set(valueBytes, 1 + keyStride);
+				walSlots[s]!.set(slotIdx, buf);
 			}
 		}
 

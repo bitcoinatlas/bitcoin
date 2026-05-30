@@ -5,8 +5,9 @@
 - [x] on stores instead of "transaction" use the term, "batch", so it doesnt become confusing and mixed with bitcoin
       txs.
 - [x] forgot to seperate between txid and wtxid, do that.
-- [ ] blob store read tries to read from disk even if the data is in the stage only rn and not flushed. fix it. uses
+- [x] blob store read tries to read from disk even if the data is in the stage only rn and not flushed. fix it. uses
       `getFromDiskWithCodec` while it should read from staged.
+- [ ] KV shard growth is not atomic, is not failsafe, doesnt survive power outage or termination. fix it.
 - [ ] then fully sync check the full chain size. then fucking refactor everything, codebase has kinda become a mess.
 - [ ] need a better kv impl
 - [ ] for blob store, staged can just be a big uint8array probably. or "parts" of it. would make reading from staged
