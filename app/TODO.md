@@ -54,6 +54,8 @@ since `deposit_head` points to the raw scriptpubkey, within it we can inlude the
 
 but i dont think that is gonna change much
 
+- [ ] we shouldnt pause everything during flush, takes too much time. double buffer stage or something?? probably.
+- [ ] hand refactor the code clean up before making a real frontend ui
 - [ ] verify should be seperated complately to its own height meta data, and worker shouldnt effect the main thread and
       storage stuff. so it shouldn't effect raw download and write speed we have without verification.
 - [ ] block txs start pointer shouldnt be packed with the header. limits parallelism. instead it should have a seperate
