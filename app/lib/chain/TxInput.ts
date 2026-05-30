@@ -9,36 +9,28 @@ export type OutPoint = {
 	vout: number;
 };
 
-export type TxInputData = {
+export type TxInput = {
 	prevOut: OutPoint;
 	scriptSig: Uint8Array;
 	sequence: SequenceLock;
 	witness: Uint8Array[];
 };
 
-export class TxInput {
-	public data: TxInputData;
-
-	constructor(data: TxInputData) {
-		this.data = data;
+export async function getPrevOutTxId(input: TxInput): Promise<Uint8Array> {
+	const txId = input.prevOut.txId;
+	const { kind, value } = txId;
+	if (kind === "raw") {
+		return value;
 	}
 
-	public async getPrevOutTxId(): Promise<Uint8Array> {
-		const txId = this.data.prevOut.txId;
-		const { kind, value } = txId;
-		if (kind === "raw") {
-			return value;
-		}
-
-		if (kind === "pointer") {
-			const { getTxByPointer } = await import("~/chain.ts");
-			return await getTxByPointer(value).then((tx) => tx.data.txId);
-		}
-
-		if (kind === "coinbase") {
-			return COINBASE_TXID;
-		}
-
-		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
+	if (kind === "pointer") {
+		const { getTxByPointer } = await import("~/chain.ts");
+		return await getTxByPointer(value).then((tx) => tx.data.txId);
 	}
+
+	if (kind === "coinbase") {
+		return COINBASE_TXID;
+	}
+
+	throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
 }

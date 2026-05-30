@@ -1,6 +1,6 @@
 import { rawScriptPubKey, ScriptPubKey } from "./ScriptPubKey.ts";
 
-export type TxOutputData = {
+export type TxOutput = {
 	value: bigint;
 	spent: boolean;
 	scriptPubKey:
@@ -8,30 +8,22 @@ export type TxOutputData = {
 		| ScriptPubKey;
 };
 
-export class TxOutput {
-	public data: TxOutputData;
-
-	constructor(data: TxOutputData) {
-		this.data = data;
-	}
-
-	async getScriptPubKey(): Promise<ScriptPubKey> {
-		if (this.data.scriptPubKey.kind === "pointer") {
-			const { getTxOutputByPointer } = await import("~/chain.ts");
-			const output = await getTxOutputByPointer(this.data.scriptPubKey.value);
-			if (output.data.scriptPubKey.kind === "pointer") {
-				throw new Error([
-					`scriptPubKey resolution failed: pointer ${this.data.scriptPubKey.value} points to another pointer.`,
-					`Expected direct ScriptPubKey at that offset.`,
-				].join(" "));
-			}
-			return output.data.scriptPubKey;
-		} else {
-			return this.data.scriptPubKey;
+export async function getScriptPubKey(output: TxOutput): Promise<ScriptPubKey> {
+	if (output.scriptPubKey.kind === "pointer") {
+		const { getTxOutputByPointer } = await import("~/chain.ts");
+		const resolved = await getTxOutputByPointer(output.scriptPubKey.value);
+		if (resolved.scriptPubKey.kind === "pointer") {
+			throw new Error([
+				`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
+				`Expected direct ScriptPubKey at that offset.`,
+			].join(" "));
 		}
+		return resolved.scriptPubKey;
+	} else {
+		return output.scriptPubKey;
 	}
+}
 
-	async getRawScriptPubKey(): Promise<Uint8Array> {
-		return rawScriptPubKey(await this.getScriptPubKey());
-	}
+export async function getRawScriptPubKey(output: TxOutput): Promise<Uint8Array> {
+	return rawScriptPubKey(await getScriptPubKey(output));
 }

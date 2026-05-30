@@ -1,5 +1,5 @@
 import { Codec, Stride } from "@nomadshiba/codec";
-import { TxOutput, TxOutputData } from "~/lib/chain/TxOutput.ts";
+import { TxOutput } from "~/lib/chain/TxOutput.ts";
 import {
 	EXPECTED_SCRIPT_PAYLOAD_LEN,
 	normalizeScriptPubKey,
@@ -93,17 +93,17 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(output: TxOutput): Uint8Array<ArrayBuffer> {
-		const { data } = output;
+		const { value, spent, scriptPubKey } = output;
 
-		if (data.value < 0n || data.value >= (1n << 51n)) {
+		if (value < 0n || value >= (1n << 51n)) {
 			throw new Error("Value out of range for 51-bit integer");
 		}
 
-		const { kind, payload } = encodeScriptPubKey(data.scriptPubKey as StoredScriptPubKey);
+		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
 
 		let bits = BigInt(SCRIPT_KIND_TO_ID[kind]);
-		if (data.spent) bits |= 1n << 4n;
-		const combined = (bits << 51n) | data.value;
+		if (spent) bits |= 1n << 4n;
+		const combined = (bits << 51n) | value;
 
 		const header = new Uint8Array(7);
 		for (let i = 0; i < 7; i++) {
@@ -134,8 +134,8 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 
 		const [scriptPubKey, payloadSize] = decodeScriptPubKey(kind, bytes.subarray(7));
 
-		const data: TxOutputData = { value, spent, scriptPubKey };
-		return [new TxOutput(data), 7 + payloadSize];
+		const output: TxOutput = { value, spent, scriptPubKey };
+		return [output, 7 + payloadSize];
 	}
 }
 

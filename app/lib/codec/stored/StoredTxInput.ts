@@ -15,12 +15,12 @@ const resolvedPrevOutCodec = new StructCodec({
 	vout: U24LE,
 });
 
-// StoredTxInput codec that decodes to TxInput runtime class
+// StoredTxInput codec that decodes to plain TxInput data
 export class StoredTxInputCodec extends Codec<TxInput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(input: TxInput): Uint8Array<ArrayBuffer> {
-		const data = input.data;
+		const data = input;
 
 		let prevOutEncoded: Uint8Array;
 		if (data.prevOut.txId.kind === "pointer") {
@@ -104,12 +104,12 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
 		offset += witnessBytes;
 
-		const input = new TxInput({
+		const input: TxInput = {
 			prevOut: { txId, vout },
 			scriptSig,
 			sequence: SequenceLockCodec.fromU32(sequence),
 			witness,
-		});
+		};
 
 		return [input, offset];
 	}

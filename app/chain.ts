@@ -12,6 +12,7 @@ import { StoredBlock } from "~/lib/codec/stored/StoredBlock.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { encodeStoredTxWithOutputOffsets, StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { StoredTxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
+import { getRawScriptPubKey } from "~/lib/chain/TxOutput.ts";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
@@ -291,12 +292,12 @@ export async function appendBlockTxs(
 			txIdToPointerBatch.set(tx.data.txId, txPointer);
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
-				if (output.data.scriptPubKey.kind === "pointer") continue;
-				const raw = await output.getRawScriptPubKey();
+				if (output.scriptPubKey.kind === "pointer") continue;
+				const raw = await getRawScriptPubKey(output);
 				const hash = sha256(raw);
 				const existing = await pubKeyToPointerBatch.get(hash);
 				if (existing !== undefined) {
-					output.data.scriptPubKey = { kind: "pointer", value: existing };
+					output.scriptPubKey = { kind: "pointer", value: existing };
 				} else {
 					pubKeyToPointerBatch.set(hash, txPointer + voutOffsets[i]!);
 				}

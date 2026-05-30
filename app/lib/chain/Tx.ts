@@ -1,8 +1,8 @@
 import { equals } from "@std/bytes";
 import { getTxPointerById } from "~/chain.ts";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
-import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
-import { TxOutput } from "~/lib/chain/TxOutput.ts";
+import { OutPoint, TxInput, getPrevOutTxId } from "~/lib/chain/TxInput.ts";
+import { TxOutput, getScriptPubKey } from "~/lib/chain/TxOutput.ts";
 import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
@@ -33,23 +33,23 @@ export class Tx {
 		const witness: Uint8Array[][] = [];
 
 		for (const input of this.data.inputs) {
-			const txId = await input.getPrevOutTxId();
+			const prevTxId = await getPrevOutTxId(input);
 			inputs.push({
 				prevOut: {
-					txId,
-					vout: input.data.prevOut.vout,
+					txId: prevTxId,
+					vout: input.prevOut.vout,
 				},
-				scriptSig: input.data.scriptSig,
-				sequence: input.data.sequence,
+				scriptSig: input.scriptSig,
+				sequence: input.sequence,
 			});
-			if (this.data.witness) witness.push(input.data.witness);
+			if (this.data.witness) witness.push(input.witness);
 		}
 
 		const outputs: WireTxOutput[] = [];
 		for (const output of this.data.outputs) {
-			const scriptPubKey = await output.getScriptPubKey();
+			const scriptPubKey = await getScriptPubKey(output);
 			outputs.push({
-				value: output.data.value,
+				value: output.value,
 				scriptPubKey: rawScriptPubKey(scriptPubKey),
 			});
 		}
@@ -75,12 +75,12 @@ export class Tx {
 				txId = { kind: "pointer", value: prevOutTxPointer };
 			}
 
-			const input = new TxInput({
+			const input: TxInput = {
 				prevOut: { txId, vout: wireInput.prevOut.vout },
 				scriptSig: wireInput.scriptSig,
 				sequence: wireInput.sequence,
 				witness: inputWitness,
-			});
+			};
 
 			inputs.push(input);
 		}));
@@ -88,11 +88,11 @@ export class Tx {
 		const outputs: TxOutput[] = [];
 		for (const wireOutput of wireTx.outputs) {
 			const scriptPubKey = parseScriptPubKey(wireOutput.scriptPubKey);
-			const output = new TxOutput({
+			const output: TxOutput = {
 				value: wireOutput.value,
 				spent: false,
 				scriptPubKey,
-			});
+			};
 			outputs.push(output);
 		}
 
@@ -123,7 +123,7 @@ export class Tx {
 			txId: storedTx.txId,
 			version: storedTx.version,
 			locktime: storedTx.lockTime,
-			witness: storedTx.vin.some((input: TxInput) => input.data.witness.length > 0),
+			witness: storedTx.vin.some((input: TxInput) => input.witness.length > 0),
 			inputs: storedTx.vin,
 			outputs: storedTx.vout,
 		});
