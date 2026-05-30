@@ -66,10 +66,12 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	const stagedAppends: Array<{ pointer: number; data: Uint8Array }> = [];
 	let stagedLength = totalLength;
 
-	async function readFromDisk(pointer: number, buf: Uint8Array, allowEOF: boolean): Promise<number> {
+	async function read(pointer: number, buf: Uint8Array, allowEOF: boolean): Promise<number> {
 		let bytesRead = 0;
 		let currentPointer = pointer;
-		while (bytesRead < buf.length) {
+
+		// Read from disk chunks up to totalLength
+		while (bytesRead < buf.length && currentPointer < totalLength) {
 			const chunkIndex = Math.floor(currentPointer / chunkByteSize);
 			const offset = currentPointer % chunkByteSize;
 			const chunkPath = join(path, `chunk_${chunkIndex}`);
@@ -80,7 +82,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			const file = await Deno.open(chunkPath, { read: true });
 			try {
 				await file.seek(offset, Deno.SeekMode.Start);
-				while (bytesRead < buf.length) {
+				while (bytesRead < buf.length && currentPointer < totalLength) {
 					const n = await file.read(buf.subarray(bytesRead));
 					if (n === null) break;
 					bytesRead += n;
@@ -92,21 +94,35 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 			// If we didn't reach the next chunk boundary, we hit EOF within this chunk
 			if (currentPointer % chunkByteSize !== 0) break;
 		}
+
+		// Continue reading from staged appends (contiguous chunks after disk)
+		for (const entry of stagedAppends) {
+			if (bytesRead >= buf.length) break;
+			const entryEnd = entry.pointer + entry.data.length;
+			if (entryEnd <= currentPointer) continue; // entirely before current position
+			if (entry.pointer > currentPointer) break; // gap — staged entries should be contiguous
+			const srcOffset = currentPointer - entry.pointer;
+			const chunk = entry.data.subarray(srcOffset, srcOffset + (buf.length - bytesRead));
+			buf.set(chunk, bytesRead);
+			bytesRead += chunk.length;
+			currentPointer += chunk.length;
+		}
+
 		if (!allowEOF && bytesRead < buf.length) {
 			throw new Error("Unexpected EOF reading blob");
 		}
 		return bytesRead;
 	}
 
-	async function getFromDisk(pointer: number, length: number): Promise<Uint8Array> {
+	async function getBytes(pointer: number, length: number): Promise<Uint8Array> {
 		const buf = new Uint8Array(length);
-		await readFromDisk(pointer, buf, false);
+		await read(pointer, buf, false);
 		return buf;
 	}
 
-	async function getFromDiskWithCodec<T>(pointer: number, codec: Codec<T>, readAheadSize: number): Promise<T> {
+	async function getWithCodec<T>(pointer: number, codec: Codec<T>, readAheadSize: number): Promise<T> {
 		const buf = new Uint8Array(readAheadSize);
-		const bytesRead = await readFromDisk(pointer, buf, true);
+		const bytesRead = await read(pointer, buf, true);
 		const [value] = codec.decode(buf.subarray(0, bytesRead));
 		return value;
 	}
@@ -119,23 +135,11 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		options?: { readAheadSize?: number },
 	): Promise<Uint8Array | T> {
 		if (typeof lengthOrCodec === "number") {
-			const length = lengthOrCodec;
-			for (const entry of stagedAppends) {
-				if (entry.pointer === pointer && entry.data.length === length) {
-					return entry.data;
-				}
-			}
-			return await getFromDisk(pointer, length);
+			return await getBytes(pointer, lengthOrCodec);
 		} else {
 			const codec = lengthOrCodec;
 			const readAheadSize = options?.readAheadSize ?? (codec.stride.kind === "fixed" ? codec.stride.size : 4096);
-			for (const entry of stagedAppends) {
-				if (entry.pointer === pointer) {
-					const [value] = codec.decode(entry.data);
-					return value;
-				}
-			}
-			return await getFromDiskWithCodec(pointer, codec, readAheadSize);
+			return await getWithCodec(pointer, codec, readAheadSize);
 		}
 	}
 
@@ -164,23 +168,39 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 				lengthOrCodec: number | Codec,
 				options?: { readAheadSize?: number },
 			): Promise<any> {
+				// Extends the base read to also cover batchAppends after stagedAppends
+				async function readWithBatch(ptr: number, buf: Uint8Array, allowEOF: boolean): Promise<number> {
+					let bytesRead = await read(ptr, buf, true);
+					let currentPointer = ptr + bytesRead;
+					for (const entry of batchAppends) {
+						if (bytesRead >= buf.length) break;
+						const entryEnd = entry.pointer + entry.data.length;
+						if (entryEnd <= currentPointer) continue;
+						if (entry.pointer > currentPointer) break;
+						const srcOffset = currentPointer - entry.pointer;
+						const chunk = entry.data.subarray(srcOffset, srcOffset + (buf.length - bytesRead));
+						buf.set(chunk, bytesRead);
+						bytesRead += chunk.length;
+						currentPointer += chunk.length;
+					}
+					if (!allowEOF && bytesRead < buf.length) {
+						throw new Error("Unexpected EOF reading blob");
+					}
+					return bytesRead;
+				}
+
 				if (typeof lengthOrCodec === "number") {
 					const length = lengthOrCodec;
-					for (const entry of batchAppends) {
-						if (entry.pointer === pointer && entry.data.length === length) {
-							return entry.data;
-						}
-					}
-					return await get(pointer, length);
+					const buf = new Uint8Array(length);
+					await readWithBatch(pointer, buf, false);
+					return buf;
 				} else {
 					const codec = lengthOrCodec;
-					for (const entry of batchAppends) {
-						if (entry.pointer === pointer) {
-							const [value] = codec.decode(entry.data);
-							return value;
-						}
-					}
-					return await get(pointer, codec, options);
+					const readAheadSize = options?.readAheadSize ?? (codec.stride.kind === "fixed" ? codec.stride.size : 4096);
+					const buf = new Uint8Array(readAheadSize);
+					const bytesRead = await readWithBatch(pointer, buf, true);
+					const [value] = codec.decode(buf.subarray(0, bytesRead));
+					return value;
 				}
 			},
 			size(): number {
