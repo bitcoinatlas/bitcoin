@@ -85,18 +85,18 @@ async function commitPairs(
 	await wal.discard();
 }
 
-import { Database } from "@db/sqlite";
+import { RocksDatabase } from "@harperfast/rocksdb-js";
 
-/** Read total liveCount by summing COUNT(*) across all shard DBs in dir. */
-function readLiveCount(dir: string, shards = 16): number {
-	let total = 0;
-	for (let i = 0; i < shards; i++) {
-		const db = new Database(`${dir}/shard-${i}.db`);
-		const row = db.prepare("SELECT COUNT(*) as n FROM kv").get<{ n: number }>();
-		db.close();
-		total += row!.n;
-	}
-	return total;
+/** Read total liveCount by doing an exact key scan of the RocksDB database in dir. */
+function readLiveCount(dir: string): number {
+	// Open without readOnly so it shares the existing registry instance (if the
+	// store is still open), avoiding lock conflicts.  getKeysCount() without a
+	// range only returns an estimate, so iterate for an exact count.
+	const db = RocksDatabase.open(`${dir}/rocksdb`);
+	let count = 0;
+	for (const _ of db.getKeys()) count++;
+	db.close();
+	return count;
 }
 
 // ---------------------------------------------------------------------------

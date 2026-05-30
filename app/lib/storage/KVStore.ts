@@ -1,31 +1,12 @@
-import { Database } from "@db/sqlite";
+import { RocksDatabase, Store as RocksStore } from "@harperfast/rocksdb-js";
 import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import type { Batch, Store, WAL } from "~/lib/storage/Store.ts";
 import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 
-function fnv1a32(bytes: Uint8Array): number {
-	let h = 0x811c9dc5;
-	for (let i = 0; i < bytes.length; i++) {
-		h ^= bytes[i]!;
-		h = Math.imul(h, 0x01000193) >>> 0;
-	}
-	return h;
-}
-
 /**
- * A persistent key-value store backed by N SQLite databases (shards).
- *
- * Keys are routed to shards by `fnv1a32(keyBytes) % shardCount`. Default shard
- * count is 16; override with `options.shards`. Shard count is persisted in
- * `meta.json` so reopening with the wrong value is caught at startup.
- *
- * Each shard is a separate SQLite file (`shard-{i}.db`) with schema:
- *   CREATE TABLE kv (key BLOB PRIMARY KEY, value BLOB)
- *
- * All shards run in rollback-journal mode (DELETE) so they do not interfere
- * with our own WAL protocol.
+ * A persistent key-value store backed by RocksDB.
  *
  * Stage layout:
  *
@@ -61,26 +42,36 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
-	/** Number of SQLite shard files. Must be 1–256. */
-	shards: number;
-};
-
-type ShardDB = {
-	db: Database;
-	stmtGet: ReturnType<Database["prepare"]>;
-	stmtInsert: ReturnType<Database["prepare"]>;
-	stmtClear: ReturnType<Database["prepare"]>;
+	/** Kept for backward compatibility; no longer used (RocksDB manages sharding internally). */
+	shards?: number;
 };
 
 const WAL_HEADER = 4; // bytes reserved at the front of the WAL buffer for the u32 entryCount
 
+/**
+ * Custom Store that passes raw binary keys/values straight to RocksDB without
+ * any serialization.  The default Store encodes values through its own
+ * serializer (msgpack-like), which is expensive and wasteful for Uint8Array
+ * payloads that are already encoded by our codecs.
+ */
+// deno-lint-ignore no-explicit-any
+class BinaryStore extends RocksStore {
+	override encodeKey(key: any): any {
+		return key;
+	}
+	override decodeKey(key: any): any {
+		return key;
+	}
+	override encodeValue(value: any): any {
+		return value;
+	}
+	override decodeValue(value: any): any {
+		return value;
+	}
+}
+
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	const { name, path, keyCodec, valueCodec } = options;
-	const shardCount = options.shards;
-
-	if (shardCount < 1 || shardCount > 256 || !Number.isInteger(shardCount)) {
-		throw new Error(`shards must be an integer 1–256, got ${shardCount}`);
-	}
 
 	const keyStride = keyCodec.stride.size;
 	const valueStride = valueCodec.stride.size;
@@ -88,36 +79,18 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	await Deno.mkdir(path, { recursive: true });
 
-	// Persist shard count in meta.json so reopening with a different value is caught.
-	const metaPath = join(path, "meta.json");
-	if (await exists(metaPath)) {
-		const meta = JSON.parse(await Deno.readTextFile(metaPath)) as { shards: number };
-		if (meta.shards !== shardCount) {
-			throw new Error(
-				`KVStore at ${path} was created with shards=${meta.shards}, ` +
-					`but reopened with shards=${shardCount}`,
-			);
-		}
-	} else {
-		await Deno.writeTextFile(metaPath, JSON.stringify({ shards: shardCount }));
-	}
-
 	const walPath = join(path, "data.wal");
 
-	function openShard(i: number): ShardDB {
-		const db = new Database(join(path, `shard-${i}.db`));
-		db.exec(`CREATE TABLE IF NOT EXISTS kv (key BLOB PRIMARY KEY, value BLOB)`);
-		db.exec(`PRAGMA journal_mode=DELETE`);
-		db.exec(`PRAGMA synchronous=NORMAL`);
-		// 16MB cache per shard (× 16 shards = 256MB total, same as before).
-		db.exec(`PRAGMA cache_size=-16384`);
-		const stmtGet = db.prepare(`SELECT value FROM kv WHERE key = ?`);
-		const stmtInsert = db.prepare(`INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`);
-		const stmtClear = db.prepare(`DELETE FROM kv`);
-		return { db, stmtGet, stmtInsert, stmtClear };
-	}
-
-	const shards: ShardDB[] = Array.from({ length: shardCount }, (_, i) => openShard(i));
+	// Use a binary passthrough store so keys/values are stored as raw bytes
+	// without any serialization overhead.
+	const store = new BinaryStore(join(path, "rocksdb"), {
+		// Keep RocksDB's own WAL enabled so memtable writes survive a crash/kill
+		// before they are flushed to SST files.  Our data.wal lives at the parent
+		// path level, so there is no naming conflict.
+		// Allow more background flush/compaction threads.
+		parallelismThreads: 4,
+	});
+	const db = RocksDatabase.open(store);
 
 	// ── Stage: map-based, always O(1) reads ────────────────────────────────────
 	//
@@ -134,14 +107,6 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	let pendingBuf = new Uint8Array(entryStride * 64);
 	let pendingCount = 0;
-
-	function shardIndexOf(keyBytes: Uint8Array): number {
-		return fnv1a32(keyBytes) % shardCount;
-	}
-
-	function shardOf(keyBytes: Uint8Array): ShardDB {
-		return shards[shardIndexOf(keyBytes)]!;
-	}
 
 	function getByBytes(
 		keyBytes: Uint8Array,
@@ -160,10 +125,10 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		if (stagedVal !== undefined) {
 			return valueCodec.decode(stagedVal)[0];
 		}
-		// 3. SQLite
-		const row = shardOf(keyBytes).stmtGet.get<{ value: Uint8Array }>(keyBytes);
-		if (!row) return undefined;
-		return valueCodec.decode(row.value)[0];
+		// 3. RocksDB
+		const raw = db.getSync(keyBytes) as Uint8Array | undefined;
+		if (raw == null) return undefined;
+		return valueCodec.decode(raw)[0];
 	}
 
 	async function get(key: K): Promise<V | undefined> {
@@ -180,12 +145,12 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		stagedMap.clear();
 		pendingBuf = new Uint8Array(entryStride * 64);
 		pendingCount = 0;
-		for (const shard of shards) shard.stmtClear.run();
+		db.clearSync();
 	}
 
 	function close(): void {
 		if (self.wal) throw new Error("Can't close while WAL is in progress");
-		for (const shard of shards) shard.db.close();
+		db.close();
 	}
 
 	// --- batch ---
@@ -264,27 +229,16 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		const entryCount = view.getUint32(0, true);
 		if (entryCount === 0) return;
 
-		// One pass: open transactions lazily per shard, insert via subarray views, commit all.
-		const active = new Uint8Array(shardCount); // 1 = transaction open for this shard
-		let pos = WAL_HEADER;
-		for (let i = 0; i < entryCount; i++) {
-			const keySlice = buffer.subarray(pos, pos + keyStride);
-			const s = shardIndexOf(keySlice);
-			const shard = shards[s]!;
-			if (!active[s]) {
-				shard.db.exec("BEGIN");
-				active[s] = 1;
+		// Write all entries in a single RocksDB transaction for atomicity.
+		db.transactionSync((txn) => {
+			let pos = WAL_HEADER;
+			for (let i = 0; i < entryCount; i++) {
+				const keySlice = buffer.subarray(pos, pos + keyStride);
+				const valSlice = buffer.subarray(pos + keyStride, pos + entryStride);
+				txn.putSync(keySlice, valSlice);
+				pos += entryStride;
 			}
-			shard.stmtInsert.run(
-				keySlice,
-				buffer.subarray(pos + keyStride, pos + entryStride),
-			);
-			pos += entryStride;
-		}
-
-		for (let s = 0; s < shardCount; s++) {
-			if (active[s]) shards[s]!.db.exec("COMMIT");
-		}
+		});
 	}
 
 	async function createWAL(): Promise<WAL> {

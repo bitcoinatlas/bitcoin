@@ -42,6 +42,8 @@
     "jsr:@std/streams@^1.1.0": "1.1.0",
     "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/uuid@^1.1.1": "1.1.1",
+    "npm:@harperfast/rocksdb-js@*": "1.4.0",
+    "npm:@harperfast/rocksdb-js@^1.4.0": "1.4.0",
     "npm:@jsr/nomadshiba__codec@0.2.0": "0.2.0"
   },
   "jsr": {
@@ -195,9 +197,136 @@
     }
   },
   "npm": {
+    "@harperfast/extended-iterable@1.0.3": {
+      "integrity": "sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw=="
+    },
+    "@harperfast/rocksdb-js-darwin-arm64@1.4.0": {
+      "integrity": "sha512-78nT13T3P0Am0UfppPkMgUcTqS5Xx2ftXGl9IsmjWfrDawM1HOJt00n0GtPLoqOqrs80QVGbH9qgBZ22Bpty6Q==",
+      "os": ["darwin"],
+      "cpu": ["arm64"]
+    },
+    "@harperfast/rocksdb-js-darwin-x64@1.4.0": {
+      "integrity": "sha512-Ck+m4bfaiGikq1I0IAHS8AELnRL+GeKB99hR8ASR7DRAvQqYGYbPtUQQUKIQk9/8S8LviKUfto/cla1nRAcslg==",
+      "os": ["darwin"],
+      "cpu": ["x64"]
+    },
+    "@harperfast/rocksdb-js-linux-arm64-glibc@1.4.0": {
+      "integrity": "sha512-1yJkGMYR5Zh45j6joCu0cgQ+LPlsU0hjiPfv0f0cmXdjPiccXu7TemADjf3fnLz6p4p2VLP46s1fwJL7W+4lFw==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@harperfast/rocksdb-js-linux-arm64-musl@1.4.0": {
+      "integrity": "sha512-wIUqCl95Fs7WL0Ecm2j6Lu9TAFMbeDageMn2MfzqTtjx6fcQRL9dPH9o8HfIOfQ6Q0T0HTPpRwBTAtryYLmcFA==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@harperfast/rocksdb-js-linux-x64-glibc@1.4.0": {
+      "integrity": "sha512-J8anAA31Dv6+h+Uu/mDlszQOoEZiTOGqrLVbWQ7/W5cET2pKZ9IC6NJjvG3rjkkFT82G+spqJ+aESY2yuEJv5Q==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@harperfast/rocksdb-js-linux-x64-musl@1.4.0": {
+      "integrity": "sha512-bHJvxKlx/UqeG++aLpEcm6DDzNeGvDWvBZ+LKstVmF4mNZnR/QZ8TX9dYEGHFHMB+/PVrotRzUaMA5jgjfaMFQ==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@harperfast/rocksdb-js-win32-arm64@1.4.0": {
+      "integrity": "sha512-r6F+ZQWZmppu4mkuZwlyYDaXWXZ/AQldP2qdIRhICxXNfxcvQUxW0+CKmfnor3X3GNk46ThIaP7tM08fu7/Zag==",
+      "os": ["win32"],
+      "cpu": ["arm64"]
+    },
+    "@harperfast/rocksdb-js-win32-x64@1.4.0": {
+      "integrity": "sha512-msYlg3D2sm33sw7Uyiuxw04Jt8mrzcKOhjHFZbGAM9bqlUE0lar3txcO03oHwcKYVyoIEsnYgyddQFHdRLAU+A==",
+      "os": ["win32"],
+      "cpu": ["x64"]
+    },
+    "@harperfast/rocksdb-js@1.4.0": {
+      "integrity": "sha512-Qa62jWYG5GO+OI3gEHJI3WyhzgA6OdFLthbmB7TRJJMa2Zu8s3psKuAnM0t2v963ohRFF4UbyRw24zt5PX3k3A==",
+      "dependencies": [
+        "@harperfast/extended-iterable",
+        "msgpackr",
+        "ordered-binary"
+      ],
+      "optionalDependencies": [
+        "@harperfast/rocksdb-js-darwin-arm64",
+        "@harperfast/rocksdb-js-darwin-x64",
+        "@harperfast/rocksdb-js-linux-arm64-glibc",
+        "@harperfast/rocksdb-js-linux-arm64-musl",
+        "@harperfast/rocksdb-js-linux-x64-glibc",
+        "@harperfast/rocksdb-js-linux-x64-musl",
+        "@harperfast/rocksdb-js-win32-arm64",
+        "@harperfast/rocksdb-js-win32-x64"
+      ],
+      "bin": true
+    },
     "@jsr/nomadshiba__codec@0.2.0": {
       "integrity": "sha512-Haj1hCXuy2he0hCG52wuIpdk+ZEEzhsVpcdRa4NH2WPDKN20wyFwvgJeY6MMBrSXJpDeOzo0I4/A8D3ZfnDHyg==",
       "tarball": "https://npm.jsr.io/~/11/@jsr/nomadshiba__codec/0.2.0.tgz"
+    },
+    "@msgpackr-extract/msgpackr-extract-darwin-arm64@3.0.4": {
+      "integrity": "sha512-LCkGo6JDfaBhgST7UpPWgNgLINpcpabaHfyz5OBx75nUYxBsaEPxjnyNjWpeb/xBup/682QnBfRBy2/LvPutZQ==",
+      "os": ["darwin"],
+      "cpu": ["arm64"]
+    },
+    "@msgpackr-extract/msgpackr-extract-darwin-x64@3.0.4": {
+      "integrity": "sha512-zExlW9zUJKZH/tOtVMttwjKa4Xm/3KcNjnE3dPN92uCktwavMxpgCA3MoJK/DOnTWsQgo224OaST27/mPNAf+w==",
+      "os": ["darwin"],
+      "cpu": ["x64"]
+    },
+    "@msgpackr-extract/msgpackr-extract-linux-arm64@3.0.4": {
+      "integrity": "sha512-dgX0P/9wGPJeHFBG+ZmhgE6bmtMt7NP5CRBGyyktpopdk/mW4POnrpQsSLtKI1dwpc+pPLuXHDh6vvskyQE/sw==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@msgpackr-extract/msgpackr-extract-linux-arm@3.0.4": {
+      "integrity": "sha512-Tg3yX65f5GbtXLkrYEHE5oibZG9epyYWas7FogTTEJeDEF9JlXJzKgXaNhT3UXlTOeA+AfZpYZYZ0uPj7Cfquw==",
+      "os": ["linux"],
+      "cpu": ["arm"]
+    },
+    "@msgpackr-extract/msgpackr-extract-linux-x64@3.0.4": {
+      "integrity": "sha512-8TNXMEjJc3QEy7R/x1INhgiU+XakDAFUzBhaz7+Rbrs8NH5UQeHQxxmzsSBJGyV6I1jW79undiQm8tOI+D+8FQ==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4": {
+      "integrity": "sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ==",
+      "os": ["win32"],
+      "cpu": ["x64"]
+    },
+    "detect-libc@2.1.2": {
+      "integrity": "sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ=="
+    },
+    "msgpackr-extract@3.0.4": {
+      "integrity": "sha512-4kmO/MdyUIkLIvTPr8VHLil4AtoKIoniWPIEk5+CDy0xnWC84azhSFmuJ7PxZdsYtiP5kEeQsORAVIeMgxT+Hw==",
+      "dependencies": [
+        "node-gyp-build-optional-packages"
+      ],
+      "optionalDependencies": [
+        "@msgpackr-extract/msgpackr-extract-darwin-arm64",
+        "@msgpackr-extract/msgpackr-extract-darwin-x64",
+        "@msgpackr-extract/msgpackr-extract-linux-arm",
+        "@msgpackr-extract/msgpackr-extract-linux-arm64",
+        "@msgpackr-extract/msgpackr-extract-linux-x64",
+        "@msgpackr-extract/msgpackr-extract-win32-x64"
+      ],
+      "scripts": true,
+      "bin": true
+    },
+    "msgpackr@2.0.1": {
+      "integrity": "sha512-9J+tqTEsbHqY8YohazYgty7LgerFIWxvMLpUjqETSmjHojtJm2WnX2kK/2a1fLI7CO7ERP1YSEUXMucz4j+yBA==",
+      "optionalDependencies": [
+        "msgpackr-extract"
+      ]
+    },
+    "node-gyp-build-optional-packages@5.2.2": {
+      "integrity": "sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw==",
+      "dependencies": [
+        "detect-libc"
+      ],
+      "bin": true
+    },
+    "ordered-binary@1.6.1": {
+      "integrity": "sha512-QkCdPooczexPLiXIrbVOPYkR3VO3T6v2OyKRkR1Xbhpy7/LAVXwahnRCgRp78Oe/Ehf0C/HATAxfSr6eA1oX+w=="
     }
   },
   "redirects": {
@@ -237,7 +366,8 @@
       "jsr:@std/http@^1.1.0",
       "jsr:@std/path@1.1.2",
       "jsr:@std/streams@1.0.12",
-      "jsr:@std/uuid@^1.1.1"
+      "jsr:@std/uuid@^1.1.1",
+      "npm:@harperfast/rocksdb-js@^1.4.0"
     ]
   }
 }
