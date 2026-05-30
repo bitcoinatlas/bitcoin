@@ -22,7 +22,8 @@
 - [ ] keep blocks as bytes when they are in the pool until you start appending it, decoding makes it take more space
       because V8.
 - [ ] on IBD a tick can go on non stop. so make saves based on staged size as well, and also time based.
-- [ ] during WAL dont throw, instead await. or dont wait at all if posibble.
+- [ ] during WAL dont throw, instead await. or dont wait at all if posibble. atomic flush should be able to run while
+      the code is still running, we shoulnt wait for it. adds a lot of overhead
 - [x] create the pubkey index to use it for pointers. repeating pubkeys stored once, referenced by pointer everywhere.
 - [x] maybe dont hide pubkey enum type, and have a method to get the raw thing like prevout, so we dont have to keep
       checking its type over and over again in multiple places.
