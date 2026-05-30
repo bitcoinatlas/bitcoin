@@ -25,11 +25,12 @@
 		"dev:build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts --watch",
 		"check": "deno check && deno lint && deno test"
 	},
-	"unstable": ["raw-imports"],
+	"unstable": ["raw-imports", "kv"],
 	"compilerOptions": {
 		"lib": [
 			"deno.ns",
 			"deno.window",
+			"deno.unstable",
 			"esnext",
 			"dom",
 			"dom.iterable"

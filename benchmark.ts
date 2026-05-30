@@ -10,6 +10,8 @@ const VALUE_SIZE = 128;
 const KV_TOTAL = 1_000_000;
 const KV_READ_SAMPLES = 10_000;
 const KV_BATCH_SIZE = 100_000;
+const NUM_SHARDS = 256;
+const LOAD_FACTOR_THRESHOLD = 0.75;
 
 // ─── ArrayStore constants ─────────────────────────────────────────────────────
 const ARRAY_ITEM_SIZE = 64;
@@ -31,6 +33,19 @@ function randomBytes(size: number): Uint8Array {
 	return buf;
 }
 
+async function dirSize(path: string): Promise<number> {
+	let total = 0;
+	for await (const entry of Deno.readDir(path)) {
+		const entryPath = `${path}/${entry.name}`;
+		if (entry.isFile) {
+			total += (await Deno.stat(entryPath)).size;
+		} else if (entry.isDirectory) {
+			total += await dirSize(entryPath);
+		}
+	}
+	return total;
+}
+
 // ─── KVStore ─────────────────────────────────────────────────────────────────
 
 async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
@@ -41,6 +56,7 @@ async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Ar
 		path: `${dir}/bench_kv`,
 		keyCodec: new BytesCodec({ size: KEY_SIZE }),
 		valueCodec: new BytesCodec({ size: VALUE_SIZE }),
+		initialSlotsPerShard: Math.ceil(KV_TOTAL / NUM_SHARDS / LOAD_FACTOR_THRESHOLD) * 2,
 	});
 
 	// Writes — batch → WAL save → WAL apply → WAL discard
@@ -84,10 +100,7 @@ async function benchmarkKVStore(dir: string, keys: Uint8Array[], values: Uint8Ar
 
 	store.close();
 
-	let fileSize = 0;
-	for await (const e of Deno.readDir(`${dir}/bench_kv`)) {
-		if (e.isFile) fileSize += (await Deno.stat(`${dir}/bench_kv/${e.name}`)).size;
-	}
+	const fileSize = await dirSize(`${dir}/bench_kv`);
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
 	return { name: "KVStore", writeOps, readOps, batchReadOps, fileSize };
@@ -150,6 +163,68 @@ async function benchmarkSQLite(dir: string, keys: Uint8Array[], values: Uint8Arr
 	return { name: "SQLite", writeOps, readOps, batchReadOps, fileSize: stat.size };
 }
 
+// ─── Deno KV ──────────────────────────────────────────────────────────────────
+
+// Limits: max 1000 mutations per atomic, max 10 keys per getMany.
+const DENO_KV_ATOMIC_LIMIT = 1000;
+const DENO_KV_GETMANY_LIMIT = 10;
+
+async function benchmarkDenoKV(dir: string, keys: Uint8Array[], values: Uint8Array[]) {
+	console.log("\n  Deno KV");
+
+	const kvPath = `${dir}/bench_deno_kv`;
+	const kv = await Deno.openKv(kvPath);
+
+	// Writes — atomic batches of 1000 (API limit)
+	console.log("    Writing...");
+	const writeStart = performance.now();
+	for (let i = 0; i < KV_TOTAL; i += KV_BATCH_SIZE) {
+		const end = Math.min(i + KV_BATCH_SIZE, KV_TOTAL);
+		for (let j = i; j < end; j += DENO_KV_ATOMIC_LIMIT) {
+			const batchEnd = Math.min(j + DENO_KV_ATOMIC_LIMIT, end);
+			const atomic = kv.atomic();
+			for (let k = j; k < batchEnd; k++) atomic.set([keys[k]!], values[k]!);
+			await atomic.commit();
+		}
+		const elapsed = (performance.now() - writeStart) / 1000;
+		const rate = end / elapsed;
+		console.log(
+			`      ${(end / KV_TOTAL * 100).toFixed(1)}% - ${end.toLocaleString()} entries (${
+				rate.toFixed(0)
+			} ops/sec)`,
+		);
+	}
+	const writeOps = KV_TOTAL / ((performance.now() - writeStart) / 1000);
+	console.log(`      Total: ${writeOps.toFixed(0)} ops/sec`);
+
+	// Reads (single)
+	console.log("    Reading (single)...");
+	const readStart = performance.now();
+	for (let i = 0; i < KV_READ_SAMPLES; i++) await kv.get([keys[i]!]);
+	const readOps = KV_READ_SAMPLES / ((performance.now() - readStart) / 1000);
+	console.log(`      ${readOps.toFixed(0)} ops/sec`);
+
+	// Reads (batch) — getMany limit is 10 keys
+	console.log(`    Reading (batch/${DENO_KV_GETMANY_LIMIT})...`);
+	const batchReadStart = performance.now();
+	for (let i = 0; i < KV_READ_SAMPLES; i += DENO_KV_GETMANY_LIMIT) {
+		const end = Math.min(i + DENO_KV_GETMANY_LIMIT, KV_READ_SAMPLES);
+		await kv.getMany(keys.slice(i, end).map((k) => [k]));
+	}
+	const batchReadOps = KV_READ_SAMPLES / ((performance.now() - batchReadStart) / 1000);
+	console.log(`      ${batchReadOps.toFixed(0)} ops/sec`);
+
+	kv.close();
+
+	let fileSize = 0;
+	for (const suffix of ["", "-wal", "-shm"]) {
+		fileSize += await Deno.stat(`${kvPath}${suffix}`).then((s) => s.size).catch(() => 0);
+	}
+	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+
+	return { name: "Deno KV", writeOps, readOps, batchReadOps, fileSize };
+}
+
 // ─── ArrayStore ───────────────────────────────────────────────────────────────
 
 async function benchmarkArrayStore(dir: string, items: Uint8Array[]) {
@@ -202,10 +277,7 @@ async function benchmarkArrayStore(dir: string, items: Uint8Array[]) {
 
 	store.close();
 
-	let fileSize = 0;
-	for await (const e of Deno.readDir(`${dir}/bench_array`)) {
-		if (e.isFile) fileSize += (await Deno.stat(`${dir}/bench_array/${e.name}`)).size;
-	}
+	const fileSize = await dirSize(`${dir}/bench_array`);
 	console.log(`      File: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
 	return { name: "ArrayStore", writeOps, readOps, rangeOps, fileSize };
@@ -261,78 +333,79 @@ async function benchmarkBlobStore(dir: string, blobs: Uint8Array[]) {
 async function main() {
 	const dir = await Deno.makeTempDir({ prefix: "benchmark_" });
 	try {
-	// ── KV benchmarks ──────────────────────────────────────────────────────────
-	console.log(`KV Store Benchmark`);
-	console.log(`  Entries: ${KV_TOTAL.toLocaleString()}, Key: ${KEY_SIZE}B, Value: ${VALUE_SIZE}B`);
-	console.log(`\n  Generating KV test data...`);
-	const keys: Uint8Array[] = [];
-	const values: Uint8Array[] = [];
-	for (let i = 0; i < KV_TOTAL; i++) {
-		keys.push(randomBytes(KEY_SIZE));
-		values.push(randomBytes(VALUE_SIZE));
-	}
+		// ── KV benchmarks ──────────────────────────────────────────────────────────
+		console.log(`KV Store Benchmark`);
+		console.log(`  Entries: ${KV_TOTAL.toLocaleString()}, Key: ${KEY_SIZE}B, Value: ${VALUE_SIZE}B`);
+		console.log(`\n  Generating KV test data...`);
+		const keys: Uint8Array[] = [];
+		const values: Uint8Array[] = [];
+		for (let i = 0; i < KV_TOTAL; i++) {
+			keys.push(randomBytes(KEY_SIZE));
+			values.push(randomBytes(VALUE_SIZE));
+		}
 
-	const kvResults = [
-		await benchmarkKVStore(dir, keys, values),
-		await benchmarkSQLite(dir, keys, values),
-	];
+		const kvResults = [
+			await benchmarkKVStore(dir, keys, values),
+			await benchmarkSQLite(dir, keys, values),
+			await benchmarkDenoKV(dir, keys, values),
+		];
 
-	console.log("\n" + "=".repeat(62));
-	console.log("KV RESULTS");
-	console.log("=".repeat(62));
-	console.log("Store              Writes      Single       Batch      Size");
-	console.log("-".repeat(62));
-	for (const r of kvResults) {
+		console.log("\n" + "=".repeat(62));
+		console.log("KV RESULTS");
+		console.log("=".repeat(62));
+		console.log("Store              Writes      Single    Batch(10/100)      Size");
+		console.log("-".repeat(62));
+		for (const r of kvResults) {
+			console.log(
+				`${r.name.padEnd(17)} ${r.writeOps.toFixed(0).padStart(9)} ${r.readOps.toFixed(0).padStart(11)} ${
+					r.batchReadOps.toFixed(0).padStart(11)
+				} ${(r.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
+			);
+		}
+
+		// ── ArrayStore benchmark ───────────────────────────────────────────────────
+		console.log(`\nArrayStore Benchmark`);
+		console.log(`  Items: ${ARRAY_TOTAL.toLocaleString()}, Item size: ${ARRAY_ITEM_SIZE}B`);
+		console.log(`\n  Generating array test data...`);
+		const arrayItems: Uint8Array[] = [];
+		for (let i = 0; i < ARRAY_TOTAL; i++) arrayItems.push(randomBytes(ARRAY_ITEM_SIZE));
+
+		const arrayResult = await benchmarkArrayStore(dir, arrayItems);
+
+		console.log("\n" + "=".repeat(62));
+		console.log("ARRAY RESULTS");
+		console.log("=".repeat(62));
+		console.log("Store              Writes      Single       Range      Size");
+		console.log("-".repeat(62));
 		console.log(
-			`${r.name.padEnd(17)} ${r.writeOps.toFixed(0).padStart(9)} ${r.readOps.toFixed(0).padStart(11)} ${
-				r.batchReadOps.toFixed(0).padStart(11)
-			} ${(r.fileSize / 1024 / 1024).toFixed(1).padStart(6)}MB`,
+			`${arrayResult.name.padEnd(17)} ${arrayResult.writeOps.toFixed(0).padStart(9)} ${
+				arrayResult.readOps.toFixed(0).padStart(11)
+			} ${arrayResult.rangeOps.toFixed(0).padStart(11)} ${
+				(arrayResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
+			}MB`,
 		);
-	}
 
-	// ── ArrayStore benchmark ───────────────────────────────────────────────────
-	console.log(`\nArrayStore Benchmark`);
-	console.log(`  Items: ${ARRAY_TOTAL.toLocaleString()}, Item size: ${ARRAY_ITEM_SIZE}B`);
-	console.log(`\n  Generating array test data...`);
-	const arrayItems: Uint8Array[] = [];
-	for (let i = 0; i < ARRAY_TOTAL; i++) arrayItems.push(randomBytes(ARRAY_ITEM_SIZE));
+		// ── BlobStore benchmark ────────────────────────────────────────────────────
+		console.log(`\nBlobStore Benchmark`);
+		console.log(`  Blobs: ${BLOB_TOTAL.toLocaleString()}, Blob size: ${BLOB_SIZE}B`);
+		console.log(`\n  Generating blob test data...`);
+		const blobItems: Uint8Array[] = [];
+		for (let i = 0; i < BLOB_TOTAL; i++) blobItems.push(randomBytes(BLOB_SIZE));
 
-	const arrayResult = await benchmarkArrayStore(dir, arrayItems);
+		const blobResult = await benchmarkBlobStore(dir, blobItems);
 
-	console.log("\n" + "=".repeat(62));
-	console.log("ARRAY RESULTS");
-	console.log("=".repeat(62));
-	console.log("Store              Writes      Single       Range      Size");
-	console.log("-".repeat(62));
-	console.log(
-		`${arrayResult.name.padEnd(17)} ${arrayResult.writeOps.toFixed(0).padStart(9)} ${
-			arrayResult.readOps.toFixed(0).padStart(11)
-		} ${arrayResult.rangeOps.toFixed(0).padStart(11)} ${
-			(arrayResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
-		}MB`,
-	);
-
-	// ── BlobStore benchmark ────────────────────────────────────────────────────
-	console.log(`\nBlobStore Benchmark`);
-	console.log(`  Blobs: ${BLOB_TOTAL.toLocaleString()}, Blob size: ${BLOB_SIZE}B`);
-	console.log(`\n  Generating blob test data...`);
-	const blobItems: Uint8Array[] = [];
-	for (let i = 0; i < BLOB_TOTAL; i++) blobItems.push(randomBytes(BLOB_SIZE));
-
-	const blobResult = await benchmarkBlobStore(dir, blobItems);
-
-	console.log("\n" + "=".repeat(65));
-	console.log("BLOB RESULTS");
-	console.log("=".repeat(65));
-	console.log("Store              Writes    Write MB/s    Single  Read MB/s  Size");
-	console.log("-".repeat(65));
-	console.log(
-		`${blobResult.name.padEnd(17)} ${blobResult.writeOps.toFixed(0).padStart(9)} ${
-			blobResult.writeMBps.toFixed(1).padStart(11)
-		} ${blobResult.readOps.toFixed(0).padStart(9)} ${blobResult.readMBps.toFixed(1).padStart(9)} ${
-			(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
-		}MB`,
-	);
+		console.log("\n" + "=".repeat(65));
+		console.log("BLOB RESULTS");
+		console.log("=".repeat(65));
+		console.log("Store              Writes    Write MB/s    Single  Read MB/s  Size");
+		console.log("-".repeat(65));
+		console.log(
+			`${blobResult.name.padEnd(17)} ${blobResult.writeOps.toFixed(0).padStart(9)} ${
+				blobResult.writeMBps.toFixed(1).padStart(11)
+			} ${blobResult.readOps.toFixed(0).padStart(9)} ${blobResult.readMBps.toFixed(1).padStart(9)} ${
+				(blobResult.fileSize / 1024 / 1024).toFixed(1).padStart(6)
+			}MB`,
+		);
 	} finally {
 		await Deno.remove(dir, { recursive: true });
 	}

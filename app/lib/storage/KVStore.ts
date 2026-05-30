@@ -46,6 +46,7 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
+	initialSlotsPerShard?: number;
 	slotsGrowthPerShard?: number;
 };
 
@@ -66,6 +67,7 @@ type ShardState = {
 export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promise<KVStore<K, V>> {
 	const { name, path, keyCodec, valueCodec } = options;
 	const slotsGrowthPerShard = options.slotsGrowthPerShard ?? SLOTS_GROWTH_PER_SHARD;
+	const initialSlotsPerShard = options.initialSlotsPerShard ?? INITIAL_SLOTS_PER_SHARD;
 	const keyStride = keyCodec.stride.size;
 	const valueStride = valueCodec.stride.size;
 	const slotSize = 1 + keyStride + valueStride;
@@ -131,7 +133,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			slotCount = view.getUint32(0, true);
 			liveCount = view.getUint32(4, true);
 		} else {
-			slotCount = INITIAL_SLOTS_PER_SHARD;
+			slotCount = initialSlotsPerShard;
 			liveCount = 0;
 			await writeMeta(metaPath, slotCount, liveCount);
 		}
