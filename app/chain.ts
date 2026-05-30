@@ -278,18 +278,36 @@ export async function appendBlockTxs(
 		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
 
-		const encodedTxs = txs.map((tx) => encodeStoredTxWithOutputOffsets(tx.toStore()));
-		const fullBlob = concat([txCountBytes, ...encodedTxs.map((e) => e.bytes)]);
+		// blockPointer is where this block's blob will land — batch.size() gives the current end.
+		const blockPointer = blobStoreBatch.size();
 
-		const blockPointer = blobStoreBatch.append(fullBlob);
-		blockStoreBatch.set(height, { header: block.header, pointer: blockPointer });
-
+		// Process each tx: dedup scriptPubKeys first, then encode with correct final offsets.
+		// We must process sequentially so each tx's final size is known before computing the
+		// next tx's pointer offset.
+		const encodedTxs: ReturnType<typeof encodeStoredTxWithOutputOffsets>[] = [];
 		let offset = txCountBytes.length;
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
-			const { bytes, voutOffsets } = encodedTxs[t]!;
 			const txPointer = blockPointer + offset;
 			txIdToPointerBatch.set(tx.data.txId, txPointer);
+
+			// Resolve any raw prevOuts using the batch (covers intra-block spends).
+			for (let i = 0; i < tx.data.inputs.length; i++) {
+				const input = tx.data.inputs[i]!;
+				if (input.prevOut.txId.kind !== "raw") continue;
+				const pointer = await txIdToPointerBatch.get(input.prevOut.txId.value);
+				if (pointer === undefined) {
+					console.error(
+						`[appendBlockTxs] could not resolve prevOut to pointer at height=${height} tx=${t} vin=${i}: txId=${
+							Array.from(input.prevOut.txId.value).map((b) => b.toString(16).padStart(2, "0")).join("")
+						}`,
+					);
+					Deno.exit(1);
+				}
+				input.prevOut.txId = { kind: "pointer", value: pointer };
+			}
+
+			// Dedup scriptPubKey outputs by mutating tx.data.outputs before encoding.
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
 				if (output.scriptPubKey.kind === "pointer") continue;
@@ -298,12 +316,32 @@ export async function appendBlockTxs(
 				const existing = await pubKeyToPointerBatch.get(hash);
 				if (existing !== undefined) {
 					output.scriptPubKey = { kind: "pointer", value: existing };
-				} else {
-					pubKeyToPointerBatch.set(hash, txPointer + voutOffsets[i]!);
+				}
+				// Registration (pubKeyToPointerBatch.set) happens after encoding below,
+				// once we know the correct final voutOffset for this output.
+			}
+
+			// Encode with deduped outputs to get correct final voutOffsets.
+			const encoded = encodeStoredTxWithOutputOffsets(tx.toStore());
+			encodedTxs.push(encoded);
+
+			// Register new scriptPubKeys using final offsets.
+			for (let i = 0; i < tx.data.outputs.length; i++) {
+				const output = tx.data.outputs[i]!;
+				if (output.scriptPubKey.kind === "pointer") continue;
+				const raw = await getRawScriptPubKey(output);
+				const hash = sha256(raw);
+				if (await pubKeyToPointerBatch.get(hash) === undefined) {
+					pubKeyToPointerBatch.set(hash, txPointer + encoded.voutOffsets[i]!);
 				}
 			}
-			offset += bytes.length;
+
+			offset += encoded.bytes.length;
 		}
+
+		const fullBlob = concat([txCountBytes, ...encodedTxs.map((e) => e.bytes)]);
+		const appendedPointer = blobStoreBatch.append(fullBlob);
+		blockStoreBatch.set(height, { header: block.header, pointer: appendedPointer });
 
 		return blockPointer;
 	};
@@ -481,5 +519,7 @@ export async function appendStorageSnapshot(height: number, blockTimestampSec: n
 	const row = `| ${height} | ${col1} | ${col2} | ${col3} | ${col4} | ${col5} |\n`;
 
 	await Deno.writeTextFile(STORAGE_MD, row, { append: true });
-	console.log(`[storage] snapshot height=${height} txs=${fmt(txsMiB)}MiB total=${fmt(totalMiB)}MiB satoshi=${col1}MiB`);
+	console.log(
+		`[storage] snapshot height=${height} txs=${fmt(txsMiB)}MiB total=${fmt(totalMiB)}MiB satoshi=${col1}MiB`,
+	);
 }

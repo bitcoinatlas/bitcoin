@@ -17,7 +17,7 @@ import { readFile, writeFile } from "~/lib/utils/fs.ts";
  * Growth: each shard grows independently by SLOTS_GROWTH_PER_SHARD when load > 0.75.
  *
  * Shard meta format: [u32 slotCount LE][u32 liveCount LE]
- * WAL format: [u8 shardCount]([u8 shardIdx][u32 entryCount LE]([u32 slotIdx LE][slotBytes])...)
+ * WAL format: [u16 shardCount LE]([u8 shardIdx][u32 entryCount LE]([u32 slotIdx LE][slotBytes])...)
  */
 
 export interface KVStore<K, V> extends Store<KVStoreBatch<K, V>> {
@@ -373,10 +373,10 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			}
 		}
 
-		const totalSize = 1 + parts.reduce((a, p) => a + p.length, 0);
+		const totalSize = 2 + parts.reduce((a, p) => a + p.length, 0);
 		const walBuf = new Uint8Array(totalSize);
-		walBuf[0] = shardCount;
-		let pos = 1;
+		new DataView(walBuf.buffer).setUint16(0, shardCount, true);
+		let pos = 2;
 		for (const p of parts) {
 			walBuf.set(p, pos);
 			pos += p.length;
@@ -397,7 +397,8 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 				const buf = await Deno.readFile(walPath);
 				const view = new DataView(buf.buffer);
 				let pos = 0;
-				const shardCount = buf[pos++]!;
+				const shardCount = view.getUint16(pos, true);
+				pos += 2;
 				for (let si = 0; si < shardCount; si++) {
 					const s = buf[pos++]!;
 					const entryCount = view.getUint32(pos, true);

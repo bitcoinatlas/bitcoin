@@ -551,8 +551,43 @@ Deno.test("batch.getMany respects batch-staged and store-staged values", async (
 });
 
 // ---------------------------------------------------------------------------
-// Growth + intra-batch post-rehash collision
+// Growth with staged-only entries (never flushed to disk before grow)
 // ---------------------------------------------------------------------------
+
+Deno.test("growth: staged-only entries survive when growth is triggered by a subsequent WAL", async () => {
+	// Scenario: batch A is applied (entries land in staged, not disk), then batch B
+	// triggers maybeGrow during its createWAL. maybeGrow reads only from disk, so
+	// batch A's keys are missing from the rehashed layout. After wal.apply() clears
+	// staged, batch A's keys should still be readable — but won't be if the bug exists.
+	await withStore(async (store) => {
+		// Fill shard 0 to just below the growth threshold without flushing to disk.
+		// INITIAL_SLOTS_PER_SHARD = 4096, LOAD_FACTOR_THRESHOLD = 0.75 → threshold at 3072.
+		// We want to stage ~3060 entries without a WAL flush, then add ~20 more to trigger growth.
+		const STAGE_COUNT = 3060;
+		const b = store.batch();
+		for (let i = 0; i < STAGE_COUNT; i++) b.set(i, BigInt(i));
+		b.apply(); // staged in memory only — NOT on disk yet
+
+		// Now add more entries in a second batch whose createWAL will trigger growth.
+		const b2 = store.batch();
+		for (let i = STAGE_COUNT; i < STAGE_COUNT + 20; i++) b2.set(i, BigInt(i));
+		b2.apply();
+		const wal = await store.createWAL(); // growth fires here
+		await wal.apply(); // staged cleared here
+		await wal.discard();
+
+		// All keys from batch A must still be readable after staged was cleared.
+		for (let i = 0; i < STAGE_COUNT; i++) {
+			const v = await store.get(i);
+			assertEquals(v, BigInt(i), `staged-only key ${i} lost after growth`);
+		}
+		// Keys from batch B must also be readable.
+		for (let i = STAGE_COUNT; i < STAGE_COUNT + 20; i++) {
+			const v = await store.get(i);
+			assertEquals(v, BigInt(i), `batch B key ${i} lost after growth`);
+		}
+	});
+});
 
 Deno.test("growth: intra-batch post-rehash collision resolved correctly", async () => {
 	// Keys 1420 and 4352 both hash to slot 316 in an 8192-slot shard (post-growth).
@@ -590,5 +625,183 @@ Deno.test("growth: intra-batch post-rehash collision resolved correctly", async 
 		assertEquals(await store.get(1420), 1420n, "first colliding key must be readable after growth");
 		assertEquals(await store.get(4352), 4352n, "second colliding key must be readable after growth");
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Large-volume stress test with 32-byte keys (simulates txId → pointer store)
+// ---------------------------------------------------------------------------
+
+/** 32-byte fixed key codec (simulates txId) */
+class Bytes32Codec extends Codec<Uint8Array> {
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 32 };
+	encode(b: Uint8Array): Uint8Array<ArrayBuffer> {
+		const out = new Uint8Array(32);
+		out.set(b.subarray(0, 32));
+		return out;
+	}
+	decode(b: Uint8Array): [Uint8Array, number] {
+		return [new Uint8Array(b.subarray(0, 32)), 32];
+	}
+}
+
+/** Deterministic pseudo-random 32-byte key from index — collision-free up to 2^32 */
+function makeKey(i: number): Uint8Array {
+	const b = new Uint8Array(32);
+	// Write i as 4 bytes LE in first 4 bytes, then fill rest with FNV-1a derived bytes
+	const view = new DataView(b.buffer);
+	view.setUint32(0, i, true);
+	let h = 2166136261 ^ i;
+	for (let j = 4; j < 32; j++) {
+		h ^= (h >>> 8) ^ (i ^ j);
+		h = (Math.imul(h, 16777619)) >>> 0;
+		b[j] = h & 0xff;
+	}
+	return b;
+}
+
+Deno.test("large-volume debug: single Bytes32 key roundtrip", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "kvstore_single_" });
+	try {
+		const store = await createKVStore({
+			name: "single",
+			path: dir,
+			keyCodec: new Bytes32Codec(),
+			valueCodec: new U64LECodec(),
+		});
+		try {
+			const key0 = makeKey(0);
+			const b = store.batch();
+			b.set(key0, 42n);
+			b.apply();
+			const vStaged = await store.get(key0);
+			const wal = await store.createWAL();
+			await wal.apply();
+			const vDisk = await store.get(key0);
+			await wal.discard();
+			console.log(`staged=${vStaged} disk=${vDisk}`);
+			assertEquals(vDisk, 42n);
+		} finally {
+			store.close();
+		}
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("large-volume debug: 2-key shard-0 batch survives WAL", async () => {
+	// keys 0 and 256 both land in shard 0 (b[0]=0)
+	const dir = await Deno.makeTempDir({ prefix: "kvstore_2key_" });
+	try {
+		const store = await createKVStore({
+			name: "2key",
+			path: dir,
+			keyCodec: new Bytes32Codec(),
+			valueCodec: new U64LECodec(),
+		});
+		try {
+			const key0 = makeKey(0);
+			const key256 = makeKey(256);
+			const b = store.batch();
+			b.set(key0, 0n);
+			b.set(key256, 256n);
+			b.apply();
+			const wal = await store.createWAL();
+			await wal.apply();
+			await wal.discard();
+			const v0 = await store.get(key0);
+			const v256 = await store.get(key256);
+			console.log(`key0=${v0} key256=${v256}`);
+			assertEquals(v0, 0n, "key0 must survive");
+			assertEquals(v256, 256n, "key256 must survive");
+		} finally {
+			store.close();
+		}
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("large-volume debug: find which cycle kills key 0", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "kvstore_debug_" });
+	try {
+		const store = await createKVStore({
+			name: "debug",
+			path: dir,
+			keyCodec: new Bytes32Codec(),
+			valueCodec: new U64LECodec(),
+		});
+		try {
+			const TOTAL = 100_000;
+			const BATCH_SIZE = 400;
+			const key0 = makeKey(0);
+
+			for (let offset = 0; offset < TOTAL; offset += BATCH_SIZE) {
+				const end = Math.min(offset + BATCH_SIZE, TOTAL);
+				const b = store.batch();
+				for (let i = offset; i < end; i++) b.set(makeKey(i), BigInt(i));
+				b.apply();
+				const vAfterBatchApply = await store.get(key0);
+				const wal = await store.createWAL();
+				const vAfterCreateWAL = await store.get(key0);
+				await wal.apply();
+				const vAfterApply = await store.get(key0);
+				await wal.discard();
+				const vAfterDiscard = await store.get(key0);
+
+				const v = vAfterDiscard;
+				if (v !== 0n) {
+					console.error(`key0 lost after cycle offset=${offset}: batchApply=${vAfterBatchApply} createWAL=${vAfterCreateWAL} afterApply=${vAfterApply} afterDiscard=${vAfterDiscard}`);
+					break;
+				}
+			}
+		} finally {
+			store.close();
+		}
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
+});
+
+Deno.test("large-volume: 100k txId-like 32-byte keys survive multiple WAL cycles", async () => {
+	const dir = await Deno.makeTempDir({ prefix: "kvstore_stress_" });
+	try {
+		const store = await createKVStore({
+			name: "stress",
+			path: dir,
+			keyCodec: new Bytes32Codec(),
+			valueCodec: new U64LECodec(),
+		});
+		try {
+			const TOTAL = 100_000;
+			const BATCH_SIZE = 400; // simulate ~400 blocks per WAL cycle like the real app
+
+			// Insert all keys in batches of BATCH_SIZE, flushing WAL every BATCH_SIZE inserts
+			for (let offset = 0; offset < TOTAL; offset += BATCH_SIZE) {
+				const end = Math.min(offset + BATCH_SIZE, TOTAL);
+				const b = store.batch();
+				for (let i = offset; i < end; i++) b.set(makeKey(i), BigInt(i));
+				b.apply();
+				const wal = await store.createWAL();
+				await wal.apply();
+				await wal.discard();
+			}
+
+			// Verify all keys are readable
+			let missing = 0;
+			for (let i = 0; i < TOTAL; i++) {
+				const v = await store.get(makeKey(i));
+				if (v !== BigInt(i)) {
+					console.error(`key ${i} expected ${i} got ${v}`);
+					missing++;
+					if (missing >= 10) { console.error("...stopping after 10 failures"); break; }
+				}
+			}
+			assertEquals(missing, 0, `${missing} keys lost after large-volume write`);
+		} finally {
+			store.close();
+		}
+	} finally {
+		await Deno.remove(dir, { recursive: true });
+	}
 });
 
