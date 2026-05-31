@@ -19,7 +19,7 @@ storage and less friction.
 ### Technical Notes and Terminology
 
 - The whole codebase uses **wire format internally**, so there is no `.reverse()` or `.toReversed()` anywhere in the
-  core logic, except when making things like console logs human-readable.
+  core logic, except while making things human-readable on ui or logs.
 - I call the original implementation of Bitcoin and anything legacy **"satoshi"**. For example:
   - Satoshi Client
   - Satoshi RPC
