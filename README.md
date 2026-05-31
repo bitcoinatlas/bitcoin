@@ -81,7 +81,7 @@ data (e.g. LZ4), potentially **200–400 GB**.
     - Delayed propagation of blocks that don't fit your filters, based on the weight of "bad" transactions (e.g. delay
       5–10 minutes, maybe up to 1 hour max depending on weight).
 - Eventually, when everything else is done, introduce a **new communication protocol over HTTP and WebSockets**, with
-  optional PoW requirements even for read requests.
+  optional PoW requirements for read requests.
 - Unlike Satoshi clients, this should work out of the box **without** downloading the entire chain first:
   - It behaves like a light client at the beginning and downloads missing block data on demand.
   - For example: as you scroll the explorer block list, it lazily fetches the block data you're looking at — in ranges,
