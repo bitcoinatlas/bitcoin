@@ -18,6 +18,8 @@
 
 - [ ] output needs `spentBy` pointing to the spender tx with u48, then we can find the input in that tx.
 - [ ] we need a linked list for inputs and outputs. every input or output
+- [ ] dynamic things like `spentBy` or or linked list links can be stored on the txid kv? maybe??? in that case we dont
+      have to do the "blobstore need patch" task above.
 
 ```ts
 [value: U51]

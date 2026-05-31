@@ -12,13 +12,14 @@ the (data+indexes) column appear disproportionately large relative to (data).
 
 - `txid` → byte offset of the transaction in the chain
 - `scriptPubKey` → byte offset of the tx output containing the first appearance of the scriptPubKey
+- Each output carries a `spent` bit indicating whether it has been consumed
 
 **Planned Query Support:**
 
 > Not necessarily additional indexes — implementation may use tricks to derive these without dedicated structures.
 
 - `scriptPubKey` → `txid[]`
-- tx output → spending input
+- tx output → spending input (`spentBy`), replacing the current `spent` bit with a full link
 
 | Height | Satoshi Client (data) (MiB) | BitcoinAtlas (data) (MiB) | Saved (MiB) | Saved % | BitcoinAtlas (data+indexes) (MiB) |
 | -----: | --------------------------: | ------------------------: | ----------: | ------: | --------------------------------: |
@@ -394,3 +395,19 @@ the (data+indexes) column appear disproportionately large relative to (data).
 | 384801 |                     ~50,599 |                   ~41,423 |      ~9,176 |  ~18.1% |                           ~50,498 |
 | 385201 |                     ~50,922 |                   ~41,595 |      ~9,327 |  ~18.3% |                           ~50,707 |
 | 385601 |                     ~50,922 |                   ~41,779 |      ~9,142 |  ~18.0% |                           ~50,931 |
+| 386001 |                     ~51,271 |                   ~41,962 |      ~9,308 |  ~18.2% |                           ~51,270 |
+| 386401 |                     ~51,271 |                   ~42,164 |      ~9,107 |  ~17.8% |                           ~51,399 |
+| 386801 |                     ~51,647 |                   ~42,366 |      ~9,281 |  ~18.0% |                           ~51,648 |
+| 387201 |                     ~52,023 |                   ~42,570 |      ~9,454 |  ~18.2% |                           ~51,896 |
+| 387601 |                     ~52,023 |                   ~42,784 |      ~9,239 |  ~17.8% |                           ~52,345 |
+| 388001 |                     ~52,463 |                   ~42,986 |      ~9,477 |  ~18.1% |                           ~52,405 |
+| 388401 |                     ~52,463 |                   ~43,204 |      ~9,258 |  ~17.6% |                           ~52,674 |
+| 388801 |                     ~52,897 |                   ~43,413 |      ~9,484 |  ~17.9% |                           ~52,932 |
+| 389201 |                     ~53,330 |                   ~43,631 |      ~9,699 |  ~18.2% |                           ~53,368 |
+| 389601 |                     ~53,330 |                   ~43,850 |      ~9,479 |  ~17.8% |                           ~53,471 |
+| 390001 |                     ~53,758 |                   ~44,088 |      ~9,670 |  ~18.0% |                           ~53,765 |
+| 390401 |                     ~54,145 |                   ~44,262 |      ~9,883 |  ~18.3% |                           ~53,981 |
+| 390801 |                     ~54,145 |                   ~44,448 |      ~9,696 |  ~17.9% |                           ~54,508 |
+| 391201 |                     ~54,526 |                   ~44,635 |      ~9,891 |  ~18.1% |                           ~54,432 |
+| 391601 |                     ~54,526 |                   ~44,814 |      ~9,712 |  ~17.8% |                           ~54,651 |
+| 392001 |                     ~54,836 |                   ~45,016 |      ~9,820 |  ~17.9% |                           ~54,898 |
