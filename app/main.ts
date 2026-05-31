@@ -20,7 +20,7 @@ const DNS_SEEDS = [
 serve(HTTP_PORT);
 
 // Local dev: single peer. For production, swap with maintain().
-await addPeer("192.168.1.10", P2P_PORT, MAGIC);
+await addPeer("192.168.8.10", P2P_PORT, MAGIC);
 // await maintain();
 
 let baselineHeap = Deno.memoryUsage().heapUsed;
