@@ -56,16 +56,16 @@ const WAL_HEADER = 4; // bytes reserved at the front of the WAL buffer for the u
  */
 // deno-lint-ignore no-explicit-any
 class BinaryStore extends RocksStore {
-	override encodeKey(key: any): any {
+	override encodeKey(key: Uint8Array): any {
 		return key;
 	}
-	override decodeKey(key: any): any {
+	override decodeKey(key: any): Uint8Array {
 		return key;
 	}
-	override encodeValue(value: any): any {
+	override encodeValue(value: Uint8Array): any {
 		return value;
 	}
-	override decodeValue(value: any): any {
+	override decodeValue(value: any): Uint8Array {
 		return value;
 	}
 }
@@ -108,11 +108,11 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	let pendingBuf = new Uint8Array(entryStride * 64);
 	let pendingCount = 0;
 
-	function getByBytes(
+	async function getByBytes(
 		keyBytes: Uint8Array,
 		batchBufRef: Uint8Array | null,
 		batchIdx: Uint8ArrayMap<number> | null,
-	): V | undefined {
+	): Promise<V | undefined> {
 		// 1. Pending batch entries
 		if (batchIdx !== null && batchBufRef !== null) {
 			const off = batchIdx.get(keyBytes);
@@ -126,17 +126,17 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 			return valueCodec.decode(stagedVal)[0];
 		}
 		// 3. RocksDB
-		const raw = db.getSync(keyBytes) as Uint8Array | undefined;
+		const raw = await db.get(keyBytes) as Uint8Array | undefined;
 		if (raw == null) return undefined;
 		return valueCodec.decode(raw)[0];
 	}
 
 	async function get(key: K): Promise<V | undefined> {
-		return getByBytes(keyCodec.encode(key), null, null);
+		return await getByBytes(keyCodec.encode(key), null, null);
 	}
 
 	async function getMany(keys: K[]): Promise<(V | undefined)[]> {
-		return keys.map((k) => getByBytes(keyCodec.encode(k), null, null));
+		return await Promise.all(keys.map((k) => getByBytes(keyCodec.encode(k), null, null)));
 	}
 
 	async function clear(): Promise<void> {
@@ -145,7 +145,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 		stagedMap.clear();
 		pendingBuf = new Uint8Array(entryStride * 64);
 		pendingCount = 0;
-		db.clearSync();
+		await db.clear();
 	}
 
 	function close(): void {
@@ -224,18 +224,18 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 
 	// --- WAL ---
 
-	function applyBuffer(buffer: Uint8Array): void {
+	async function applyBuffer(buffer: Uint8Array): Promise<void> {
 		const view = new DataView(buffer.buffer, buffer.byteOffset);
 		const entryCount = view.getUint32(0, true);
 		if (entryCount === 0) return;
 
 		// Write all entries in a single RocksDB transaction for atomicity.
-		db.transactionSync((txn) => {
+		await db.transaction(async (txn) => {
 			let pos = WAL_HEADER;
 			for (let i = 0; i < entryCount; i++) {
 				const keySlice = buffer.subarray(pos, pos + keyStride);
 				const valSlice = buffer.subarray(pos + keyStride, pos + entryStride);
-				txn.putSync(keySlice, valSlice);
+				await txn.put(keySlice, valSlice);
 				pos += entryStride;
 			}
 		});
@@ -266,7 +266,7 @@ export async function createKVStore<K, V>(options: KVStoreOptions<K, V>): Promis
 	function makeWAL(buffer: Uint8Array): WAL {
 		return {
 			async apply(): Promise<void> {
-				applyBuffer(buffer);
+				await applyBuffer(buffer);
 				stagedMap.clear();
 				pendingBuf = new Uint8Array(entryStride * 64);
 				pendingCount = 0;

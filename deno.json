@@ -19,14 +19,15 @@
 		"~/": "./app/"
 	},
 	"tasks": {
-		"cache": "deno cache ./app/main.ts",
-		"start": "deno run -A ./app/main.ts",
-		"inspect": "deno run -A --inspect-brk ./app/main.ts",
 		"dev": "deno task build && (deno run -A --watch ./app/main.ts & deno task dev:build)",
-		"build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts",
 		"dev:build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts --watch",
 		"test": "deno test --allow-env --allow-read --allow-write --allow-ffi",
-		"check": "deno check && deno lint && deno task test"
+		"check": "deno check && deno lint && deno task test",
+		"cache": "deno cache ./app/main.ts",
+		"build": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts",
+		"start": "deno run -A ./app/main.ts",
+		"inspect": "deno run -A --inspect-brk ./app/main.ts",
+		"profile": "deno run -A --cpu-prof ./app/main.ts"
 	},
 	"unstable": ["raw-imports", "kv"],
 	"compilerOptions": {
@@ -52,7 +53,8 @@
 				"no-namespace",
 				"no-explicit-any",
 				"ban-types",
-				"require-await"
+				"require-await",
+				"no-inner-declarations"
 			],
 			"include": ["no-slow-types"]
 		}

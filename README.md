@@ -14,6 +14,68 @@ We prioritize UX and simplicity. The end user is a normal everyday Bitcoin user,
 We are not trying to change Bitcoin. We are simply giving you a way to use Bitcoin in the best way possible, with less
 storage and less friction.
 
+## Why? What?
+
+### Why Deno + TypeScript?
+
+Main thing we wanna work on here is storage optimization, and language selection is not a big part of that. And I
+believe we can make it work "fast enough" with pure Deno + TypeScript.
+
+We wanna keep the barrier to entry as low as possible, and make it easy for more people to contribute. Deno + TypeScript
+is a great choice for that, since it's more widely known and easier to work with than Rust or C++.
+
+### Why another node implementation?
+
+My goal is not to make just another node implementation. My goal is to make a bitcoin app where everything works out of
+the box as intended bitcoin experience. Not just a node, but also a web interface, and a desktop/mobile app. A complete
+package where you can do everything bitcoin-related without needing to set up complex third-party software and manually
+glue everything together.
+
+Storage optimization is a big part of that, because it makes it more accessible to people with less storage space, and
+also just makes it more efficient and elegant.
+
+For example I run my bitcoin node on my old laptop with 1TB HDD and 1TB SSD, and i have to use symlinks and other hacks
+to split the data across the two drives, and even then it's still a tight fit. With better storage optimization, I could
+fit the whole thing on my SSD and have a much better experience.
+
+There is a reason why there is no bitcoin node running on my personel main laptop, and it's because of the storage
+requirements. With BitcoinAtlas, I want to change that and make it possible for anyone to run a full node on their
+personal laptop, or even their phone maybe in the future. My old laptop is soon gonna run out of storage space and with
+this project I can keep running a full node on it without needing to upgrade the storage.
+
+### What is my dream end product?
+
+A monolithic all-in-one Bitcoin App, that has everything you need. That uses half the storage and fully indexed still.
+
+And maybe with nostr integration and plugins and stuff, who knows.
+
+I also wanna build another communication protocol on top of it using WebSockets instead of raw TPC. Make it support
+multiple p2p protocols at the same time, and let users choose which ones they wanna use at the same time. Maybe even
+support some kind of PoW requirement for requests for reads, to prevent spam and DoS attacks.
+
+And maybe later add p2p nodes over bluetooth. Or even radio maybe.
+
+And more crazy stuff that I can't even think of right now. But most important point is the storage optimization, and
+making it accessible and easy to use for everyone.
+
+If my bitcoin node takes more than a few AAA games, then it's not good enough. I want it to be something that anyone can
+run on their personal devices without needing to worry about storage space.
+
+## Current Status
+
+Right now, we can sync from genesis to tip probably, i went as high is ~420k so far, but it kinda slowed down as
+expected. Right now many things are kinda messy. So my next goal is doing some refactoring, and some reworking of the
+core sync logic, to make it more robust and efficient.
+
+As soon as I'm able to sync to the tip, I'm gonna work on more optimization methods and indexing strategies, to further
+reduce storage size. After that, I'll start working on the web interface. And Tauri desktop app + deno backend bundled
+together. So we actually have a usable product at the end, not just a node implementation.
+
+Then many things to come like actually doing P2P networking, and implementing the Satoshi RPC and Electrum protocols on
+top of it, etc and more...
+
+Progress is good right now considering the little free time I have to work on this, but there's still a long way to go.
+
 ## Notes
 
 ### Technical Notes and Terminology
