@@ -4,6 +4,7 @@ import { syncBodiesFromPeers } from "~/bodies.ts";
 import { syncHeadersFromPeers } from "~/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
 import { serve } from "~/serve.ts";
+import { DEV } from "~/config.ts";
 
 if (import.meta.main) {
 	const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
@@ -59,7 +60,7 @@ if (import.meta.main) {
 			baselineHeap = Deno.memoryUsage().heapUsed;
 			SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
 
-			if (lastBody) await appendStorageSnapshot(lastBody.height, lastBody.timestamp);
+			if (DEV && lastBody) await appendStorageSnapshot(lastBody.height, lastBody.timestamp);
 		}
 	}
 
