@@ -1,24 +1,10 @@
-import { Bytes, BytesCodec, Codec, EnumCodec, Stride, StructCodec, U32LE, Void } from "@nomadshiba/codec";
+import { BytesCodec, Codec, Stride, U32LE } from "@nomadshiba/codec";
 import { COINBASE_VOUT } from "~/constants.ts";
 import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
-import { SequenceLock, SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
-import { Bytes32, U24LE } from "~/lib/codec/primitives.ts";
+import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
+import { U24LE } from "~/lib/codec/primitives.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { StoredWitness } from "~/lib/codec/stored/StoredWitness.ts";
-
-const _CleanStoredTxInput = new StructCodec({
-	prevOut: new StructCodec({
-		txId: new EnumCodec({
-			pointer: StoredPointer,
-			raw: Bytes32,
-			coinbase: Void,
-		}),
-		vout: U24LE,
-	}),
-	scriptSig: Bytes,
-	sequence: SequenceLock,
-	witness: StoredWitness,
-});
 
 /**
  * StoredTxInput binary layout

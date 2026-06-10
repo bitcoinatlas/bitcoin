@@ -1,46 +1,70 @@
-import { ArrayCodec, Codec, StructCodec, U32LE } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, EnumCodec, StructCodec, U32LE, U8, VarInt, Void } from "@nomadshiba/codec";
+import { Bytes32 } from "~/lib/codec/primitives.ts";
 import { StoredTxInput } from "~/lib/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
-import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
 
-// StoredTx binary layout (optimized for disk storage):
-// - txId: 32 bytes (full hash)
-// - version: 4 bytes (u32LE)
-// - lockTime: 4 bytes (u32LE) - stored as raw number, converted to TimeLock on decode
-// - vout[]: CompactSize count + StoredTxOutput[]
-// - vin[]: CompactSize count + StoredTxInput[] (uses pointers for prevOut when resolved)
+/**
+ * StoredTx binary layout (optimized for disk storage)
+ *
+ * - txId: 32 bytes (full hash)
+ * - lockTimeVersionPack: 1-byte EnumCodec discriminant (U8) + conditional payload.
+ *     The discriminant folds the common (version, locktime-present) combinations
+ *     into a single tag byte. The dominant case (v1/v2 + no locktime) stores ZERO
+ *     payload bytes -- just the tag. Other cases carry only what they need:
+ *       v1_none   -> version 1, locktime none      (Void payload)
+ *       v2_none   -> version 2, locktime none      (Void payload)
+ *       v1_some-> version 1, locktime set        (TimeLock payload)
+ *       v2_some-> version 2, locktime set        (TimeLock payload)
+ *       any    -> explicit version + locktime    (U32LE version + TimeLock)
+ * - vout[]: VarInt count + StoredTxOutput[]
+ * - vin[]:  VarInt count + StoredTxInput[] (pointers for prevOut when resolved)
+ */
 
 export type StoredTx = Codec.InferInput<typeof StoredTx>;
 export type StoredTxWithMethods = Codec.InferOutput<typeof StoredTx>;
+
+export type LockTimeVersionPack = { lockTime: TimeLock; version: number };
+
+const Some = new StructCodec({ lockTime: TimeLock });
+const None = new StructCodec({});
+
 export const StoredTx = new StructCodec({
 	txId: Bytes32,
-	version: U32LE,
-	lockTime: TimeLock,
-	vout: new ArrayCodec(StoredTxOutput, { counter: CompactSize }),
-	vin: new ArrayCodec(StoredTxInput, { counter: CompactSize }),
+	lockTimeVersionPack: new EnumCodec({
+		raw: new StructCodec({ lockTime: TimeLock, version: U32LE }),
+		v1_none: None.transform((): LockTimeVersionPack => ({ lockTime: { kind: "none" }, version: 0x1 })),
+		v2_none: None.transform((): LockTimeVersionPack => ({ lockTime: { kind: "none" }, version: 0x2 })),
+		v1_some: Some.transform(({ lockTime }): LockTimeVersionPack => ({ lockTime, version: 0x1 })),
+		v2_some: Some.transform(({ lockTime }): LockTimeVersionPack => ({ lockTime, version: 0x2 })),
+	}, { indexer: U8 }),
+	vout: new ArrayCodec(StoredTxOutput, { counter: VarInt }),
+	vin: new ArrayCodec(StoredTxInput, { counter: VarInt }),
 });
 
 /**
- * Encodes a StoredTx into chunks and returns both the full byte sequence and
- * the relative byte offset of each vout item within that sequence.
+ * Encodes a StoredTx into bytes and returns the relative byte offset of each
+ * vout item within that sequence.
  *
  * Add `txPointer` (the blob offset where the tx was appended) to each
  * `voutOffsets[i]` to get the absolute blob pointer for output i.
+ *
+ * The header (txId + lockTimeVersionPack) is variable-length now, so its size
+ * is measured from the actual encoded bytes rather than summed from strides.
  */
 export function encodeStoredTxWithOutputOffsets(tx: StoredTx): {
 	bytes: Uint8Array;
 	voutOffsets: number[];
 } {
-	const headerSize = StoredTx.shape.txId.stride.size +
-		StoredTx.shape.version.stride.size +
-		StoredTx.shape.lockTime.stride.size;
+	const txIdBytes = StoredTx.shape.txId.encode(tx.txId);
+	const packBytes = StoredTx.shape.lockTimeVersionPack.encode(tx.lockTimeVersionPack);
 
-	const voutCountBytes = CompactSize.encode(tx.vout.length);
+	const voutCountBytes = VarInt.encode(tx.vout.length);
 	const encodedVouts = tx.vout.map((output) => StoredTxOutput.encode(output));
 	const vinBytes = StoredTx.shape.vin.encode(tx.vin);
 
-	const totalSize = headerSize +
+	const totalSize = txIdBytes.length +
+		packBytes.length +
 		voutCountBytes.length +
 		encodedVouts.reduce((sum, v) => sum + v.length, 0) +
 		vinBytes.length;
@@ -49,12 +73,10 @@ export function encodeStoredTxWithOutputOffsets(tx: StoredTx): {
 	const voutOffsets: number[] = [];
 
 	let pos = 0;
-	bytes.set(StoredTx.shape.txId.encode(tx.txId), pos);
-	pos += StoredTx.shape.txId.stride.size;
-	bytes.set(StoredTx.shape.version.encode(tx.version), pos);
-	pos += StoredTx.shape.version.stride.size;
-	bytes.set(StoredTx.shape.lockTime.encode(tx.lockTime), pos);
-	pos += StoredTx.shape.lockTime.stride.size;
+	bytes.set(txIdBytes, pos);
+	pos += txIdBytes.length;
+	bytes.set(packBytes, pos);
+	pos += packBytes.length;
 	bytes.set(voutCountBytes, pos);
 	pos += voutCountBytes.length;
 	for (const encodedVout of encodedVouts) {
