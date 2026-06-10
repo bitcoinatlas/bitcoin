@@ -1,16 +1,16 @@
-import { assertEquals } from "@std/assert";
-import { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
-import type { TxOutput } from "~/lib/chain/TxOutput.ts";
+import { assertEquals, assertObjectMatch } from "@std/assert";
 import type { TxInput } from "~/lib/chain/TxInput.ts";
+import { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
+import { TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
 
-function makeStoredTx(): import("~/lib/codec/stored/StoredTx.ts").StoredTx {
+function makeStoredTx(): StoredTx {
 	const txId = new Uint8Array(32);
 	for (let i = 0; i < 32; i++) txId[i] = i;
 
 	const scriptHash = new Uint8Array(20).fill(0xab);
 	const vout: TxOutput[] = [
-		{ value: 5000000000n, spent: false, scriptPubKey: { kind: "p2pkh", value: scriptHash } },
-		{ value: 1000000n, spent: true, scriptPubKey: { kind: "p2sh", value: new Uint8Array(20).fill(0x12) } },
+		{ value: 5000000000n, spentBy: null, scriptPubKey: { kind: "p2pkh", value: scriptHash } },
+		{ value: 1000000n, spentBy: 1, scriptPubKey: { kind: "p2sh", value: new Uint8Array(20).fill(0x12) } },
 	];
 
 	const vin: TxInput[] = [
@@ -36,15 +36,7 @@ Deno.test("StoredTx roundtrip - coinbase tx", () => {
 	const encoded = StoredTx.encode(tx);
 	const [decoded] = StoredTx.decode(encoded);
 
-	assertEquals(decoded.txId, tx.txId);
-	assertEquals(decoded.version, tx.version);
-	assertEquals(decoded.lockTime, tx.lockTime);
-	assertEquals(decoded.vout.length, tx.vout.length);
-	assertEquals(decoded.vin.length, tx.vin.length);
-	assertEquals(decoded.vout[0]!.value, tx.vout[0]!.value);
-	assertEquals(decoded.vout[1]!.value, tx.vout[1]!.value);
-	assertEquals(decoded.vout[0]!.spent, tx.vout[0]!.spent);
-	assertEquals(decoded.vout[1]!.spent, tx.vout[1]!.spent);
+	assertObjectMatch(decoded, tx);
 });
 
 Deno.test("StoredTx roundtrip - txId is preserved exactly", () => {

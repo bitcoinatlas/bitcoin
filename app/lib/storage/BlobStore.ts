@@ -22,7 +22,7 @@ import { writeFile } from "~/lib/utils/fs.ts";
  */
 export interface BlobStore extends Store<BlobStoreBatch> {
 	get(pointer: number, length: number): Promise<Uint8Array>;
-	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
+	get<T>(pointer: number, codec: Codec<T, any>, options?: { readAheadSize?: number }): Promise<T>;
 	/** Current end-of-stream pointer (total bytes written). */
 	length(): number;
 	truncate(newLength: number): Promise<void>;
@@ -32,7 +32,7 @@ export interface BlobStoreBatch extends Batch {
 	/** Stage a blob for append. Returns tentative pointer. */
 	append(data: Uint8Array): number;
 	get(pointer: number, length: number): Promise<Uint8Array>;
-	get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
+	get<T>(pointer: number, codec: Codec<T, any>, options?: { readAheadSize?: number }): Promise<T>;
 	size(): number;
 }
 
@@ -125,7 +125,7 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 		return buf;
 	}
 
-	async function getWithCodec<T>(pointer: number, codec: Codec<T>, readAheadSize: number): Promise<T> {
+	async function getWithCodec<T>(pointer: number, codec: Codec<T, any>, readAheadSize: number): Promise<T> {
 		const buf = new Uint8Array(readAheadSize);
 		const bytesRead = await read(pointer, buf, true);
 		const [value] = codec.decode(buf.subarray(0, bytesRead));
@@ -133,10 +133,10 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 	}
 
 	async function get(pointer: number, length: number): Promise<Uint8Array>;
-	async function get<T>(pointer: number, codec: Codec<T>, options?: { readAheadSize?: number }): Promise<T>;
+	async function get<T>(pointer: number, codec: Codec<T, any>, options?: { readAheadSize?: number }): Promise<T>;
 	async function get<T>(
 		pointer: number,
-		lengthOrCodec: number | Codec<T>,
+		lengthOrCodec: number | Codec<T, any>,
 		options?: { readAheadSize?: number },
 	): Promise<Uint8Array | T> {
 		if (typeof lengthOrCodec === "number") {
@@ -201,7 +201,8 @@ export async function createBlobStore(options: BlobStoreOptions): Promise<BlobSt
 					return buf;
 				} else {
 					const codec = lengthOrCodec;
-					const readAheadSize = options?.readAheadSize ?? (codec.stride.kind === "fixed" ? codec.stride.size : 4096);
+					const readAheadSize = options?.readAheadSize ??
+						(codec.stride.kind === "fixed" ? codec.stride.size : 4096);
 					const buf = new Uint8Array(readAheadSize);
 					const bytesRead = await readWithBatch(pointer, buf, true);
 					const [value] = codec.decode(buf.subarray(0, bytesRead));

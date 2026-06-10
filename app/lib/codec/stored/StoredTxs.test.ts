@@ -1,12 +1,13 @@
 import { assertEquals } from "@std/assert";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
-import type { TxOutput } from "~/lib/chain/TxOutput.ts";
 import type { TxInput } from "~/lib/chain/TxInput.ts";
+import { TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
+import { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 
-function makeTx(fill: number): import("~/lib/codec/stored/StoredTx.ts").StoredTx {
+function makeTx(fill: number): StoredTx {
 	const output: TxOutput = {
 		value: BigInt(fill) * 1000n,
-		spent: false,
+		spentBy: null,
 		scriptPubKey: { kind: "p2pkh", value: new Uint8Array(20).fill(fill) },
 	};
 	const input: TxInput = {
@@ -25,7 +26,7 @@ function makeTx(fill: number): import("~/lib/codec/stored/StoredTx.ts").StoredTx
 }
 
 Deno.test("StoredTxs roundtrip - empty array", () => {
-	const txs: import("~/lib/codec/stored/StoredTx.ts").StoredTx[] = [];
+	const txs: StoredTx[] = [];
 	const [decoded] = StoredTxs.decode(StoredTxs.encode(txs));
 	assertEquals(decoded.length, 0);
 });

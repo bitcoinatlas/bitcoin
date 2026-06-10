@@ -11,7 +11,8 @@ import { Bytes32, CompactSize } from "~/lib/codec/primitives.ts";
 // - vout[]: CompactSize count + StoredTxOutput[]
 // - vin[]: CompactSize count + StoredTxInput[] (uses pointers for prevOut when resolved)
 
-export type StoredTx = Codec.InferOutput<typeof StoredTx>;
+export type StoredTx = Codec.InferInput<typeof StoredTx>;
+export type StoredTxWithMethods = Codec.InferOutput<typeof StoredTx>;
 export const StoredTx = new StructCodec({
 	txId: Bytes32,
 	version: U32LE,
@@ -31,8 +32,7 @@ export function encodeStoredTxWithOutputOffsets(tx: StoredTx): {
 	bytes: Uint8Array;
 	voutOffsets: number[];
 } {
-	const headerSize =
-		StoredTx.shape.txId.stride.size +
+	const headerSize = StoredTx.shape.txId.stride.size +
 		StoredTx.shape.version.stride.size +
 		StoredTx.shape.lockTime.stride.size;
 
@@ -40,8 +40,7 @@ export function encodeStoredTxWithOutputOffsets(tx: StoredTx): {
 	const encodedVouts = tx.vout.map((output) => StoredTxOutput.encode(output));
 	const vinBytes = StoredTx.shape.vin.encode(tx.vin);
 
-	const totalSize =
-		headerSize +
+	const totalSize = headerSize +
 		voutCountBytes.length +
 		encodedVouts.reduce((sum, v) => sum + v.length, 0) +
 		vinBytes.length;
@@ -50,10 +49,14 @@ export function encodeStoredTxWithOutputOffsets(tx: StoredTx): {
 	const voutOffsets: number[] = [];
 
 	let pos = 0;
-	bytes.set(StoredTx.shape.txId.encode(tx.txId), pos); pos += StoredTx.shape.txId.stride.size;
-	bytes.set(StoredTx.shape.version.encode(tx.version), pos); pos += StoredTx.shape.version.stride.size;
-	bytes.set(StoredTx.shape.lockTime.encode(tx.lockTime), pos); pos += StoredTx.shape.lockTime.stride.size;
-	bytes.set(voutCountBytes, pos); pos += voutCountBytes.length;
+	bytes.set(StoredTx.shape.txId.encode(tx.txId), pos);
+	pos += StoredTx.shape.txId.stride.size;
+	bytes.set(StoredTx.shape.version.encode(tx.version), pos);
+	pos += StoredTx.shape.version.stride.size;
+	bytes.set(StoredTx.shape.lockTime.encode(tx.lockTime), pos);
+	pos += StoredTx.shape.lockTime.stride.size;
+	bytes.set(voutCountBytes, pos);
+	pos += voutCountBytes.length;
 	for (const encodedVout of encodedVouts) {
 		voutOffsets.push(pos);
 		bytes.set(encodedVout, pos);

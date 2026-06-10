@@ -24,6 +24,7 @@ export async function getPrevOutTxId(input: TxInput): Promise<Uint8Array> {
 	}
 
 	if (kind === "pointer") {
+		// TODO: Why?
 		const { getTxByPointer } = await import("~/chain.ts");
 		return await getTxByPointer(value).then((tx) => tx.data.txId);
 	}

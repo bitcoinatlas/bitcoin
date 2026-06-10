@@ -1,9 +1,9 @@
 import { equals } from "@std/bytes";
 import { getTxPointerById } from "~/chain.ts";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
-import { OutPoint, TxInput, getPrevOutTxId } from "~/lib/chain/TxInput.ts";
-import { TxOutput, getScriptPubKey } from "~/lib/chain/TxOutput.ts";
+import { getPrevOutTxId, OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
+import { TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
 import { TimeLock } from "~/lib/codec/TimeLock.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
@@ -47,7 +47,7 @@ export class Tx {
 
 		const outputs: WireTxOutput[] = [];
 		for (const output of this.data.outputs) {
-			const scriptPubKey = await getScriptPubKey(output);
+			const scriptPubKey = await TxOutput.getScriptPubKey(output);
 			outputs.push({
 				value: output.value,
 				scriptPubKey: rawScriptPubKey(scriptPubKey),
@@ -90,7 +90,7 @@ export class Tx {
 			const scriptPubKey = parseScriptPubKey(wireOutput.scriptPubKey);
 			const output: TxOutput = {
 				value: wireOutput.value,
-				spent: false,
+				spentBy: null,
 				scriptPubKey,
 			};
 			outputs.push(output);

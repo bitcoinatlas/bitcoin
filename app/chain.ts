@@ -1,5 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { Codec, U32 } from "@nomadshiba/codec";
+import { U32 } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { BASE_DATA_DIR, BASE_DIR } from "~/config.ts";
@@ -11,8 +11,7 @@ import { Bytes32 } from "~/lib/codec/primitives.ts";
 import { StoredBlock } from "~/lib/codec/stored/StoredBlock.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { encodeStoredTxWithOutputOffsets, StoredTx } from "~/lib/codec/stored/StoredTx.ts";
-import { StoredTxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
-import { getRawScriptPubKey } from "~/lib/chain/TxOutput.ts";
+import { StoredTxOutput, TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/lib/codec/wire/WireBlockHeader.ts";
@@ -20,8 +19,8 @@ import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import { ArrayStoreBatch, createArrayStore } from "~/lib/storage/ArrayStore.ts";
 import { BlobStoreBatch, createBlobStore } from "~/lib/storage/BlobStore.ts";
 import { createKVStore, KVStoreBatch } from "~/lib/storage/KVStore.ts";
-import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { atomic, recover, Store } from "~/lib/storage/Store.ts";
+import { Uint8ArrayMap } from "~/lib/Uint8ArrayMap.ts";
 import { verifyProofOfWork, workFromHeader } from "./lib/chain/utils/pow.ts";
 
 export const GENESIS_BLOCK_HEIGHT = 0;
@@ -308,7 +307,7 @@ export async function appendBlockTxs(
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
 				if (output.scriptPubKey.kind === "pointer") continue;
-				const raw = await getRawScriptPubKey(output);
+				const raw = await TxOutput.getRawScriptPubKey(output);
 				const hash = sha256(raw);
 				const existing = await pubKeyToPointerBatch.get(hash);
 				if (existing !== undefined) {
@@ -326,7 +325,7 @@ export async function appendBlockTxs(
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
 				if (output.scriptPubKey.kind === "pointer") continue;
-				const raw = await getRawScriptPubKey(output);
+				const raw = await TxOutput.getRawScriptPubKey(output);
 				const hash = sha256(raw);
 				if (await pubKeyToPointerBatch.get(hash) === undefined) {
 					pubKeyToPointerBatch.set(hash, txPointer + encoded.voutOffsets[i]!);
@@ -447,7 +446,7 @@ export async function getChainTip(): Promise<{ height: number; block: StoredBloc
 	return { height, block };
 }
 
-export async function getTxOutputByPointer(pointer: number): Promise<Codec.InferOutput<typeof StoredTxOutput>> {
+export async function getTxOutputByPointer(pointer: number): Promise<TxOutput> {
 	const output = await blobStore.get(pointer, StoredTxOutput);
 	return output;
 }

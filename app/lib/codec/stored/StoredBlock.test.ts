@@ -5,7 +5,7 @@ function makeHash(fill: number): Uint8Array {
 	return new Uint8Array(32).fill(fill);
 }
 
-const SAMPLE_BLOCK: import("~/lib/codec/stored/StoredBlock.ts").StoredBlock = {
+const SAMPLE_BLOCK: StoredBlock = {
 	header: {
 		version: 1,
 		prevHash: makeHash(1),

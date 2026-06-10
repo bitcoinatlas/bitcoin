@@ -1,4 +1,4 @@
-export type ScriptPubKey = { kind: "raw" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
+export type ScriptPubKey = { kind: "raw" | "opreturn" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
 
 export const SCRIPTPUBKEY_PATTERN = {
 	p2pkh: {
@@ -33,7 +33,10 @@ export const SCRIPTPUBKEY_PATTERN = {
 	},
 } as const;
 
-export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "raw">, number> = {
+/** First opcode of an OP_RETURN (provably-unspendable) output script. */
+export const OP_RETURN = 0x6a;
+
+export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "raw" | "opreturn">, number> = {
 	p2pkh: SCRIPTPUBKEY_PATTERN.p2pkh.hashLen,
 	p2sh: SCRIPTPUBKEY_PATTERN.p2sh.hashLen,
 	p2wpkh: SCRIPTPUBKEY_PATTERN.p2wpkh.hashLen,
@@ -43,6 +46,14 @@ export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "
 
 /** Try to detect the known script type from raw bytes. Falls back to "raw" kind. */
 export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
+	// OP_RETURN: prefix-only match (first opcode 0x6a). Variable length, no
+	// suffix. Provably unspendable, so it never carries spend state. The full
+	// script (including the 0x6a and any pushdata opcodes) is stored verbatim
+	// to guarantee exact round-trip across non-canonical pushes.
+	if (raw.length >= 1 && raw[0] === OP_RETURN) {
+		return { kind: "opreturn", value: raw.slice() };
+	}
+
 	if (raw.length === SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen) {
 		let match = true;
 		for (let i = 0; i < SCRIPTPUBKEY_PATTERN.p2pkh.prefix.length; i++) {
@@ -127,6 +138,7 @@ export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
 export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array<ArrayBuffer> {
 	switch (parsed.kind) {
 		case "raw":
+		case "opreturn":
 			return parsed.value.slice();
 		case "p2pkh": {
 			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen);

@@ -76,7 +76,9 @@ function TxRow(tx: { wire: WireTx; stored: StoredTx }, index: number) {
 		summary().append$(
 			span().textContent(`#${index} `),
 			span().textContent(formatHash(tx.wire.txId)),
-			span().textContent(` | ${tx.wire.inputs.length} in, ${tx.wire.outputs.length} out | ${formatBtc(totalOut)}`),
+			span().textContent(
+				` | ${tx.wire.inputs.length} in, ${tx.wire.outputs.length} out | ${formatBtc(totalOut)}`,
+			),
 			isCoinbase ? span().textContent(" [coinbase]") : null,
 		),
 		dl().append$(
@@ -96,30 +98,31 @@ function TxRow(tx: { wire: WireTx; stored: StoredTx }, index: number) {
 					const coinbaseInput = isCoinbase && i === 0;
 					const storedIn = tx.stored.vin[i];
 					return li().append$(
-					dl().append$(
-						dt().textContent("Index"),
-						dd().textContent(String(i)),
-					dt().textContent("Prev TxID"),
-					dd().textContent(coinbaseInput ? "coinbase" : formatHash(inp.prevOut.txId)),
-						dt().textContent("Vout"),
-						dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
-						dt().textContent("ScriptSig"),
-						dd().textContent(encodeHex(inp.scriptSig)),
-						dt().textContent("Sequence"),
-						dd().textContent(formatSequence(inp.sequence)),
-						...(tx.wire.witness[i] && tx.wire.witness[i]!.length > 0
-							? [
-								dt().textContent("Witness"),
-								dd().textContent(tx.wire.witness[i]!.map((w) => encodeHex(w)).join(", ")),
-							]
-							: []),
-						...(storedIn
-							? [
-								dt().textContent("Stored PrevOut"),
-								dd().textContent(JSON.stringify(storedIn.prevOut.txId, (_k, v) => v instanceof Uint8Array ? encodeHex(v) : v)),
-							]
-							: []),
-					),
+						dl().append$(
+							dt().textContent("Index"),
+							dd().textContent(String(i)),
+							dt().textContent("Prev TxID"),
+							dd().textContent(coinbaseInput ? "coinbase" : formatHash(inp.prevOut.txId)),
+							dt().textContent("Vout"),
+							dd().textContent(coinbaseInput ? "-" : String(inp.prevOut.vout)),
+							dt().textContent("ScriptSig"),
+							dd().textContent(encodeHex(inp.scriptSig)),
+							dt().textContent("Sequence"),
+							dd().textContent(formatSequence(inp.sequence)),
+							...(tx.wire.witness[i] && tx.wire.witness[i]!.length > 0
+								? [
+									dt().textContent("Witness"),
+									dd().textContent(tx.wire.witness[i]!.map((w) => encodeHex(w)).join(", ")),
+								]
+								: []),
+							...(storedIn
+								? [
+									dt().textContent("Stored PrevOut"),
+									dd().textContent(JSON.stringify(storedIn.prevOut.txId, (_k, v) =>
+										v instanceof Uint8Array ? encodeHex(v) : v)),
+								]
+								: []),
+						),
 					);
 				}),
 			),
@@ -133,18 +136,19 @@ function TxRow(tx: { wire: WireTx; stored: StoredTx }, index: number) {
 						dl().append$(
 							dt().textContent("Index"),
 							dd().textContent(String(i)),
-						dt().textContent("Value"),
-						dd().textContent(formatBtc(out.value)),
-						dt().textContent("ScriptPubKey"),
-						dd().textContent(encodeHex(out.scriptPubKey)),
-						...(storedOut
-							? [
-								dt().textContent("Stored ScriptPubKey"),
-								dd().textContent(JSON.stringify(storedOut.scriptPubKey, (_k, v) => v instanceof Uint8Array ? encodeHex(v) : v)),
-								dt().textContent("Spent"),
-								dd().textContent(storedOut.spent ? "yes" : "no"),
-							]
-							: []),
+							dt().textContent("Value"),
+							dd().textContent(formatBtc(out.value)),
+							dt().textContent("ScriptPubKey"),
+							dd().textContent(encodeHex(out.scriptPubKey)),
+							...(storedOut
+								? [
+									dt().textContent("Stored ScriptPubKey"),
+									dd().textContent(JSON.stringify(storedOut.scriptPubKey, (_k, v) =>
+										v instanceof Uint8Array ? encodeHex(v) : v)),
+									dt().textContent("Spent"),
+									dd().textContent(storedOut.spentBy ? "yes" : "no"),
+								]
+								: []),
 						),
 					);
 				}),
