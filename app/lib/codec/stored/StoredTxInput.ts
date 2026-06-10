@@ -6,6 +6,36 @@ import { U24LE } from "~/lib/codec/primitives.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { StoredWitness } from "~/lib/codec/stored/StoredWitness.ts";
 
+/**
+ * StoredTxInput binary layout
+ *
+ * Field order keeps the single fixed-ish tag byte first, the prevOut payload
+ * (fixed per kind) next, the conditional explicit sequence after it, then the
+ * two variable-length tails (scriptSig, witness) last. Single forward cursor,
+ * no padding.
+ *
+ * -- 1-byte tag --
+ * bits 0-1 : prevOut kind   0=resolved (pointer), 1=raw (txid), 2=coinbase
+ * bits 2-3 : sequence tag    0=0xFFFFFFFF, 1=0xFFFFFFFE, 2=0xFFFFFFFD (RBF),
+ *                            3=explicit u32 follows
+ * bits 4-7 : spare
+ *
+ * -- prevOut payload (by kind) --
+ *   resolved: 6-byte StoredPointer (u48) + 3-byte vout (u24)  = 9 bytes
+ *   raw:      32-byte txid + 3-byte vout (u24)                = 35 bytes
+ *   coinbase: none                                            = 0 bytes
+ *
+ * -- sequence (conditional) --
+ *   present ONLY when sequence tag is 3 (explicit): 4-byte u32.
+ *   The three common constants are encoded in the tag and store 0 bytes here.
+ *
+ * -- scriptSig (variable) --
+ *   length-prefixed bytes
+ *
+ * -- witness (variable, LAST) --
+ *   StoredWitness encoding
+ */
+
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();
 
