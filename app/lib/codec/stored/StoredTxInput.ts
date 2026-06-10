@@ -1,4 +1,4 @@
-import { BytesCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
+import { BytesCodec, Codec, Stride, U32LE } from "@nomadshiba/codec";
 import { COINBASE_VOUT } from "~/constants.ts";
 import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
@@ -9,110 +9,170 @@ import { StoredWitness } from "~/lib/codec/stored/StoredWitness.ts";
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();
 
-// Struct for resolved prevOut (fixed size: 6 bytes pointer + 3 bytes vout)
-const resolvedPrevOutCodec = new StructCodec({
-	tx: StoredPointer,
-	vout: U24LE,
-});
+// Fixed-size resolved prevOut payload: 6 bytes pointer + 3 bytes vout
+const RESOLVED_PREVOUT_SIZE = 6 + 3;
+
+// --- Tag byte layout ---
+// bits 0-1: prevOut kind   0=resolved, 1=raw, 2=coinbase
+// bits 2-3: sequence tag    0=0xFFFFFFFF, 1=0xFFFFFFFE, 2=0xFFFFFFFD, 3=explicit u32 follows
+// bits 4-7: spare
+const PREVOUT_MASK = 0b0000_0011;
+const SEQ_SHIFT = 2;
+const SEQ_MASK = 0b0000_1100;
+
+const PREVOUT_RESOLVED = 0;
+const PREVOUT_RAW = 1;
+const PREVOUT_COINBASE = 2;
+
+const SEQ_FINAL = 0; // 0xFFFFFFFF
+const SEQ_FE = 1; // 0xFFFFFFFE
+const SEQ_FD = 2; // 0xFFFFFFFD (RBF)
+const SEQ_EXPLICIT = 3;
+
+const SEQ_VALUE_FINAL = 0xffffffff;
+const SEQ_VALUE_FE = 0xfffffffe;
+const SEQ_VALUE_FD = 0xfffffffd;
+
+function sequenceTagForU32(seq: number): number {
+        switch (seq >>> 0) {
+                case SEQ_VALUE_FINAL:
+                        return SEQ_FINAL;
+                case SEQ_VALUE_FE:
+                        return SEQ_FE;
+                case SEQ_VALUE_FD:
+                        return SEQ_FD;
+                default:
+                        return SEQ_EXPLICIT;
+        }
+}
+
+function sequenceU32ForTag(tag: number): number | null {
+        switch (tag) {
+                case SEQ_FINAL:
+                        return SEQ_VALUE_FINAL;
+                case SEQ_FE:
+                        return SEQ_VALUE_FE;
+                case SEQ_FD:
+                        return SEQ_VALUE_FD;
+                default:
+                        return null; // explicit: read 4 bytes
+        }
+}
 
 // StoredTxInput codec that decodes to plain TxInput data
 export class StoredTxInputCodec extends Codec<TxInput> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+        readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(input: TxInput): Uint8Array<ArrayBuffer> {
-		const data = input;
+        encode(input: TxInput): Uint8Array<ArrayBuffer> {
+                const data = input;
 
-		let prevOutEncoded: Uint8Array;
-		if (data.prevOut.txId.kind === "pointer") {
-			// Resolved - use struct codec
-			prevOutEncoded = new Uint8Array(1 + 6 + 3); // tag + tx + vout
-			prevOutEncoded[0] = 0;
-			const encoded = resolvedPrevOutCodec.encode({
-				tx: data.prevOut.txId.value,
-				vout: data.prevOut.vout,
-			});
-			prevOutEncoded.set(encoded, 1);
-		} else if (data.prevOut.txId.kind === "raw") {
-			const storedVout = data.prevOut.vout;
-			prevOutEncoded = new Uint8Array(1 + 32 + 3); // tag + txId + vout
-			prevOutEncoded[0] = 1;
-			prevOutEncoded.set(data.prevOut.txId.value, 1);
-			const voutBytes = U24LE.encode(storedVout);
-			prevOutEncoded.set(voutBytes, 33);
-		} else if (data.prevOut.txId.kind === "coinbase") {
-			prevOutEncoded = new Uint8Array(1); // tag
-			prevOutEncoded[0] = 2;
-		} else {
-			throw new Error();
-		}
+                // Resolve sequence to its raw u32 and decide if it needs an explicit field
+                const seqU32 = SequenceLockCodec.toU32(data.sequence) >>> 0;
+                const seqTag = sequenceTagForU32(seqU32);
+                const seqExplicit = seqTag === SEQ_EXPLICIT;
+                const seqBytes = seqExplicit ? 4 : 0;
 
-		const sequenceEncoded = U32LE.encode(SequenceLockCodec.toU32(data.sequence));
-		const scriptSigEncoded = scriptSigCodec.encode(data.scriptSig);
-		const witnessEncoded = StoredWitness.encode(data.witness);
+                let prevOutKind: number;
+                let prevOutPayload: Uint8Array;
 
-		const totalLength = prevOutEncoded.length + sequenceEncoded.length + scriptSigEncoded.length +
-			witnessEncoded.length;
-		const result = new Uint8Array(totalLength);
-		let offset = 0;
+                if (data.prevOut.txId.kind === "pointer") {
+                        prevOutKind = PREVOUT_RESOLVED;
+                        prevOutPayload = new Uint8Array(RESOLVED_PREVOUT_SIZE);
+                        prevOutPayload.set(StoredPointer.encode(data.prevOut.txId.value), 0);
+                        prevOutPayload.set(U24LE.encode(data.prevOut.vout), 6);
+                } else if (data.prevOut.txId.kind === "raw") {
+                        prevOutKind = PREVOUT_RAW;
+                        prevOutPayload = new Uint8Array(32 + 3);
+                        prevOutPayload.set(data.prevOut.txId.value, 0);
+                        prevOutPayload.set(U24LE.encode(data.prevOut.vout), 32);
+                } else if (data.prevOut.txId.kind === "coinbase") {
+                        prevOutKind = PREVOUT_COINBASE;
+                        prevOutPayload = new Uint8Array(0);
+                } else {
+                        throw new Error("unknown prevOut kind");
+                }
 
-		result.set(prevOutEncoded, offset);
-		offset += prevOutEncoded.length;
-		result.set(sequenceEncoded, offset);
-		offset += sequenceEncoded.length;
-		result.set(scriptSigEncoded, offset);
-		offset += scriptSigEncoded.length;
-		result.set(witnessEncoded, offset);
+                const tagByte = (prevOutKind & PREVOUT_MASK) | ((seqTag << SEQ_SHIFT) & SEQ_MASK);
 
-		return result;
-	}
+                const scriptSigEncoded = scriptSigCodec.encode(data.scriptSig);
+                const witnessEncoded = StoredWitness.encode(data.witness);
 
-	decode(data: Uint8Array): [TxInput, number] {
-		let offset = 0;
+                const totalLength = 1 + prevOutPayload.length + seqBytes +
+                        scriptSigEncoded.length + witnessEncoded.length;
+                const result = new Uint8Array(totalLength);
+                let offset = 0;
 
-		// First byte is tag: 0 = resolved, 1 = unresolved
-		let txId: OutPoint["txId"];
-		let vout: number;
-		let prevOutBytes: number;
+                result[offset] = tagByte;
+                offset += 1;
 
-		if (data[0] === 0) {
-			// Resolved: use StructCodec
-			const [prevOut] = resolvedPrevOutCodec.decode(data.subarray(1));
-			txId = { kind: "pointer", value: prevOut.tx };
-			vout = prevOut.vout;
-			prevOutBytes = 1 + 6 + 3;
-		} else if (data[0] === 1) {
-			// Unresolved: manual decode
-			const rawTxId = data.subarray(1, 33);
-			txId = { kind: "raw", value: rawTxId };
-			[vout] = U24LE.decode(data.subarray(33));
-			prevOutBytes = 1 + 32 + 3;
-		} else if (data[0] === 2) {
-			txId = { kind: "coinbase" };
-			vout = COINBASE_VOUT;
-			prevOutBytes = 1;
-		} else {
-			throw new Error();
-		}
-		offset += prevOutBytes;
+                result.set(prevOutPayload, offset);
+                offset += prevOutPayload.length;
 
-		const [sequence] = U32LE.decode(data.subarray(offset));
-		offset += 4;
+                if (seqExplicit) {
+                        result.set(U32LE.encode(seqU32), offset);
+                        offset += 4;
+                }
 
-		const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data.subarray(offset));
-		offset += scriptSigBytes;
+                result.set(scriptSigEncoded, offset);
+                offset += scriptSigEncoded.length;
 
-		const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
-		offset += witnessBytes;
+                result.set(witnessEncoded, offset);
 
-		const input: TxInput = {
-			prevOut: { txId, vout },
-			scriptSig,
-			sequence: SequenceLockCodec.fromU32(sequence),
-			witness,
-		};
+                return result;
+        }
 
-		return [input, offset];
-	}
+        decode(data: Uint8Array): [TxInput, number] {
+                let offset = 0;
+
+                const tagByte = data[offset]!;
+                offset += 1;
+
+                const prevOutKind = tagByte & PREVOUT_MASK;
+                const seqTag = (tagByte & SEQ_MASK) >>> SEQ_SHIFT;
+
+                let txId: OutPoint["txId"];
+                let vout: number;
+
+                if (prevOutKind === PREVOUT_RESOLVED) {
+                        const pointer = StoredPointer.decode(data.subarray(offset))[0];
+                        offset += 6;
+                        vout = U24LE.decode(data.subarray(offset))[0];
+                        offset += 3;
+                        txId = { kind: "pointer", value: pointer };
+                } else if (prevOutKind === PREVOUT_RAW) {
+                        txId = { kind: "raw", value: data.subarray(offset, offset + 32) };
+                        offset += 32;
+                        vout = U24LE.decode(data.subarray(offset))[0];
+                        offset += 3;
+                } else if (prevOutKind === PREVOUT_COINBASE) {
+                        txId = { kind: "coinbase" };
+                        vout = COINBASE_VOUT;
+                } else {
+                        throw new Error("unknown prevOut kind");
+                }
+
+                // Sequence: either from tag or explicit u32
+                let seqU32 = sequenceU32ForTag(seqTag);
+                if (seqU32 === null) {
+                        seqU32 = U32LE.decode(data.subarray(offset))[0] >>> 0;
+                        offset += 4;
+                }
+
+                const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data.subarray(offset));
+                offset += scriptSigBytes;
+
+                const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
+                offset += witnessBytes;
+
+                const input: TxInput = {
+                        prevOut: { txId, vout },
+                        scriptSig,
+                        sequence: SequenceLockCodec.fromU32(seqU32),
+                        witness,
+                };
+
+                return [input, offset];
+        }
 }
 
 export const StoredTxInput = new StoredTxInputCodec();
