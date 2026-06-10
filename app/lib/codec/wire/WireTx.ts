@@ -1,7 +1,7 @@
 import { ArrayCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { CompactSize } from "~/lib/codec/primitives.ts";
-import { TimeLock } from "~/lib/codec/TimeLock.ts";
+import { LockTime } from "~/lib/codec/LockTime.ts";
 import { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
 import { WireSegwitMarker } from "~/lib/codec/wire/WireSegwitMarker.ts";
@@ -21,12 +21,12 @@ const WireTxPreWitness = new StructCodec({
 
 // Part 2: Everything after witness (just locktime)
 const WireTxPostWitness = new StructCodec({
-	locktime: TimeLock,
+	locktime: LockTime,
 });
 
 type T = {
 	version: number;
-	locktime: TimeLock;
+	locktime: LockTime;
 	inputs: WireTxInput[];
 	outputs: WireTxOutput[];
 	witness: Uint8Array[][];

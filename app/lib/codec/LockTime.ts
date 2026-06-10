@@ -1,19 +1,19 @@
 import { Codec, Stride, U32LE } from "@nomadshiba/codec";
 
-export type TimeLock =
+export type LockTime =
 	| { kind: "none" }
 	| { kind: "block"; height: number }
 	| { kind: "time"; timestamp: number };
 
-// Wire-format codec for TimeLock
+// Wire-format codec for LockTime
 // Encodes as U32LE where:
 // - 0 = none
 // - < 500_000_000 = block height
 // - >= 500_000_000 = timestamp
-export class TimeLockCodec extends Codec<TimeLock> {
+export class LockTimeCodec extends Codec<LockTime> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
 
-	static toU32(value: TimeLock): number {
+	static toU32(value: LockTime): number {
 		switch (value.kind) {
 			case "none":
 				return 0;
@@ -24,21 +24,21 @@ export class TimeLockCodec extends Codec<TimeLock> {
 		}
 	}
 
-	static fromU32(value: number): TimeLock {
+	static fromU32(value: number): LockTime {
 		if (value === 0) return { kind: "none" };
 		if (value < 500_000_000) return { kind: "block", height: value };
 		return { kind: "time", timestamp: value };
 	}
 
-	encode(value: TimeLock): Uint8Array<ArrayBuffer> {
-		return new Uint8Array(U32LE.encode(TimeLockCodec.toU32(value)));
+	encode(value: LockTime): Uint8Array<ArrayBuffer> {
+		return new Uint8Array(U32LE.encode(LockTimeCodec.toU32(value)));
 	}
 
-	decode(data: Uint8Array): [TimeLock, number] {
+	decode(data: Uint8Array): [LockTime, number] {
 		const [locktime] = U32LE.decode(data);
 		const value = locktime >>> 0;
-		return [TimeLockCodec.fromU32(value), 4];
+		return [LockTimeCodec.fromU32(value), 4];
 	}
 }
 
-export const TimeLock = new TimeLockCodec();
+export const LockTime = new LockTimeCodec();

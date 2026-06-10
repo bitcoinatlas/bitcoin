@@ -4,7 +4,7 @@ import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
 import { getPrevOutTxId, OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import type { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
-import { TimeLock } from "~/lib/codec/TimeLock.ts";
+import { LockTime } from "~/lib/codec/LockTime.ts";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 import type { WireTxInput } from "~/lib/codec/wire/WireTxInput.ts";
 import type { WireTxOutput } from "~/lib/codec/wire/WireTxOutput.ts";
@@ -13,7 +13,7 @@ import { parseScriptPubKey, rawScriptPubKey } from "./ScriptPubKey.ts";
 export type TxData = {
 	txId: Uint8Array;
 	version: number;
-	locktime: TimeLock;
+	locktime: LockTime;
 	witness: boolean;
 	inputs: TxInput[];
 	outputs: TxOutput[];
