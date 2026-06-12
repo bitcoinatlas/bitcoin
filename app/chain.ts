@@ -10,7 +10,7 @@ import { Tx } from "~/lib/chain/Tx.ts";
 import { Bytes32 } from "~/lib/codec/primitives.ts";
 import { StoredBlock } from "~/lib/codec/stored/StoredBlock.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
-import { encodeStoredTxWithOutputOffsets, StoredTx } from "~/lib/codec/stored/StoredTx.ts";
+import { StoredTx } from "~/lib/codec/stored/StoredTx.ts";
 import { StoredTxOutput, TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/lib/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/lib/codec/wire/WireBlock.ts";
@@ -280,7 +280,7 @@ export async function appendBlockTxs(
 		// Process each tx: dedup scriptPubKeys first, then encode with correct final offsets.
 		// We must process sequentially so each tx's final size is known before computing the
 		// next tx's pointer offset.
-		const encodedTxs: ReturnType<typeof encodeStoredTxWithOutputOffsets>[] = [];
+		const encodedTxs: ReturnType<typeof StoredTx.encodeWithOffsets>[] = [];
 		let offset = txCountBytes.length;
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
@@ -318,7 +318,7 @@ export async function appendBlockTxs(
 			}
 
 			// Encode with deduped outputs to get correct final voutOffsets.
-			const encoded = encodeStoredTxWithOutputOffsets(tx.toStore());
+			const encoded = StoredTx.encodeWithOffsets(tx.toStore());
 			encodedTxs.push(encoded);
 
 			// Register new scriptPubKeys using final offsets.
@@ -328,7 +328,7 @@ export async function appendBlockTxs(
 				const raw = await TxOutput.getRawScriptPubKey(output);
 				const hash = sha256(raw);
 				if (await pubKeyToPointerBatch.get(hash) === undefined) {
-					pubKeyToPointerBatch.set(hash, txPointer + encoded.voutOffsets[i]!);
+					pubKeyToPointerBatch.set(hash, txPointer + encoded.offsets.vout[i]!);
 				}
 			}
 
