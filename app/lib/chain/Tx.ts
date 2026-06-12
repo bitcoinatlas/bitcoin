@@ -58,9 +58,7 @@ export class Tx {
 	}
 
 	static async fromWire(wireTx: WireTx): Promise<Tx> {
-		const inputs: TxInput[] = [];
-
-		await Promise.all(wireTx.inputs.map(async (wireInput, i) => {
+		const inputs: TxInput[] = await Promise.all(wireTx.inputs.map(async (wireInput, i): Promise<TxInput> => {
 			const prevOutTxPointer = await getTxPointerById(wireInput.prevOut.txId);
 			const inputWitness = wireTx.witness[i] ?? [];
 
@@ -75,14 +73,12 @@ export class Tx {
 				txId = { kind: "pointer", value: prevOutTxPointer };
 			}
 
-			const input: TxInput = {
+			return {
 				prevOut: { txId, vout: wireInput.prevOut.vout },
 				scriptSig: wireInput.scriptSig,
 				sequence: wireInput.sequence,
 				witness: inputWitness,
 			};
-
-			inputs.push(input);
 		}));
 
 		const outputs: TxOutput[] = [];

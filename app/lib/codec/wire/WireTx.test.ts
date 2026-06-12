@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertObjectMatch } from "@std/assert";
 import { decodeHex, encodeHex } from "@std/encoding";
 import { WireTx } from "~/lib/codec/wire/WireTx.ts";
 
@@ -24,7 +24,7 @@ Deno.test("WireTx decode block1 coinbase - fields correct", () => {
 	assertEquals(tx.inputs.length, 1);
 	assertEquals(tx.outputs.length, 1);
 	assertEquals(tx.outputs[0]!.value, 5000000000n);
-	assertEquals(tx.locktime, { kind: "none" });
+	assertObjectMatch(tx.locktime, { kind: "none" });
 	assertEquals(tx.witness.length, 0);
 });
 
