@@ -45,22 +45,26 @@ export const TxOutput = {
  * Packed form of the clean shape:
  *   { value: VarInt, scriptPubKey: Enum<{ pointer, raw, p2pkh, p2sh, p2wpkh,
  *     p2wsh, p2tr, opreturn }> }
- * where every spendable variant MAY carry a `spentBy` pointer and `opreturn`
- * never does (it is provably unspendable, so no spend state exists for it).
+ * where every spendable variant carries a fixed 6-byte `spentBy` pointer and
+ * `opreturn` never does (it is provably unspendable, so no spend state exists).
  *
- * Spend state is a single flag bit in the leading byte. When set, a 6-byte
- * spentBy pointer follows the value; when clear, nothing is stored for spend
- * state. Unspent outputs -- the bulk of the live set -- therefore pay 0 bytes
- * for spend state instead of a zero sentinel pointer.
+ * Spend state is the pointer value itself: spentBy == 0 means UNSPENT (null).
+ * Blob offset 0 is the genesis coinbase output, which is unspendable, so 0 can
+ * never be a real spend target -- it is a free, unambiguous sentinel.
  *
- * Field order keeps the flag byte first, the value next, the spentBy pointer
- * (only when the spent bit is set), and the single variable-length script
- * payload last. Single forward cursor, no padding.
+ * The pointer is FIXED-WIDTH and always present for spendable types. This is
+ * deliberate: spending an output overwrites the 6 zero-bytes with a real
+ * pointer IN PLACE, with no change to record size and no shift of any field
+ * after it. A presence flag (omit-when-unspent) would make spending a
+ * layout-growing operation that rewrites the record and everything after it,
+ * which is incompatible with the append-only blob -- so it is not used.
+ *
+ * Field order: flag byte, value, spentBy (spendable only), then the single
+ * variable-length script payload last. Single forward cursor, no padding.
  *
  * -- 1-byte flag --
  * bits 0-2 : scriptTypeId  (3-bit script type, range 0..7)
- * bit  3   : spent flag     1=spentBy pointer follows, 0=unspent (no pointer)
- * bits 4-7 : spare
+ * bits 3-7 : spare
  *
  * scriptTypeId mapping:
  *   0 = pointer, 1 = raw, 2 = p2pkh, 3 = p2sh, 4 = p2wpkh, 5 = p2wsh,
@@ -69,9 +73,9 @@ export const TxOutput = {
  * -- value (variable) --
  *   VarInt-encoded satoshis (51-bit max; <= 7 bytes for any valid value)
  *
- * -- spentBy (only when spent bit is set, fixed 6 bytes) --
- *   StoredPointer (u48) blob offset of the spending input. Absent for unspent
- *   outputs and always absent for opreturn (provably unspendable).
+ * -- spentBy (spendable types only, fixed 6 bytes) --
+ *   StoredPointer (u48) blob offset of the spending input, or 0 if unspent.
+ *   Never present for opreturn (provably unspendable).
  *
  * -- script payload (variable, LAST) --
  *   pointer:  6 bytes (StoredPointer u48)
@@ -106,12 +110,11 @@ const SCRIPT_ID_TO_KIND: Record<number, StoredScriptPubKey["kind"]> = {
 	7: "opreturn",
 };
 
-// bits 0-2: scriptTypeId (0..7), bit 3: spent flag, bits 4-7: spare.
+// bits 0-2: scriptTypeId (0..7), bits 3-7: spare.
 const SCRIPT_TYPE_MASK = 0x07;
-const SPENT_FLAG = 0x08;
 
 // Blob offset 0 is the unspendable genesis coinbase output, so a 0 pointer can
-// never be a real spend target. Treated as "unspent" defensively on encode.
+// never be a real spend target -- it is the UNSPENT (null) sentinel.
 const SPENT_UNSPENT = 0;
 
 function isSpendable(kind: StoredScriptPubKey["kind"]): boolean {
@@ -169,15 +172,12 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
 		const spendable = isSpendable(kind);
 
-		// Spent iff spendable and a real (non-zero) pointer is present.
-		const isSpent = spendable && spentBy != null && spentBy !== SPENT_UNSPENT;
-
-		let flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
-		if (isSpent) flag |= SPENT_FLAG;
+		const flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
 
 		const valueEncoded = VarInt.encode(Number(value));
-		// Only spent outputs carry a spentBy pointer. Unspent/opreturn store none.
-		const spentByEncoded = isSpent ? StoredPointer.encode(spentBy!) : null;
+		// Spendable types always store a fixed 6-byte pointer (0 = unspent).
+		// opreturn stores nothing for spend state.
+		const spentByEncoded = spendable ? StoredPointer.encode(spentBy ?? SPENT_UNSPENT) : null;
 
 		const total = 1 + valueEncoded.length +
 			(spentByEncoded ? spentByEncoded.length : 0) +
@@ -212,17 +212,18 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		const kind = SCRIPT_ID_TO_KIND[scriptTypeId];
 		if (kind === undefined) throw new Error(`Unknown script type ID: ${scriptTypeId}`);
 
-		const isSpent = (flag & SPENT_FLAG) !== 0;
+		const spendable = isSpendable(kind);
 
 		const [valueNum, valueSize] = VarInt.decode(bytes.subarray(offset));
 		offset += valueSize;
 		const value = BigInt(valueNum);
 
-		// spentBy pointer present only when the spent bit is set.
+		// Spendable types carry a fixed 6-byte spentBy pointer (0 = unspent/null).
+		// opreturn has none.
 		let spentBy: number | null = null;
-		if (isSpent) {
+		if (spendable) {
 			const [ptr, ptrSize] = StoredPointer.decode(bytes.subarray(offset));
-			spentBy = ptr;
+			spentBy = ptr === SPENT_UNSPENT ? null : ptr;
 			offset += ptrSize;
 		}
 
