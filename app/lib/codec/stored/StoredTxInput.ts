@@ -1,8 +1,7 @@
-import { BytesCodec, Codec, Stride, U32LE } from "@nomadshiba/codec";
+import { BytesCodec, Codec, Stride, U32LE, VarInt } from "@nomadshiba/codec";
 import { COINBASE_VOUT } from "~/constants.ts";
 import { OutPoint, TxInput } from "~/lib/chain/TxInput.ts";
 import { SequenceLockCodec } from "~/lib/codec/SequenceLock.ts";
-import { U24LE } from "~/lib/codec/primitives.ts";
 import { StoredPointer } from "~/lib/codec/stored/StoredPointer.ts";
 import { StoredWitness } from "~/lib/codec/stored/StoredWitness.ts";
 
@@ -109,12 +108,12 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 			prevOutKind = PREVOUT_RESOLVED;
 			prevOutPayload = new Uint8Array(RESOLVED_PREVOUT_SIZE);
 			prevOutPayload.set(StoredPointer.encode(data.prevOut.txId.value), 0);
-			prevOutPayload.set(U24LE.encode(data.prevOut.vout), 6);
+			prevOutPayload.set(VarInt.encode(data.prevOut.vout), 6);
 		} else if (data.prevOut.txId.kind === "raw") {
 			prevOutKind = PREVOUT_RAW;
 			prevOutPayload = new Uint8Array(32 + 3);
 			prevOutPayload.set(data.prevOut.txId.value, 0);
-			prevOutPayload.set(U24LE.encode(data.prevOut.vout), 32);
+			prevOutPayload.set(VarInt.encode(data.prevOut.vout), 32);
 		} else if (data.prevOut.txId.kind === "coinbase") {
 			prevOutKind = PREVOUT_COINBASE;
 			prevOutPayload = new Uint8Array(0);
@@ -166,13 +165,13 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		if (prevOutKind === PREVOUT_RESOLVED) {
 			const pointer = StoredPointer.decode(data.subarray(offset))[0];
 			offset += 6;
-			vout = U24LE.decode(data.subarray(offset))[0];
+			vout = VarInt.decode(data.subarray(offset))[0];
 			offset += 3;
 			txId = { kind: "pointer", value: pointer };
 		} else if (prevOutKind === PREVOUT_RAW) {
 			txId = { kind: "raw", value: data.subarray(offset, offset + 32) };
 			offset += 32;
-			vout = U24LE.decode(data.subarray(offset))[0];
+			vout = VarInt.decode(data.subarray(offset))[0];
 			offset += 3;
 		} else if (prevOutKind === PREVOUT_COINBASE) {
 			txId = { kind: "coinbase" };
