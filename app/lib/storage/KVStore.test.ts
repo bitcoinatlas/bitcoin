@@ -61,7 +61,13 @@ async function withStore<T>(
 ): Promise<T> {
 	const dir = await Deno.makeTempDir({ prefix: "kvstore_test_" });
 	try {
-		const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
+		const store = await createKVStore({
+			name: "test",
+			path: dir,
+			keyCodec: u32Codec,
+			valueCodec: u64Codec,
+			shards: 16,
+		});
 		try {
 			return await fn(store, dir);
 		} finally {
@@ -231,7 +237,13 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 	try {
 		// First session: write WAL but do NOT apply (simulate crash after WAL write)
 		{
-			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
+			const store = await createKVStore({
+				name: "test",
+				path: dir,
+				keyCodec: u32Codec,
+				valueCodec: u64Codec,
+				shards: 16,
+			});
 			const b = store.batch();
 			b.set(1, 111n);
 			b.set(2, 222n);
@@ -242,7 +254,13 @@ Deno.test("crash recovery: WAL on disk is replayed on re-open", { sanitizeResour
 
 		// Second session: should replay WAL on open
 		{
-			const store = await createKVStore({ name: "test", path: dir, keyCodec: u32Codec, valueCodec: u64Codec, shards: 16 });
+			const store = await createKVStore({
+				name: "test",
+				path: dir,
+				keyCodec: u32Codec,
+				valueCodec: u64Codec,
+				shards: 16,
+			});
 			// WAL replay happens externally (via Store.recover), but createKVStore opens any
 			// existing WAL as self.wal. Apply it manually here to simulate recover().
 			if (store.wal) {
@@ -799,7 +817,9 @@ Deno.test("large-volume debug: find which cycle kills key 0", async () => {
 
 				const v = vAfterDiscard;
 				if (v !== 0n) {
-					console.error(`key0 lost after cycle offset=${offset}: batchApply=${vAfterBatchApply} createWAL=${vAfterCreateWAL} afterApply=${vAfterApply} afterDiscard=${vAfterDiscard}`);
+					console.error(
+						`key0 lost after cycle offset=${offset}: batchApply=${vAfterBatchApply} createWAL=${vAfterCreateWAL} afterApply=${vAfterApply} afterDiscard=${vAfterDiscard}`,
+					);
 					break;
 				}
 			}
@@ -843,7 +863,10 @@ Deno.test("large-volume: 100k txId-like 32-byte keys survive multiple WAL cycles
 				if (v !== BigInt(i)) {
 					console.error(`key ${i} expected ${i} got ${v}`);
 					missing++;
-					if (missing >= 10) { console.error("...stopping after 10 failures"); break; }
+					if (missing >= 10) {
+						console.error("...stopping after 10 failures");
+						break;
+					}
 				}
 			}
 			assertEquals(missing, 0, `${missing} keys lost after large-volume write`);
@@ -854,4 +877,3 @@ Deno.test("large-volume: 100k txId-like 32-byte keys survive multiple WAL cycles
 		await Deno.remove(dir, { recursive: true });
 	}
 });
-

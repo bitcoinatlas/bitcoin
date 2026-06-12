@@ -1,5 +1,10 @@
 import { assertEquals } from "@std/assert";
-import { detectWitnessPattern, reconstructWitness, StoredWitness, StoredWitnessPattern } from "~/lib/codec/stored/StoredWitness.ts";
+import {
+	detectWitnessPattern,
+	reconstructWitness,
+	StoredWitness,
+	StoredWitnessPattern,
+} from "~/lib/codec/stored/StoredWitness.ts";
 
 function makeBytes(len: number, fill: number): Uint8Array {
 	return new Uint8Array(len).fill(fill);

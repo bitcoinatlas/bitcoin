@@ -59,8 +59,12 @@ export const TxOutput = {
  * layout-growing operation that rewrites the record and everything after it,
  * which is incompatible with the append-only blob -- so it is not used.
  *
- * Field order: flag byte, value, spentBy (spendable only), then the single
- * variable-length script payload last. Single forward cursor, no padding.
+ * Field order: flag byte, spentBy (spendable only), value, then the single
+ * variable-length script payload last. The fixed-width spentBy comes BEFORE the
+ * variable-length value so it sits at a CONSTANT offset (record + 1) for every
+ * spendable output, independent of how many bytes `value` encodes to. Spending
+ * is then a fixed-offset 6-byte poke with no VarInt decode required to locate
+ * the pointer being overwritten. Single forward cursor, no padding.
  *
  * -- 1-byte flag --
  * bits 0-2 : scriptTypeId  (3-bit script type, range 0..7)
@@ -70,12 +74,12 @@ export const TxOutput = {
  *   0 = pointer, 1 = raw, 2 = p2pkh, 3 = p2sh, 4 = p2wpkh, 5 = p2wsh,
  *   6 = p2tr, 7 = opreturn
  *
- * -- value (variable) --
- *   VarInt-encoded satoshis (51-bit max; <= 7 bytes for any valid value)
- *
- * -- spentBy (spendable types only, fixed 6 bytes) --
+ * -- spentBy (spendable types only, fixed 6 bytes, at record + 1) --
  *   StoredPointer (u48) blob offset of the spending input, or 0 if unspent.
  *   Never present for opreturn (provably unspendable).
+ *
+ * -- value (variable) --
+ *   VarInt-encoded satoshis (51-bit max; <= 7 bytes for any valid value)
  *
  * -- script payload (variable, LAST) --
  *   pointer:  6 bytes (StoredPointer u48)
@@ -179,8 +183,9 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		// opreturn stores nothing for spend state.
 		const spentByEncoded = spendable ? StoredPointer.encode(spentBy ?? SPENT_UNSPENT) : null;
 
-		const total = 1 + valueEncoded.length +
+		const total = 1 +
 			(spentByEncoded ? spentByEncoded.length : 0) +
+			valueEncoded.length +
 			payload.length;
 
 		const out = new Uint8Array(total);
@@ -189,13 +194,15 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		out[offset] = flag;
 		offset += 1;
 
-		out.set(valueEncoded, offset);
-		offset += valueEncoded.length;
-
+		// Fixed-width spentBy first, so it lands at a constant offset (record + 1)
+		// for every spendable output regardless of the VarInt value width.
 		if (spentByEncoded) {
 			out.set(spentByEncoded, offset);
 			offset += spentByEncoded.length;
 		}
+
+		out.set(valueEncoded, offset);
+		offset += valueEncoded.length;
 
 		out.set(payload, offset);
 		return out;
@@ -214,18 +221,18 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 
 		const spendable = isSpendable(kind);
 
-		const [valueNum, valueSize] = VarInt.decode(bytes.subarray(offset));
-		offset += valueSize;
-		const value = BigInt(valueNum);
-
-		// Spendable types carry a fixed 6-byte spentBy pointer (0 = unspent/null).
-		// opreturn has none.
+		// Spendable types carry a fixed 6-byte spentBy pointer (0 = unspent/null)
+		// immediately after the flag. opreturn has none.
 		let spentBy: number | null = null;
 		if (spendable) {
 			const [ptr, ptrSize] = StoredPointer.decode(bytes.subarray(offset));
 			spentBy = ptr === SPENT_UNSPENT ? null : ptr;
 			offset += ptrSize;
 		}
+
+		const [valueNum, valueSize] = VarInt.decode(bytes.subarray(offset));
+		offset += valueSize;
+		const value = BigInt(valueNum);
 
 		const [scriptPubKey, payloadSize] = decodeScriptPubKey(kind, bytes.subarray(offset));
 		offset += payloadSize;
