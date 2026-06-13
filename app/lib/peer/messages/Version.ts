@@ -1,5 +1,6 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
+import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export type VersionPayload = {
 	version: number;
@@ -54,7 +55,7 @@ class VersionCodec extends Codec<VersionPayload> {
 	encode(data: VersionPayload): Uint8Array<ArrayBuffer> {
 		const ua = new TextEncoder().encode(data.userAgent);
 		const out = new Uint8Array(4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + ua.length + 4 + 1);
-		const view = new DataView(out.buffer);
+		const view = new Uint8ArrayView(out);
 		let off = 0;
 
 		view.setInt32(off, data.version, true);
@@ -88,7 +89,7 @@ class VersionCodec extends Codec<VersionPayload> {
 	}
 
 	decode(bytes: Uint8Array): [VersionPayload, number] {
-		const view = new DataView(bytes.buffer, bytes.byteOffset);
+		const view = new Uint8ArrayView(bytes);
 		let off = 0;
 
 		const version = view.getInt32(off, true);

@@ -1,5 +1,6 @@
 import { assertEquals, assertObjectMatch, assertThrows } from "@std/assert";
 import { StoredScriptPubKey, StoredTxOutput, TxOutput } from "~/lib/codec/stored/StoredTxOutput.ts";
+import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 function makeOutput(
 	value: bigint,
@@ -131,7 +132,7 @@ Deno.test("StoredTxOutput spentBy field sits at fixed offset (record+1) for all 
 		const out = makeOutput(1n, spentPointer, scriptPubKey);
 		const encoded = StoredTxOutput.encode(out);
 		// The 6 bytes at offset 1 are the spentBy pointer
-		const spentByView = new DataView(encoded.buffer, encoded.byteOffset + 1, 6);
+		const spentByView = new Uint8ArrayView(encoded, encoded.byteOffset + 1, 6);
 		// Read as little-endian 48-bit
 		const lo = spentByView.getUint32(0, true);
 		const hi = spentByView.getUint16(4, true);

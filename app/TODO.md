@@ -89,6 +89,3 @@ but i dont think that is gonna change much
 - [ ] support Satoshi RPC endpoints.
 - [ ] rename mempool to txpool everywhere.
 - [ ] chunk compression for cold data (LZ4 or similar), with uncompressed cache for hot chunks.
-
-```
-```

@@ -1,5 +1,6 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/lib/peer/Peer.ts";
+import { Uint8ArrayView } from "~/lib/Uint8ArrayView.ts";
 
 export type GetHeadersPayload = {
 	version: number;
@@ -14,7 +15,7 @@ class GetHeadersCodec extends Codec<GetHeadersPayload> {
 		const count = data.locators.length;
 		if (count >= 0xfd) throw new Error("too many locators");
 		const out = new Uint8Array(4 + 1 + 32 * count + 32);
-		const view = new DataView(out.buffer);
+		const view = new Uint8ArrayView(out);
 		view.setUint32(0, data.version, true);
 		out[4] = count;
 		let off = 5;
@@ -27,7 +28,7 @@ class GetHeadersCodec extends Codec<GetHeadersPayload> {
 	}
 
 	decode(bytes: Uint8Array): [GetHeadersPayload, number] {
-		const view = new DataView(bytes.buffer, bytes.byteOffset);
+		const view = new Uint8ArrayView(bytes);
 		const version = view.getUint32(0, true);
 		const count = bytes[4]!;
 		let off = 5;
