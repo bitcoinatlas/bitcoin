@@ -3,6 +3,7 @@ import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { U40 } from "~/codec/primitives/U40.ts";
 
 /**
  * StoredTx binary layout (optimized for disk storage)
@@ -31,6 +32,7 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 
 // Field codecs, referenced directly by encode/decode below.
 const TXID = Bytes32;
+const SPENDER = U40;
 const PACK = LockTimeVersionPack;
 const VOUT = new ArrayCodec(StoredTxOutput, { counter: VarInt });
 const VIN = new ArrayCodec(StoredTxInput, { counter: VarInt });
@@ -40,6 +42,7 @@ const VIN = new ArrayCodec(StoredTxInput, { counter: VarInt });
 export type StoredTx =
 	& {
 		txId: Codec.InferOutput<typeof TXID>;
+		spender: Codec.InferOutput<typeof SPENDER>;
 	}
 	& Codec.InferOutput<typeof PACK>
 	& {
@@ -63,11 +66,13 @@ export class StoredTxCodec extends Codec<StoredTx> {
 
 	public encode(value: StoredTx, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 		const txIdBytes = TXID.encode(value.txId);
+		const spenderBytes = SPENDER.encode(value.spender);
 		const packBytes = PACK.encode({ lockTime: value.lockTime, version: value.version });
 		const voutBytes = VOUT.encode(value.vout);
 		const vinBytes = VIN.encode(value.vin);
 
 		const totalSize = txIdBytes.length +
+			spenderBytes.length +
 			packBytes.length +
 			voutBytes.length +
 			vinBytes.length;
@@ -77,6 +82,8 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		let pos = 0;
 		bytes.set(txIdBytes, pos);
 		pos += txIdBytes.length;
+		bytes.set(spenderBytes, pos);
+		pos += spenderBytes.length;
 		bytes.set(packBytes, pos);
 		pos += packBytes.length;
 		bytes.set(voutBytes, pos);
@@ -91,6 +98,8 @@ export class StoredTxCodec extends Codec<StoredTx> {
 
 		const [txId, txIdSize] = TXID.decode(data.subarray(pos));
 		pos += txIdSize;
+		const [spender, spenderSize] = SPENDER.decode(data.subarray(pos));
+		pos += spenderSize;
 		const [{ lockTime, version }, packSize] = PACK.decode(data.subarray(pos));
 		pos += packSize;
 		const [vout, voutSize] = VOUT.decode(data.subarray(pos));
@@ -98,7 +107,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		const [vin, vinSize] = VIN.decode(data.subarray(pos));
 		pos += vinSize;
 
-		return [{ txId, lockTime, version, vout, vin }, pos];
+		return [{ txId, spender, lockTime, version, vout, vin }, pos];
 	}
 
 	public encodeWithOffsets(
@@ -106,6 +115,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		target?: Uint8Array<ArrayBuffer>,
 	): { bytes: Uint8Array<ArrayBuffer>; offsets: StoredTxOffsets } {
 		const txIdBytes = TXID.encode(value.txId);
+		const spenderBytes = SPENDER.encode(value.spender);
 		const packBytes = PACK.encode({ lockTime: value.lockTime, version: value.version });
 		const voutCountBytes = VarInt.encode(value.vout.length);
 		const encodedVouts = value.vout.map((output) => StoredTxOutput.encode(output));
@@ -113,6 +123,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		const encodedVins = value.vin.map((input) => StoredTxInput.encode(input));
 
 		const totalSize = txIdBytes.length +
+			spenderBytes.length +
 			packBytes.length +
 			voutCountBytes.length +
 			encodedVouts.reduce((sum, v) => sum + v.length, 0) +
@@ -126,6 +137,8 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		let pos = 0;
 		bytes.set(txIdBytes, pos);
 		pos += txIdBytes.length;
+		bytes.set(spenderBytes, pos);
+		pos += spenderBytes.length;
 		bytes.set(packBytes, pos);
 		pos += packBytes.length;
 		bytes.set(voutCountBytes, pos);

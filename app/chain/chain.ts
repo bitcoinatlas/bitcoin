@@ -1,5 +1,4 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { StructCodec } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { formatHash } from "~/api/frontend/utils/format.ts";
 import { PeerChain } from "~/chain/PeerChain.ts";
@@ -8,7 +7,6 @@ import { Tx } from "~/chain/Tx.ts";
 import { GENESIS_BLOCK } from "~/chain/utils/genesis.ts";
 import { verifyProofOfWork, workFromHeader } from "~/chain/utils/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { U40 } from "~/codec/primitives/U40.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
@@ -25,6 +23,7 @@ import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
 import { KVStore } from "~/storage/KVStore.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
+import { U40 } from "~/codec/primitives/U40.ts";
 
 export const atomic = await Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
@@ -43,10 +42,7 @@ export const atomic = await Atomic.open({
 		txid: await KVStore.open({
 			path: join(BASE_DATA_DIR, "txid"),
 			keyCodec: Bytes32,
-			valueCodec: new StructCodec({
-				tx: StoredPointer,
-				spender: U40,
-			}),
+			valueCodec: StoredPointer,
 			shards: 16,
 		}),
 		pubkey: await KVStore.open({
@@ -173,8 +169,9 @@ export async function appendTxs(
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
 			const txPointer = blockPointer + offset;
-			const txSpendersStartAt = batch.spender.length();
-			batch.txid.set(tx.data.txId, { tx: txPointer, spender: txSpendersStartAt });
+			const spenderOffset = batch.spender.length();
+			tx.data;
+			batch.txid.set(tx.data.txId, txPointer);
 
 			// Set prevOut pointers
 			for (let i = 0; i < tx.data.inputs.length; i++) {
@@ -190,7 +187,7 @@ export async function appendTxs(
 					Deno.exit(1);
 				}
 
-				input.prevOut.txId = { kind: "pointer", value: pointer.tx };
+				input.prevOut.txId = { kind: "pointer", value: pointer };
 			}
 
 			// Set scriptPubKey pointers
@@ -206,7 +203,7 @@ export async function appendTxs(
 			}
 
 			// Encode the final tx
-			const encoded = StoredTx.encodeWithOffsets(tx.toStore());
+			const encoded = StoredTx.encodeWithOffsets(tx.toStore(spenderOffset));
 
 			// Update pubkey index
 			for (let i = 0; i < tx.data.outputs.length; i++) {
@@ -227,16 +224,12 @@ export async function appendTxs(
 				const input = tx.data.inputs[i]!;
 				if (input.prevOut.txId.kind !== "pointer") continue; // can't be raw, and coinbase has no prevOut
 
-				const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
-				const prevOutTxPointer = await batch.txid.get(txid);
-				if (!prevOutTxPointer) {
-					throw new Error(`prevOut can't be found in txid index, corrupted data txid=${formatHash(txid)}`);
-				}
-
-				const spenderIndex = prevOutTxPointer.spender + input.prevOut.vout;
+				const txSpenderOffset = await batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
+				const spenderIndex = txSpenderOffset + input.prevOut.vout;
 				const spender = await batch.spender.get(spenderIndex);
 				if (spender > 0) {
 					// TODO: This shouldn't throw normally, it should blacklist the block hash and skip to the next tick
+					const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
 					throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
 				}
 
@@ -311,7 +304,7 @@ export async function getTxByPointer(pointer: StoredPointer): Promise<Tx> {
 export async function getTxById(txId: Uint8Array): Promise<Tx | undefined> {
 	const pointer = await atomic.stores.txid.get(txId);
 	if (pointer === undefined) return undefined;
-	return await getTxByPointer(pointer.tx);
+	return await getTxByPointer(pointer);
 }
 
 export async function getTxsByBlockPointer(pointer: StoredPointer): Promise<Tx[] | undefined> {
@@ -343,7 +336,7 @@ export async function getHashByHeight(height: number): Promise<Uint8Array | unde
 }
 
 export async function getTxPointerById(txId: Uint8Array): Promise<StoredPointer | undefined> {
-	return (await atomic.stores.txid.get(txId))?.tx;
+	return await atomic.stores.txid.get(txId);
 }
 
 export async function getBlockPointerByHeight(height: number): Promise<StoredPointer | undefined> {

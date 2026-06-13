@@ -100,9 +100,10 @@ export class Tx {
 		return tx;
 	}
 
-	toStore(): StoredTx {
+	toStore(spender: number): StoredTx {
 		return {
 			txId: this.data.txId,
+			spender,
 			version: this.data.version,
 			lockTime: this.data.locktime,
 			vout: this.data.outputs,
