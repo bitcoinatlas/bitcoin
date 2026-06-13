@@ -1,4 +1,5 @@
 import { Codec, Stride, VarInt } from "@nomadshiba/codec";
+import { atomic } from "~/chain/chain.ts";
 import {
 	EXPECTED_SCRIPT_PAYLOAD_LEN,
 	normalizeScriptPubKey,
@@ -8,6 +9,7 @@ import {
 	SCRIPTPUBKEY_PATTERN,
 } from "~/chain/ScriptPubKey.ts";
 import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
+import { InferBatches, InferStores } from "~/storage/Atomic.ts";
 
 export type TxOutput = {
 	value: bigint;
@@ -17,11 +19,14 @@ export type TxOutput = {
 };
 
 export const TxOutput = {
-	async getScriptPubKey(output: TxOutput): Promise<ScriptPubKey> {
+	async getScriptPubKey(
+		output: TxOutput,
+		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
+	): Promise<ScriptPubKey> {
 		if (output.scriptPubKey.kind === "pointer") {
 			// TODO: Why?
 			const { getTxOutputByPointer } = await import("~/chain/chain.ts");
-			const resolved = await getTxOutputByPointer(output.scriptPubKey.value);
+			const resolved = await getTxOutputByPointer(output.scriptPubKey.value, batches);
 			if (resolved.scriptPubKey.kind === "pointer") {
 				throw new Error([
 					`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
@@ -33,8 +38,11 @@ export const TxOutput = {
 			return output.scriptPubKey;
 		}
 	},
-	async getRawScriptPubKey(output: TxOutput): Promise<Uint8Array> {
-		return rawScriptPubKey(await TxOutput.getScriptPubKey(output));
+	async getRawScriptPubKey(
+		output: TxOutput,
+		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
+	): Promise<Uint8Array> {
+		return rawScriptPubKey(await TxOutput.getScriptPubKey(output, batches));
 	},
 };
 

@@ -47,7 +47,7 @@ endpointRouter.registerHandler("GET /v1/block/tip", async () => {
 	if (!tip) {
 		return { status: "OK", data: null };
 	}
-	return { status: "OK", data: { height: tip.height, header: tip.block.header } };
+	return { status: "OK", data: { height: tip.height, header: tip.header } };
 });
 
 function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { kind: "hash"; hash: Uint8Array } {
@@ -61,21 +61,21 @@ function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { 
 
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params }) => {
 	const parsed = parseHashOrHeight(params.pathname.hashOrHeight);
-	let block;
+	let header;
 	let height: number;
 
 	if (parsed.kind === "height") {
 		height = parsed.height;
-		block = await getHeaderByHeight(height);
+		header = await getHeaderByHeight(height);
 	} else {
 		const h = await getHeightByHash(parsed.hash);
 		if (h === undefined) return { status: "OK", data: null };
 		height = h;
-		block = await getHeaderByHeight(height);
+		header = await getHeaderByHeight(height);
 	}
 
-	if (!block) return { status: "OK", data: null };
-	return { status: "OK", data: { height, header: block.header } };
+	if (!header) return { status: "OK", data: null };
+	return { status: "OK", data: { height, header } };
 });
 
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ params }) => {

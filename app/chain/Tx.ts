@@ -84,11 +84,7 @@ export class Tx {
 		const outputs: TxOutput[] = [];
 		for (const wireOutput of wireTx.outputs) {
 			const scriptPubKey = parseScriptPubKey(wireOutput.scriptPubKey);
-			const output: TxOutput = {
-				value: wireOutput.value,
-				spentBy: null,
-				scriptPubKey,
-			};
+			const output: TxOutput = { value: wireOutput.value, scriptPubKey };
 			outputs.push(output);
 		}
 

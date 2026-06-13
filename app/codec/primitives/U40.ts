@@ -10,11 +10,13 @@ export class U40Codec extends Codec<number> {
 			throw new RangeError("Value out of range for U40");
 		}
 		const arr = new Uint8Array(5);
-		arr[0] = (value >>> 32) & 0xff;
-		arr[1] = (value >>> 24) & 0xff;
-		arr[2] = (value >>> 16) & 0xff;
-		arr[3] = (value >>> 8) & 0xff;
-		arr[4] = value & 0xff;
+		const hi = Math.floor(value / 0x100000000); // top 8 bits (0..255)
+		const lo = value >>> 0; // low 32 bits
+		arr[0] = hi & 0xff;
+		arr[1] = (lo >>> 24) & 0xff;
+		arr[2] = (lo >>> 16) & 0xff;
+		arr[3] = (lo >>> 8) & 0xff;
+		arr[4] = lo & 0xff;
 		return arr;
 	}
 

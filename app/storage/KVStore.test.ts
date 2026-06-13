@@ -6,7 +6,7 @@
  *
  * Coverage:
  *   - open / RocksDB init, undefined on missing key
- *   - batch: set, get, getMany, duplicate-set in-place, discard, settle guards, one at a time
+ *   - batch: set, get, duplicate-set in-place, discard, settle guards, one at a time
  *   - reads: batch → staged → frozen → RocksDB precedence (each layer isolated)
  *   - flush: persistence, empty no-op, sequential accumulation
  *   - durability (flushed survives reopen) vs volatility (unflushed staged lost on reopen)
@@ -68,6 +68,11 @@ function setAll(store: KVStore<number, number>, entries: [number, number][]): vo
 	b.apply();
 }
 
+/** Read several keys at once. Test convenience — KVStore exposes only get(). */
+function getAll(store: KVStore<number, number>, keys: number[]): Promise<(number | undefined)[]> {
+	return Promise.all(keys.map((k) => store.get(k)));
+}
+
 function walPath(dir: string): string {
 	return join(dir, "data.wal");
 }
@@ -97,7 +102,7 @@ Deno.test("open: empty store returns undefined for any key", async () => {
 		const store = await open(dir);
 		try {
 			assertEquals(await store.get(0), undefined);
-			assertEquals(await store.getMany([1, 2, 3]), [undefined, undefined, undefined]);
+			assertEquals(await getAll(store, [1, 2, 3]), [undefined, undefined, undefined]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -199,14 +204,14 @@ Deno.test("batch: duplicate set overwrites in-place (no extra entry, last value 
 	});
 });
 
-Deno.test("batch: getMany returns the right mix of batch / staged / missing", async () => {
+Deno.test("batch: reads return the right mix of batch / staged / missing", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir);
 		try {
 			setAll(store, [[10, 1000]]); // staged
 			const b = store.batch();
 			b.set(20, 2000);
-			const result = await b.getMany([10, 20, 30]);
+			const result = await Promise.all([b.get(10), b.get(20), b.get(30)]);
 			assertEquals(result, [1000, 2000, undefined]);
 			b.discard();
 		} finally {
@@ -239,7 +244,6 @@ Deno.test("batch: settled batch throws on further use", async () => {
 			assertThrows(() => b.set(2, 2), Error);
 			assertThrows(() => b.apply(), Error);
 			await assertRejects(() => b.get(1), Error);
-			await assertRejects(() => b.getMany([1]), Error);
 		} finally {
 			closeQuiet(store);
 		}
@@ -328,7 +332,7 @@ Deno.test("flush: sequential flushes accumulate and overwrite correctly", async 
 			await store.flush();
 			setAll(store, [[2, 22], [3, 3]]); // overwrite 2, add 3
 			await store.flush();
-			assertEquals(await store.getMany([1, 2, 3]), [1, 22, 3]);
+			assertEquals(await getAll(store, [1, 2, 3]), [1, 22, 3]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -343,7 +347,7 @@ Deno.test("durability: flushed entries survive reopen", async () => {
 			await store.flush();
 			store.close();
 			store = await open(dir);
-			assertEquals(await store.getMany([10, 20, 30]), [1000, 2000, 3000]);
+			assertEquals(await getAll(store, [10, 20, 30]), [1000, 2000, 3000]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -400,7 +404,7 @@ Deno.test("guards: during a flush — no second flush, no clear; batch is allowe
 			await w.apply();
 			await w.discard();
 
-			assertEquals(await store.getMany([1, 2]), [10, 20]);
+			assertEquals(await getAll(store, [1, 2]), [10, 20]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -436,18 +440,18 @@ Deno.test("frozen serves reads after createWAL() and after apply() but before di
 			const w = await store.createWAL(); // staged frozen; RocksDB still empty
 
 			// After createWAL, before apply: served from frozen
-			assertEquals(await store.getMany([1, 2]), [100, 200]);
+			assertEquals(await getAll(store, [1, 2]), [100, 200]);
 			assertEquals(await store.get(3), undefined);
 
 			await w.apply(); // entries now in RocksDB too, but frozen still set
 
 			// After apply, before discard: STILL served from frozen (frozen not cleared yet)
-			assertEquals(await store.getMany([1, 2]), [100, 200]);
+			assertEquals(await getAll(store, [1, 2]), [100, 200]);
 
 			await w.discard(); // frozen cleared
 
 			// After discard: served from RocksDB
-			assertEquals(await store.getMany([1, 2]), [100, 200]);
+			assertEquals(await getAll(store, [1, 2]), [100, 200]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -477,7 +481,7 @@ Deno.test("reads during a concurrent apply() are correct (served from frozen, no
 
 			assertEquals(reads, [111, 222, 333, undefined]);
 			// After discard: now from RocksDB
-			assertEquals(await store.getMany([1, 2, 3, 4]), [111, 222, 333, undefined]);
+			assertEquals(await getAll(store, [1, 2, 3, 4]), [111, 222, 333, undefined]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -494,12 +498,12 @@ Deno.test("batch committed during flush lands in fresh staged and survives the n
 			await w.apply();
 			await w.discard();
 
-			assertEquals(await store.getMany([1, 2]), [10, 20]);
+			assertEquals(await getAll(store, [1, 2]), [10, 20]);
 
 			await store.flush(); // flush [2→20]
 			store.close();
 			store = await open(dir);
-			assertEquals(await store.getMany([1, 2]), [10, 20]);
+			assertEquals(await getAll(store, [1, 2]), [10, 20]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -559,7 +563,7 @@ Deno.test("precedence ladder: batch > staged > frozen > RocksDB on the same key"
 			store = await open(dir);
 
 			// Durable: everything in RocksDB, last-write-wins
-			assertEquals(await store.getMany([1, 2, 3, 4]), [4, 20, 300, 4000]);
+			assertEquals(await getAll(store, [1, 2, 3, 4]), [4, 20, 300, 4000]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -628,10 +632,10 @@ Deno.test("replay: wal.apply() is idempotent (apply twice == once)", async () =>
 			const w = await store.createWAL();
 
 			await w.apply();
-			assertEquals(await store.getMany([1, 2]), [11, 22]);
+			assertEquals(await getAll(store, [1, 2]), [11, 22]);
 
 			await w.apply(); // replay — re-put is idempotent in RocksDB
-			assertEquals(await store.getMany([1, 2]), [11, 22]);
+			assertEquals(await getAll(store, [1, 2]), [11, 22]);
 
 			await w.discard();
 		} finally {
@@ -662,7 +666,7 @@ Deno.test("crash recovery: manually constructed WAL replayed on reopen", async (
 			await store.wal!.discard();
 
 			// All three now readable
-			assertEquals(await store.getMany([1, 2, 3]), [10, 20, 30]);
+			assertEquals(await getAll(store, [1, 2, 3]), [10, 20, 30]);
 			assertFalse(await exists(walPath(dir)));
 		} finally {
 			closeQuiet(store);
@@ -706,7 +710,7 @@ Deno.test("crash recovery: WAL entries overwrite stale RocksDB values", async ()
 		try {
 			await store.wal!.apply();
 			await store.wal!.discard();
-			assertEquals(await store.getMany([5, 6]), [500, 600]);
+			assertEquals(await getAll(store, [5, 6]), [500, 600]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -723,10 +727,10 @@ Deno.test("clear: wipes staged and RocksDB; data gone after reopen", async () =>
 			await store.flush();
 			setAll(store, [[3, 3]]); // staged
 			await store.clear();
-			assertEquals(await store.getMany([1, 2, 3]), [undefined, undefined, undefined]);
+			assertEquals(await getAll(store, [1, 2, 3]), [undefined, undefined, undefined]);
 			store.close();
 			store = await open(dir);
-			assertEquals(await store.getMany([1, 2, 3]), [undefined, undefined, undefined]);
+			assertEquals(await getAll(store, [1, 2, 3]), [undefined, undefined, undefined]);
 		} finally {
 			closeQuiet(store);
 		}
@@ -783,7 +787,7 @@ Deno.test("fuzz: differential test against an in-memory Map oracle", async () =>
 			try {
 				// Sample a random selection of keys including ones that should be absent
 				const keys = Array.from({ length: 16 }, (_, i) => i);
-				const got = await store.getMany(keys);
+				const got = await getAll(store, keys);
 				for (let i = 0; i < keys.length; i++) {
 					const expected = effectiveValue(keys[i]!);
 					if (got[i] !== expected) {

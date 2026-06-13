@@ -1,5 +1,6 @@
 import { Codec, EnumCodec, Void } from "@nomadshiba/codec";
 import { join } from "@std/path";
+import { exists } from "@std/fs";
 import { Store, WAL } from "~/storage/Store.ts";
 
 type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
@@ -37,7 +38,9 @@ export class Atomic<T extends AtomicStores> {
 	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
 		await Deno.mkdir(options.path, { recursive: true });
 		const self = new Atomic<T>(options.path, options.stores);
-		await self.setState("discarded");
+		// Only initialize the state file on a fresh data directory. If a state file
+		// already exists we must preserve it so recover() can resume an interrupted flush.
+		if (!await self.existsState()) await self.setState("discarded");
 		return self;
 	}
 
@@ -50,6 +53,10 @@ export class Atomic<T extends AtomicStores> {
 	async setState(newState: AtomicState): Promise<void> {
 		const data = AtomicState.encode({ kind: newState, value: null });
 		await Deno.writeFile(this.statePath, data, { create: true });
+	}
+
+	async existsState(): Promise<boolean> {
+		return await exists(this.statePath);
 	}
 
 	/**

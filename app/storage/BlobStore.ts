@@ -4,6 +4,7 @@ import { join } from "@std/path";
 import type { Batch, Store, WAL } from "~/storage/Store.ts";
 import { writeFile } from "~/utils/fs.ts";
 import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+import { MAX_BLOCK_SIZE } from "~/constants.ts";
 
 /**
  * Append-only store for variable-size blobs, split across fixed-size chunk files.
@@ -241,7 +242,8 @@ export class BlobStore implements Store<BlobStoreBatch> {
 			return buf;
 		}
 		const codec = lengthOrCodec;
-		const readAhead = options?.readAheadSize ?? (codec.stride.kind === "fixed" ? codec.stride.size : 4096);
+		const readAhead = options?.readAheadSize ??
+			(codec.stride.kind === "fixed" ? codec.stride.size : MAX_BLOCK_SIZE);
 		const buf = new Uint8Array(readAhead);
 		const n = await this.#readInto(snap, pointer, buf, true);
 		const [value] = codec.decode(buf.subarray(0, n));

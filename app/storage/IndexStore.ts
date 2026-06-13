@@ -288,7 +288,9 @@ export class IndexStore<T extends FixedCodec> implements Store<IndexStoreBatch<T
 			get: async (index: number): Promise<Codec.InferOutput<T>> => {
 				if (!live) throw new Error("Batch already settled");
 				if (index < 0) throw new Error("Index must be non-negative");
-				if (index >= batchBaseLength + batchAppends.length) throw new Error("Index out of bounds");
+				if (index >= batchBaseLength + batchAppends.length) {
+					throw new Error(`Index out of bounds index=${index}`);
+				}
 				if (index >= batchBaseLength) return this.#codec.decode(batchAppends[index - batchBaseLength]!)[0];
 				// This batch's own pending overwrite wins, else fall through to committed store state.
 				const ow = batchOverwrites.get(index);

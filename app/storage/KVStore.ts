@@ -36,7 +36,6 @@ import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
  */
 export interface KVStoreBatch<K, V> extends Batch {
 	get(key: K): Promise<V | undefined>;
-	getMany(keys: K[]): Promise<(V | undefined)[]>;
 	set(key: K, value: V): void;
 }
 
@@ -79,10 +78,11 @@ class BinaryStore extends RocksStore {
 		return value;
 	}
 	override decodeValue(value: any): Uint8Array {
-		// Copy only the value bytes out of the shared buffer so concurrent reads don't
-		// clobber each other. `value` is a view into a reused 65536-byte backing buffer.
-		// Must use slice() (not subarray()) — subarray() is just a view and would be
-		// overwritten by the next db.get() call.
+		// Copy the value bytes out of the binding's reused 65536-byte read buffer at resolution
+		// time. This copy is what makes concurrent reads safe: the returned Uint8Array is fully
+		// detached from the shared buffer, so a later db.get() overwriting that buffer cannot
+		// corrupt a value the caller is still holding. Must be slice() (a copy), not subarray()
+		// (a view), or the detachment guarantee is lost.
 		return (value as Uint8Array).slice(0, this.#valueStride);
 	}
 }
@@ -167,28 +167,21 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 			const f = frozen.get(keyBytes);
 			if (f !== undefined) return this.#valueCodec.decode(f)[0];
 		}
-		const raw = await this.#db.get(keyBytes) as Uint8Array | undefined;
-		if (raw == null) return undefined;
-		return this.#valueCodec.decode(raw)[0];
+
+		// db.get() is hybrid: returns the value synchronously on a memtable/block-cache hit,
+		// otherwise a Promise. BinaryStore.decodeValue already slices a private copy out of the
+		// binding's shared read buffer during resolution, so the bytes we hold are never aliased
+		// to that buffer — the result is safe to keep across any later get(). This is what lets
+		// reads run concurrently: there is no live reference into the reused buffer to race on.
+		const raw = this.#db.get(keyBytes) as Uint8Array | Promise<Uint8Array | undefined> | undefined;
+		const resolved = raw instanceof Promise ? await raw : raw;
+		if (resolved == null) return undefined;
+		return this.#valueCodec.decode(resolved)[0];
 	}
 
 	async get(key: K): Promise<V | undefined> {
 		this.#assertOpen();
 		return await this.#getByBytes(this.#keyCodec.encode(key), null);
-	}
-
-	async getMany(keys: K[]): Promise<(V | undefined)[]> {
-		this.#assertOpen();
-		// Sequential — not Promise.all — because the @harperfast/rocksdb-js binding returns all
-		// db.get() results into a single shared 64 KiB buffer and overwrites it on each call.
-		// Concurrent awaits would race each other: the second get() overwrites the buffer before
-		// the first one's continuation runs. Serialising is the only safe approach without
-		// patching the binding.
-		const out: (V | undefined)[] = new Array(keys.length);
-		for (let i = 0; i < keys.length; i++) {
-			out[i] = await this.#getByBytes(this.#keyCodec.encode(keys[i]!), null);
-		}
-		return out;
 	}
 
 	batch(): KVStoreBatch<K, V> {
@@ -222,15 +215,6 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 			get: async (key: K): Promise<V | undefined> => {
 				if (!live) throw new Error("Batch already settled");
 				return await this.#getByBytes(this.#keyCodec.encode(key), lookup);
-			},
-			getMany: async (keys: K[]): Promise<(V | undefined)[]> => {
-				if (!live) throw new Error("Batch already settled");
-				// Sequential for the same reason as KVStore.getMany — shared RocksDB read buffer.
-				const out: (V | undefined)[] = new Array(keys.length);
-				for (let i = 0; i < keys.length; i++) {
-					out[i] = await this.#getByBytes(this.#keyCodec.encode(keys[i]!), lookup);
-				}
-				return out;
 			},
 			set: (key: K, value: V): void => {
 				if (!live) throw new Error("Batch already settled");

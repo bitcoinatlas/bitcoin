@@ -20,9 +20,9 @@ import { StoredWitness } from "~/codec/stored/StoredWitness.ts";
  * bits 4-7 : spare
  *
  * -- prevOut payload (by kind) --
- *   resolved: 6-byte StoredPointer (u48) + 3-byte vout (u24)  = 9 bytes
- *   raw:      32-byte txid + 3-byte vout (u24)                = 35 bytes
- *   coinbase: none                                            = 0 bytes
+ *   resolved: 6-byte StoredPointer (u48) + VarInt vout
+ *   raw:      32-byte txid + VarInt vout
+ *   coinbase: none
  *
  * -- sequence (conditional) --
  *   present ONLY when sequence tag is 3 (explicit): 4-byte u32.
@@ -37,9 +37,6 @@ import { StoredWitness } from "~/codec/stored/StoredWitness.ts";
 
 // Use BytesCodec for scriptSig length prefix
 const scriptSigCodec = new BytesCodec();
-
-// Fixed-size resolved prevOut payload: 6 bytes pointer + 3 bytes vout
-const RESOLVED_PREVOUT_SIZE = 6 + 3;
 
 // --- Tag byte layout ---
 // bits 0-1: prevOut kind   0=resolved, 1=raw, 2=coinbase
@@ -106,14 +103,16 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 
 		if (data.prevOut.txId.kind === "pointer") {
 			prevOutKind = PREVOUT_RESOLVED;
-			prevOutPayload = new Uint8Array(RESOLVED_PREVOUT_SIZE);
+			const voutBytes = VarInt.encode(data.prevOut.vout);
+			prevOutPayload = new Uint8Array(6 + voutBytes.length);
 			prevOutPayload.set(StoredPointer.encode(data.prevOut.txId.value), 0);
-			prevOutPayload.set(VarInt.encode(data.prevOut.vout), 6);
+			prevOutPayload.set(voutBytes, 6);
 		} else if (data.prevOut.txId.kind === "raw") {
 			prevOutKind = PREVOUT_RAW;
-			prevOutPayload = new Uint8Array(32 + 3);
+			const voutBytes = VarInt.encode(data.prevOut.vout);
+			prevOutPayload = new Uint8Array(32 + voutBytes.length);
 			prevOutPayload.set(data.prevOut.txId.value, 0);
-			prevOutPayload.set(VarInt.encode(data.prevOut.vout), 32);
+			prevOutPayload.set(voutBytes, 32);
 		} else if (data.prevOut.txId.kind === "coinbase") {
 			prevOutKind = PREVOUT_COINBASE;
 			prevOutPayload = new Uint8Array(0);
@@ -163,16 +162,18 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		let vout: number;
 
 		if (prevOutKind === PREVOUT_RESOLVED) {
-			const pointer = StoredPointer.decode(data.subarray(offset))[0];
-			offset += 6;
-			vout = VarInt.decode(data.subarray(offset))[0];
-			offset += 3;
+			const [pointer] = StoredPointer.decode(data.subarray(offset));
+			offset += StoredPointer.stride.size;
+			let voutOffset;
+			[vout, voutOffset] = VarInt.decode(data.subarray(offset));
+			offset += voutOffset;
 			txId = { kind: "pointer", value: pointer };
 		} else if (prevOutKind === PREVOUT_RAW) {
 			txId = { kind: "raw", value: data.subarray(offset, offset + 32) };
 			offset += 32;
-			vout = VarInt.decode(data.subarray(offset))[0];
-			offset += 3;
+			let voutOffset;
+			[vout, voutOffset] = VarInt.decode(data.subarray(offset));
+			offset += voutOffset;
 		} else if (prevOutKind === PREVOUT_COINBASE) {
 			txId = { kind: "coinbase" };
 			vout = COINBASE_VOUT;

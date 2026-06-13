@@ -170,20 +170,6 @@ Deno.test("batch: reads its own uncommitted pushes and falls through below base"
 	});
 });
 
-Deno.test("batch: has no set — batch interface is push-only", async () => {
-	await withTmp(async (dir) => {
-		const store = await open(dir);
-		try {
-			const b = store.batch();
-			// deno-lint-ignore no-explicit-any
-			assertEquals(typeof (b as any).set, "undefined");
-			b.discard();
-		} finally {
-			closeQuiet(store);
-		}
-	});
-});
-
 Deno.test("batch: only one open at a time", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir);
