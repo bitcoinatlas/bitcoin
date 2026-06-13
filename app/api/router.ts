@@ -1,4 +1,4 @@
-import { EndpointRouter } from "~/lib/EndpointRouter.ts";
+import { EndpointRouter } from "~/api/utils/EndpointRouter.ts";
 import { ENDPOINT_SCHEMA } from "~/api/schema.ts";
 
 export const endpointRouter = new EndpointRouter({

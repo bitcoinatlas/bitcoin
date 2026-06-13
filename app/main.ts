@@ -1,9 +1,9 @@
 import { delay } from "@std/async";
-import { appendStorageSnapshot, atomicSave } from "~/chain.ts";
-import { syncBodiesFromPeers } from "~/bodies.ts";
-import { syncHeadersFromPeers } from "~/headers.ts";
-import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/peers.ts";
-import { serve } from "~/serve.ts";
+import { atomic } from "~/chain/chain.ts";
+import { syncBodiesFromPeers } from "~/chain/bodies.ts";
+import { syncHeadersFromPeers } from "~/chain/headers.ts";
+import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/p2p/peers.ts";
+import { serve } from "~/api/serve.ts";
 import { DEV } from "~/config.ts";
 
 if (import.meta.main) {
@@ -22,8 +22,8 @@ if (import.meta.main) {
 	serve(HTTP_PORT);
 
 	// Local dev: single peer. For production, swap with maintain().
-	await addPeer("192.168.8.10", P2P_PORT, MAGIC);
-	// await maintain();
+	addPeer("192.168.8.10", P2P_PORT, MAGIC);
+	// await _maintain();
 
 	let baselineHeap = Deno.memoryUsage().heapUsed;
 	let SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
@@ -73,12 +73,10 @@ if (import.meta.main) {
 				? `heap=${(heapUsed / 1024 / 1024).toFixed(1)}MB >= ${SAVE_HEAP_THRESHOLD / 1024 / 1024}MB`
 				: `elapsed=${(elapsed / 1000).toFixed(0)}s >= ${SAVE_INTERVAL_MS / 1000}s`;
 			console.log(`[main] saving (${reason})`);
-			await atomicSave();
+			await atomic.flush();
 			lastSave = Date.now();
 			baselineHeap = Deno.memoryUsage().heapUsed;
 			SAVE_HEAP_THRESHOLD = baselineHeap + SAVE_HEAP_HEADROOM;
-
-			if (DEV && lastBody) await appendStorageSnapshot(lastBody.height, lastBody.timestamp);
 		}
 	}
 

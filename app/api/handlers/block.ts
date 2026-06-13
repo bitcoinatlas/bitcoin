@@ -1,14 +1,14 @@
 import { decodeHex } from "@std/encoding";
 import { endpointRouter } from "~/api/router.ts";
 import {
-	getBlockByHeight,
-	getBlocksByHeightRange,
 	getChainTip,
+	getHeaderByHeight,
+	getHeaderByRange,
 	getHeightByHash,
 	getTxById,
 	getTxsByBlockHash,
 	getTxsByBlockHeight,
-} from "~/chain.ts";
+} from "~/chain/chain.ts";
 
 const MAX_TAKE = 210;
 
@@ -30,12 +30,12 @@ endpointRouter.registerHandler("GET /v1/block", async ({ params }) => {
 	}
 
 	if (from) {
-		const blocks = await getBlocksByHeightRange(from, from + take - 1);
+		const blocks = await getHeaderByRange(from, from + take - 1);
 		return { status: "OK", data: blocks };
 	}
 
 	if (to) {
-		const blocks = await getBlocksByHeightRange(to - take + 1, to);
+		const blocks = await getHeaderByRange(to - take + 1, to);
 		return { status: "OK", data: blocks };
 	}
 
@@ -66,12 +66,12 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params })
 
 	if (parsed.kind === "height") {
 		height = parsed.height;
-		block = await getBlockByHeight(height);
+		block = await getHeaderByHeight(height);
 	} else {
 		const h = await getHeightByHash(parsed.hash);
 		if (h === undefined) return { status: "OK", data: null };
 		height = h;
-		block = await getBlockByHeight(height);
+		block = await getHeaderByHeight(height);
 	}
 
 	if (!block) return { status: "OK", data: null };
