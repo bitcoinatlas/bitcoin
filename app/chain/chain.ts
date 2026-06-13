@@ -46,7 +46,7 @@ export const atomic = await Atomic.open({
 			keyCodec: Bytes32,
 			valueCodec: new StructCodec({
 				tx: StoredPointer,
-				spentby: U40,
+				spender: U40,
 			}),
 			shards: 16,
 		}),
@@ -56,8 +56,8 @@ export const atomic = await Atomic.open({
 			valueCodec: StoredPointer,
 			shards: 16,
 		}),
-		spentby: await IndexStore.open({
-			path: join(BASE_DATA_DIR, "spentby"),
+		spender: await IndexStore.open({
+			path: join(BASE_DATA_DIR, "spender"),
 			codec: StoredPointer,
 		}),
 	},
@@ -104,7 +104,7 @@ if (headers.length > 0) {
 } else {
 	await atomic.stores.header.truncate(0);
 	await atomic.stores.block.truncate(0);
-	await atomic.stores.spentby.truncate(0);
+	await atomic.stores.spender.truncate(0);
 	await atomic.stores.tx.truncate(0);
 	await atomic.stores.txid.clear();
 	await atomic.stores.pubkey.clear();
@@ -120,7 +120,7 @@ if (headers.length > 0) {
 
 	batch.header.apply();
 	batch.block.apply();
-	batch.spentby.apply();
+	batch.spender.apply();
 	batch.tx.apply();
 	batch.txid.apply();
 	batch.pubkey.apply();
@@ -178,7 +178,7 @@ export async function appendTxs(
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
 			const txPointer = blockPointer + offset;
-			batch.txid.set(tx.data.txId, { tx: txPointer, spentby: 0 });
+			batch.txid.set(tx.data.txId, { tx: txPointer, spender: 0 });
 
 			// Set prevOut pointers
 			for (let i = 0; i < tx.data.inputs.length; i++) {
@@ -224,7 +224,7 @@ export async function appendTxs(
 				}
 			}
 
-			// Update spentby index
+			// Update spender index
 			for (let i = 0; i < tx.data.inputs.length; i++) {
 				const input = tx.data.inputs[i]!;
 				if (input.prevOut.txId.kind !== "pointer") continue; // can't be raw, and coinbase has no prevOut
@@ -235,13 +235,13 @@ export async function appendTxs(
 					throw new Error("prevOut can't be found in txid index, corrupted data.");
 				}
 
-				const spender = await batch.spentby.get(pointer.spentby);
+				const spender = await batch.spender.get(pointer.spender);
 				if (spender > 0) {
 					// TODO: This shouldn't throw normally, it should blacklist the block hash and skip to the next tick
 					throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
 				}
 
-				batch.spentby.set(pointer.spentby, encoded.offsets.vin[i]!);
+				batch.spender.set(pointer.spender, encoded.offsets.vin[i]!);
 			}
 
 			offset += encoded.bytes.length;
@@ -268,7 +268,7 @@ export async function appendTxs(
 		const blockPointer = await op();
 		batch.header.apply();
 		batch.block.apply();
-		batch.spentby.apply();
+		batch.spender.apply();
 		batch.tx.apply();
 		batch.txid.apply();
 		batch.pubkey.apply();
@@ -277,7 +277,7 @@ export async function appendTxs(
 	} catch (reason) {
 		batch.header.discard();
 		batch.block.discard();
-		batch.spentby.discard();
+		batch.spender.discard();
 		batch.tx.discard();
 		batch.txid.discard();
 		batch.pubkey.discard();
