@@ -38,7 +38,7 @@ if (import.meta.main) {
 		await syncHeadersFromPeers();
 		await syncBodiesFromPeers();
 
-		if (global.gc) {
+		/* if (global.gc) {
 			const pre = Deno.memoryUsage().heapUsed;
 			global.gc();
 			const post = Deno.memoryUsage().heapUsed;
@@ -54,13 +54,10 @@ if (import.meta.main) {
 				"color: inherit",
 				freed > 0 ? "color: #4ade80" : "color: #f87171",
 			);
-		}
+		} */
 
 		if (atomic.flushing) return;
-		console.log(`[main] flushing async`);
-		atomic.flush().then(() => {
-			console.log(`[main] done flushing`);
-		});
+		atomic.flush();
 	}
 
 	async function _maintain() {
