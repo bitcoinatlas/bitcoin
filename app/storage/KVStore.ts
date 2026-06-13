@@ -129,8 +129,9 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 		await Deno.mkdir(path, { recursive: true });
 		const walPath = join(path, "data.wal");
 
-		const rocksStore = new BinaryStore(join(path, "rocksdb"), { parallelismThreads: 4 }, valueCodec.stride.size);
-		const db = RocksDatabase.open(rocksStore);
+		const parallelismThreads = Math.max(1, Math.floor(navigator.hardwareConcurrency * .25));
+		const rocksStore = new BinaryStore(join(path, "rocksdb"), { parallelismThreads }, valueCodec.stride.size);
+		const db = RocksDatabase.open(rocksStore, { parallelismThreads, maxKeySize: keyCodec.stride.size });
 
 		const store = new KVStore(db, keyCodec, valueCodec, walPath);
 

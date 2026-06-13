@@ -36,15 +36,26 @@ import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 
 const CHUNK = 16;
 
+// Stores opened during the current withTmp scope, closed in its finally so the
+// persistent read/append fds the store now caches don't trip Deno's leak sanitizer.
+let openStores: BlobStore[] = [];
+
 function open(dir: string, chunkByteSize = CHUNK) {
-	return BlobStore.open({ path: dir, chunkByteSize });
+	return BlobStore.open({ path: dir, chunkByteSize }).then((store) => {
+		openStores.push(store);
+		return store;
+	});
 }
 
 async function withTmp(fn: (dir: string) => Promise<void>): Promise<void> {
 	const dir = await Deno.makeTempDir({ prefix: "blobstore_test_" });
+	const prev = openStores;
+	openStores = [];
 	try {
 		await fn(dir);
 	} finally {
+		for (const store of openStores) store.close();
+		openStores = prev;
 		await Deno.remove(dir, { recursive: true }).catch(() => {});
 	}
 }
@@ -517,7 +528,7 @@ Deno.test("a batch committed during a flush survives the next flush", async () =
 
 // ── WAL format ──────────────────────────────────────────────────────────────────
 
-Deno.test("WAL header records base_offset and blob count", async () => {
+Deno.test("WAL header records base_offset and byte length", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir, CHUNK);
 		appendBlob(store, seq(0, 10));
@@ -530,7 +541,8 @@ Deno.test("WAL header records base_offset and blob count", async () => {
 		const wal = await Deno.readFile(join(dir, "data.wal"));
 		const view = new Uint8ArrayView(wal);
 		assertEquals(Number(view.getBigUint64(0)), 10); // base_offset
-		assertEquals(view.getUint32(8), 2); // two staged blobs
+		assertEquals(Number(view.getBigUint64(8)), 6); // 6 staged bytes (two 3-byte blobs)
+		assertEquals(wal.length, 16 + 6); // header + payload
 		await w.apply();
 		await w.discard();
 	});

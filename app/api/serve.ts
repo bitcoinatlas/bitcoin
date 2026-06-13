@@ -1,10 +1,12 @@
+await import("~/api/handlers/block.ts");
+
 import { endpointRouter } from "~/api/router.ts";
 import appHtml from "~/api/frontend/app.html" with { type: "text" };
 import appJs from "~/api/frontend/dist/app.js" with { type: "text" };
 
 const app = appHtml.replace("<!-- inject js -->", () => `<script type="module">${appJs}</script>`);
 
-import "~/api/handlers/block.ts";
+endpointRouter.registerHandler("GET /exit", () => Deno.exit(0));
 
 export function serve(port: number) {
 	Deno.serve({ port }, async (request, _info) => {

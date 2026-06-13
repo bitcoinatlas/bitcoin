@@ -26,8 +26,8 @@
 		"cache": "deno cache app/main.ts",
 		"bundle": "deno bundle --output=app/ui/dist/app.js app/ui/app.ts",
 		"start": "deno run --v8-flags=--expose-gc -A app/main.ts",
-		"inspect": "deno run -A --inspect-brk app/main.ts",
-		"profile": "deno run -A --cpu-prof app/main.ts",
+		"inspect": "deno run --v8-flags=--expose-gc -A --inspect-brk app/main.ts",
+		"profile": "deno run --v8-flags=--expose-gc -A --cpu-prof app/main.ts",
 		"compile": "deno compile -A --output=out/bitcoin app/main.ts"
 	},
 	"unstable": ["raw-imports", "kv"],

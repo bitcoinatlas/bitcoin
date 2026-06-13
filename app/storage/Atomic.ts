@@ -33,6 +33,7 @@ export class Atomic<T extends AtomicStores> {
 		this.statePath = join(path, "state.bin");
 		this.stores = stores;
 		this.storeEntries = Object.entries(stores);
+		this.flushing = false;
 	}
 
 	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
@@ -59,6 +60,8 @@ export class Atomic<T extends AtomicStores> {
 		return await exists(this.statePath);
 	}
 
+	public flushing: boolean;
+
 	/**
 	 * Flush multiple stores atomically: either all changes land on disk or none do.
 	 *
@@ -80,8 +83,10 @@ export class Atomic<T extends AtomicStores> {
 	 */
 	async flush(): Promise<void> {
 		try {
-			if (await this.getState() !== "discarded") {
-				throw new Error("Can't have multiple atomic flushes in progress");
+			this.flushing = true;
+			const state = await this.getState();
+			if (state !== "discarded") {
+				throw new Error(`Can't have multiple atomic flushes in progress. state=${state}`);
 			}
 
 			await this.setState("started");
@@ -94,6 +99,8 @@ export class Atomic<T extends AtomicStores> {
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
 			Deno.exit(1);
+		} finally {
+			this.flushing = false;
 		}
 	}
 
@@ -121,6 +128,7 @@ export class Atomic<T extends AtomicStores> {
 			for (const wal of wals) {
 				await wal.discard();
 			}
+			await this.setState("discarded");
 			return;
 		}
 

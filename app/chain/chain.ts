@@ -230,7 +230,7 @@ export async function appendTxs(
 				const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
 				const prevOutTxPointer = await batch.txid.get(txid);
 				if (!prevOutTxPointer) {
-					throw new Error("prevOut can't be found in txid index, corrupted data.");
+					throw new Error(`prevOut can't be found in txid index, corrupted data txid=${formatHash(txid)}`);
 				}
 
 				const spenderIndex = prevOutTxPointer.spender + input.prevOut.vout;
