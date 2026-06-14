@@ -143,7 +143,7 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 		}
 	})();
 
-	// ── Verify loop ───────────────────────────────────────────────────────────
+	// ── Append loop ───────────────────────────────────────────────────────────
 
 	let appendedBytes = 0;
 	let appendedCount = 0;
@@ -151,7 +151,7 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 	let lastAppendHeight: number | undefined;
 	let lastAppendTimestamp: number | undefined;
 
-	const verifyLoop = (async () => {
+	const appentLoop = (async () => {
 		for (const { height, hash } of allPending) {
 			// Wait until the block lands in the pool.
 			// Deadline is measured from when the verify loop starts actively waiting
@@ -228,7 +228,7 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 	})();
 
 	try {
-		await Promise.all([downloadLoop, verifyLoop]);
+		await Promise.all([downloadLoop, appentLoop]);
 	} finally {
 		unlistenBlocks();
 	}

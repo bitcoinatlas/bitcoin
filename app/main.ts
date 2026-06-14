@@ -8,6 +8,11 @@ import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~
 const global = globalThis as never as { gc?(): void };
 
 if (import.meta.main) {
+	if (Deno.args.length) {
+		const timeout = Number(Deno.args[0]);
+		setTimeout(() => Deno.exit(0), timeout * 1000);
+	}
+
 	const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 	const P2P_PORT = 8333;
 	const HTTP_PORT = 50021;

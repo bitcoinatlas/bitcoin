@@ -9,7 +9,7 @@
  *   - batch semantics (append, own-read, size, discard, settle, one-at-a-time)
  *   - exact-length reads (EOF throw) and codec reads (EOF-tolerant readahead)
  *   - multi-chunk single-blob writes and sub-range reads crossing chunk boundaries
- *   - flush: persistence, empty no-op, accumulation, chunk-layout invariant
+ *   - flush: persistence, empty no-op, accumulation, on-disk chunk-layout invariant
  *   - durability (flushed survives reopen) vs volatility (unflushed lost)
  *   - truncate: requires empty staged (flush first), disk shrink, EXACT chunk-boundary
  *     regression, to-zero, crash-safe sentinel (truncate.target replayed on open),
@@ -19,11 +19,14 @@
  *   - frozen/staged stitch across a chunk boundary mid-flush
  *   - WAL header format
  *   - replay idempotency, self-heal of a torn chunk, crash recovery incl. torn disk
+ *   - rewrite-specific: in-memory Stage chunking (memChunkSize boundaries, big blobs,
+ *     appendStage re-packing), stagedBase pinned across discard, true mid-write crash +
+ *     fsync'd WAL recovery, recover() path through Atomic states
  *   - differential fuzz vs an in-memory byte-stream oracle
  *
- * Uses a tiny chunkByteSize so multi-chunk / boundary paths are exercised cheaply.
- * Note BlobStore holds no persistent fd, so a "crash" is just abandoning the instance
- * and reopening the same dir — no fd dance required.
+ * Uses a tiny chunkByteSize / memChunkSize so multi-chunk / boundary paths are exercised
+ * cheaply. BlobStore caches fds, so opened stores are closed in withTmp's finally to keep
+ * Deno's resource sanitizer happy; a "crash" is just abandoning the instance and reopening.
  */
 
 import { assertEquals, assertExists, assertFalse, assertRejects, assertThrows } from "@std/assert";
@@ -35,13 +38,14 @@ import { concat } from "@std/bytes";
 import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 
 const CHUNK = 16;
+const MEM = 16; // small in-memory staging chunk, to exercise Stage's chunk boundaries
 
-// Stores opened during the current withTmp scope, closed in its finally so the
-// persistent read/append fds the store now caches don't trip Deno's leak sanitizer.
+// Stores opened during the current withTmp scope, closed in its finally so the cached
+// read/append fds don't trip Deno's resource sanitizer.
 let openStores: BlobStore[] = [];
 
-function open(dir: string, chunkByteSize = CHUNK) {
-	return BlobStore.open({ path: dir, chunkByteSize }).then((store) => {
+function open(dir: string, chunkByteSize = CHUNK, memChunkSize = MEM) {
+	return BlobStore.open({ path: dir, chunkByteSize, memChunkSize }).then((store) => {
 		openStores.push(store);
 		return store;
 	});
@@ -78,8 +82,20 @@ async function chunkSize(dir: string, i: number): Promise<number> {
 	return (await Deno.stat(join(dir, `chunk_${i}`))).size;
 }
 
+async function diskTotal(dir: string): Promise<number> {
+	let total = 0;
+	for await (const e of Deno.readDir(dir)) {
+		if (e.isFile && e.name.startsWith("chunk_")) total += (await Deno.stat(join(dir, e.name))).size;
+	}
+	return total;
+}
+
 function truncateTargetPath(dir: string): string {
 	return join(dir, "truncate.target");
+}
+
+function walPath(dir: string): string {
+	return join(dir, "data.wal");
 }
 
 async function appendGarbageToChunk(dir: string, i: number, n: number): Promise<void> {
@@ -135,6 +151,18 @@ Deno.test("batch: append/apply makes bytes readable; pointer & length track", as
 	});
 });
 
+Deno.test("batch: append copies — mutating the caller's buffer afterwards is harmless", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir);
+		const buf = seq(0, 6);
+		const b = store.batch();
+		b.append(buf);
+		buf.fill(0xff); // caller reuses the buffer
+		b.apply();
+		assertEquals(await store.get(0, 6), seq(0, 6)); // store kept its own copy
+	});
+});
+
 Deno.test("batch: discard leaves the store unchanged", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir);
@@ -173,6 +201,16 @@ Deno.test("batch: one at a time; settled batch throws", async () => {
 	});
 });
 
+Deno.test("batch: discard after discard is a no-op (idempotent)", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir);
+		const b = store.batch();
+		b.discard();
+		b.discard(); // must not throw, must not reopen the slot incorrectly
+		store.batch().discard(); // slot is free
+	});
+});
+
 // ── reads: exact + codec ────────────────────────────────────────────────────────
 
 Deno.test("get(pointer, length): exact read; EOF and negative pointer reject", async () => {
@@ -201,6 +239,15 @@ Deno.test("get(pointer, codec): decodes and tolerates EOF near the tail", async 
 	});
 });
 
+Deno.test("get(pointer, codec): decodes a value living entirely in staged memory", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir);
+		appendBlob(store, U32.encode(0xcafef00d)); // never flushed → staged only
+		assertEquals(await store.get(0, U32), 0xcafef00d);
+		assertEquals(store.length(), 4);
+	});
+});
+
 // ── multi-chunk spanning ────────────────────────────────────────────────────────
 
 Deno.test("multi-chunk: a single blob larger than a chunk reads back across boundaries", async () => {
@@ -218,6 +265,59 @@ Deno.test("multi-chunk: a single blob larger than a chunk reads back across boun
 	});
 });
 
+// ── in-memory Stage chunking (rewrite-specific) ─────────────────────────────────
+
+Deno.test("stage: a blob larger than memChunkSize is staged across mem chunks and reads back", async () => {
+	await withTmp(async (dir) => {
+		// big chunk files so disk stays single-file; small mem chunks so staging spans many
+		const store = await open(dir, 1 << 20, MEM);
+		const data = seq(0, MEM * 3 + 7); // spans 4 in-memory chunks
+		appendBlob(store, data);
+		assertEquals(store.length(), data.length);
+		assertEquals(await store.get(0, data.length), data); // read entirely from staged
+		// sub-range straddling two mem-chunk boundaries
+		assertEquals(await store.get(MEM - 2, MEM + 4), data.slice(MEM - 2, MEM * 2 + 2));
+		await store.flush();
+		assertEquals(await store.get(0, data.length), data); // and after it hits disk
+	});
+});
+
+Deno.test("stage: many small appends pack across mem-chunk boundaries", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, 1 << 20, MEM);
+		const parts: Uint8Array[] = [];
+		const b = store.batch();
+		// 20 blobs of 5 bytes = 100 bytes >> MEM(16), forcing repacking into ~7 mem chunks
+		for (let i = 0; i < 20; i++) {
+			const blob = seq(i * 5, 5);
+			b.append(blob);
+			parts.push(blob);
+		}
+		b.apply();
+		const model = concat(parts);
+		assertEquals(store.length(), model.length);
+		assertEquals(await store.get(0, model.length), model);
+		assertEquals(await store.get(MEM - 1, MEM + 2), model.slice(MEM - 1, MEM * 2 + 1));
+	});
+});
+
+Deno.test("stage: appendStage re-packs a batch whose tail mem-chunk is partial", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, 1 << 20, MEM);
+		// First commit leaves staged with a partial last mem chunk (length not a multiple of MEM).
+		appendBlob(store, seq(0, MEM + 5)); // staged len = 21, last mem chunk holds 5 bytes
+		// Second batch's bytes must land contiguously even though staged's tail chunk is partial.
+		appendBlob(store, seq(100, MEM + 3));
+		const model = concat([seq(0, MEM + 5), seq(100, MEM + 3)]);
+		assertEquals(store.length(), model.length);
+		assertEquals(await store.get(0, model.length), model);
+		// the seam between the two commits sits mid-stream, not on a mem-chunk boundary
+		assertEquals(await store.get(MEM + 3, 6), model.slice(MEM + 3, MEM + 9));
+		await store.flush();
+		assertEquals(await store.get(0, model.length), model);
+	});
+});
+
 // ── flush / persistence ─────────────────────────────────────────────────────────
 
 Deno.test("flush: persists to chunk files, removes wal, clears frozen", async () => {
@@ -227,7 +327,7 @@ Deno.test("flush: persists to chunk files, removes wal, clears frozen", async ()
 		appendBlob(store, data);
 		await store.flush();
 		assertEquals(store.wal, null);
-		assertFalse(await exists(join(dir, "data.wal")));
+		assertFalse(await exists(walPath(dir)));
 		assertEquals(await store.get(0, 20), data);
 	});
 });
@@ -257,7 +357,7 @@ Deno.test("flush: sequential flushes accumulate across chunk boundaries", async 
 	});
 });
 
-Deno.test("chunk-layout invariant: all but the last chunk are full and sizes sum to length", async () => {
+Deno.test("chunk-layout invariant: all but the last on-disk chunk are full and sizes sum to length", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir, CHUNK);
 		appendBlob(store, seq(0, CHUNK * 3 + 7));
@@ -319,6 +419,19 @@ Deno.test("truncate: shrinks disk; reopen reflects it", async () => {
 	});
 });
 
+Deno.test("truncate: appends after a shrink land at the new tail", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, CHUNK);
+		appendBlob(store, seq(0, 20));
+		await store.flush();
+		await store.truncate(10); // disk now [0,10)
+		appendBlob(store, seq(200, 6)); // should land at pointer 10
+		await store.flush();
+		assertEquals(store.length(), 16);
+		assertEquals(await store.get(0, 16), concat([seq(0, 10), seq(200, 6)]));
+	});
+});
+
 Deno.test("truncate: rejects if staged is not empty (must flush first)", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir, CHUNK);
@@ -359,6 +472,18 @@ Deno.test("truncate: to zero removes everything", async () => {
 	});
 });
 
+Deno.test("truncate: no-op truncate to current length leaves data intact", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, CHUNK);
+		appendBlob(store, seq(0, 20));
+		await store.flush();
+		await store.truncate(20); // equal to flushed length
+		assertEquals(store.length(), 20);
+		assertEquals(await store.get(0, 20), seq(0, 20));
+		assertFalse(await exists(truncateTargetPath(dir)));
+	});
+});
+
 Deno.test("truncate: crash-safe sentinel removed after clean truncate", async () => {
 	await withTmp(async (dir) => {
 		const store = await open(dir, CHUNK);
@@ -372,7 +497,6 @@ Deno.test("truncate: crash-safe sentinel removed after clean truncate", async ()
 
 Deno.test("truncate: crash recovery — sentinel replayed on open shrinks the chunks", async () => {
 	await withTmp(async (dir) => {
-		// Build a store with 3 chunks' worth of data
 		let store = await open(dir, CHUNK);
 		appendBlob(store, seq(0, CHUNK * 2 + 5));
 		await store.flush();
@@ -384,16 +508,11 @@ Deno.test("truncate: crash recovery — sentinel replayed on open shrinks the ch
 		new Uint8ArrayView(sentinel).setBigUint64(0, BigInt(targetOffset));
 		await Deno.writeFile(truncateTargetPath(dir), sentinel);
 
-		// Reopen — should replay the truncate
-		store = await open(dir, CHUNK);
-		try {
-			assertEquals(store.length(), targetOffset);
-			assertEquals(await store.get(0, targetOffset), seq(0, targetOffset));
-			assertFalse(await exists(truncateTargetPath(dir)));
-			assertFalse(await exists(join(dir, "chunk_2")));
-		} finally {
-			/*  */
-		}
+		store = await open(dir, CHUNK); // reopen — should replay the truncate
+		assertEquals(store.length(), targetOffset);
+		assertEquals(await store.get(0, targetOffset), seq(0, targetOffset));
+		assertFalse(await exists(truncateTargetPath(dir)));
+		assertFalse(await exists(join(dir, "chunk_2")));
 	});
 });
 
@@ -505,24 +624,30 @@ Deno.test("frozen/staged stitch across a chunk boundary mid-flush", async () => 
 	});
 });
 
-Deno.test("a batch committed during a flush survives the next flush", async () => {
+Deno.test("stagedBase stays pinned: a batch opened mid-flush keeps its offsets across discard", async () => {
 	await withTmp(async (dir) => {
-		let store = await open(dir, CHUNK);
-		const d1 = seq(0, 8);
+		const store = await open(dir, CHUNK);
+		const d1 = seq(0, 10);
 		appendBlob(store, d1);
-		await store.flush();
-		const d2 = seq(50, 8);
+		await store.flush(); // disk [0,10)
+		const d2 = seq(100, 10); // staged [10,20)
 		appendBlob(store, d2);
-		const w = await store.createWAL();
-		const d3 = seq(150, 8);
-		appendBlob(store, d3); // fresh layer
-		await w.apply();
-		await w.discard();
-		const model = concat([d1, d2, d3]);
-		assertEquals(await store.get(0, 24), model);
-		await store.flush();
-		store = await open(dir, CHUNK);
-		assertEquals(await store.get(0, 24), model);
+
+		const w = await store.createWAL(); // frozen base 10, len 10
+		// Open a batch DURING the flush and capture the pointer it hands out.
+		const b = store.batch();
+		const p = b.append(seq(200, 7)); // logical [20,27)
+		assertEquals(p, 20); // base = disk(10) + frozen(10) + staged(0)
+		b.apply();
+
+		// Before apply: the just-committed bytes live in the new staged at [20,27).
+		assertEquals(await store.get(20, 7), seq(200, 7));
+
+		await w.apply(); // disk grows 10→20
+		await w.discard(); // frozen dropped; stagedBase must STILL be 20, not slide to 10
+
+		assertEquals(await store.get(20, 7), seq(200, 7)); // pointer still valid
+		assertEquals(await store.get(0, 27), concat([d1, d2, seq(200, 7)]));
 	});
 });
 
@@ -538,13 +663,30 @@ Deno.test("WAL header records base_offset and byte length", async () => {
 		b.append(seq(200, 3));
 		b.apply();
 		const w = await store.createWAL();
-		const wal = await Deno.readFile(join(dir, "data.wal"));
+		const wal = await Deno.readFile(walPath(dir));
 		const view = new Uint8ArrayView(wal);
 		assertEquals(Number(view.getBigUint64(0)), 10); // base_offset
 		assertEquals(Number(view.getBigUint64(8)), 6); // 6 staged bytes (two 3-byte blobs)
 		assertEquals(wal.length, 16 + 6); // header + payload
 		await w.apply();
 		await w.discard();
+	});
+});
+
+Deno.test("WAL payload survives a frozen region that spans many mem chunks", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, 1 << 20, MEM); // single disk chunk, tiny mem chunks
+		const data = seq(0, MEM * 4 + 3); // frozen will span 5 mem chunks
+		appendBlob(store, data);
+		const w = await store.createWAL();
+		const wal = await Deno.readFile(walPath(dir));
+		const view = new Uint8ArrayView(wal);
+		assertEquals(Number(view.getBigUint64(0)), 0);
+		assertEquals(Number(view.getBigUint64(8)), data.length);
+		assertEquals(wal.subarray(16), data); // streamed chunk-by-chunk, still contiguous & exact
+		await w.apply();
+		await w.discard();
+		assertEquals(await store.get(0, data.length), data);
 	});
 });
 
@@ -563,12 +705,7 @@ Deno.test("replay: wal.apply() is idempotent (apply twice == once)", async () =>
 		await w.apply(); // replay
 		await w.discard();
 		assertEquals(await store.get(0, 22), concat([d1, d2]));
-		// disk physically ends at 22
-		let total = 0;
-		for await (const e of Deno.readDir(dir)) {
-			if (e.isFile && e.name.startsWith("chunk_")) total += (await Deno.stat(join(dir, e.name))).size;
-		}
-		assertEquals(total, 22);
+		assertEquals(await diskTotal(dir), 22); // disk physically ends at 22
 	});
 });
 
@@ -587,6 +724,7 @@ Deno.test("self-heal: apply() truncates a torn chunk then rewrites", async () =>
 		await w.apply(); // truncate to 10, rewrite d2
 		await w.discard(); // drop frozen → reads come from disk
 		assertEquals(await store.get(0, 22), concat([d1, d2]));
+		assertEquals(await diskTotal(dir), 22);
 	});
 });
 
@@ -600,14 +738,14 @@ Deno.test("crash recovery: a WAL present on reopen replays the in-flight appends
 		appendBlob(store, d2);
 		await store.createWAL(); // WAL on disk; chunk data still just d1
 
-		// "crash": abandon the instance (no fd held) and reopen the same dir
+		// "crash": abandon the instance and reopen the same dir
 		const store2 = await open(dir, CHUNK);
 		assertExists(store2.wal);
 		await store2.wal!.apply();
 		await store2.wal!.discard();
 		assertEquals(store2.length(), 22);
 		assertEquals(await store2.get(0, 22), concat([d1, d2]));
-		assertFalse(await exists(join(dir, "data.wal")));
+		assertFalse(await exists(walPath(dir)));
 	});
 });
 
@@ -628,6 +766,42 @@ Deno.test("crash recovery: torn disk + WAL present recovers cleanly", async () =
 		await store2.wal!.apply(); // base from wal heals the torn tail
 		await store2.wal!.discard();
 		assertEquals(await store2.get(0, 22), concat([d1, d2]));
+		assertEquals(await diskTotal(dir), 22);
+	});
+});
+
+Deno.test("crash recovery: WAL written but disk never grew (crash right after createWAL)", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, CHUNK);
+		appendBlob(store, seq(0, 10));
+		await store.flush(); // disk [0,10)
+		appendBlob(store, seq(100, 12)); // staged [10,22)
+		await store.createWAL(); // WAL on disk, apply() NOT called → disk still 10
+		assertEquals(await diskTotal(dir), 10);
+
+		const store2 = await open(dir, CHUNK); // reopen: wal present, disk at base
+		assertExists(store2.wal);
+		await store2.wal!.apply(); // first-ever apply, from base
+		await store2.wal!.discard();
+		assertEquals(store2.length(), 22);
+		assertEquals(await store2.get(0, 22), concat([seq(0, 10), seq(100, 12)]));
+	});
+});
+
+Deno.test("crash recovery: a recovered WAL can be discarded without applying (rollback path)", async () => {
+	await withTmp(async (dir) => {
+		const store = await open(dir, CHUNK);
+		appendBlob(store, seq(0, 10));
+		await store.flush();
+		appendBlob(store, seq(100, 12));
+		await store.createWAL(); // in-flight flush
+
+		const store2 = await open(dir, CHUNK); // "crash" before saved → recover discards
+		assertExists(store2.wal);
+		await store2.wal!.discard(); // throw the flush away, no apply
+		assertFalse(await exists(walPath(dir)));
+		assertEquals(store2.length(), 10); // rolled back to the last durable state
+		assertEquals(await store2.get(0, 10), seq(0, 10));
 	});
 });
 
@@ -648,9 +822,10 @@ Deno.test("fuzz: differential test against an in-memory byte-stream oracle", asy
 		const SEED = 0x5eed1234;
 		const rng = mulberry32(SEED);
 		const randInt = (n: number) => Math.floor(rng() * n);
-		const FUZZ_CHUNK = 32;
+		const FUZZ_DISK = 32;
+		const FUZZ_MEM = 24; // distinct from disk chunk size, both exercised
 
-		let store = await open(dir, FUZZ_CHUNK);
+		let store = await open(dir, FUZZ_DISK, FUZZ_MEM);
 		let model = new Uint8Array(0);
 		let flushedLen = 0;
 		let counter = 0;
@@ -670,47 +845,59 @@ Deno.test("fuzz: differential test against an in-memory byte-stream oracle", asy
 			}
 		};
 
-		try {
-			const ITERS = 250;
-			for (let it = 0; it < ITERS; it++) {
-				const roll = rng();
+		const ITERS = 300;
+		for (let it = 0; it < ITERS; it++) {
+			const roll = rng();
 
-				if (roll < 0.55) {
-					const parts: Uint8Array[] = [];
-					const b = store.batch();
-					const n = 1 + randInt(4);
-					for (let i = 0; i < n; i++) {
-						const blob = nextBlob(1 + randInt(FUZZ_CHUNK * 2));
-						b.append(blob);
-						parts.push(blob);
-					}
-					if (rng() < 0.85) {
-						b.apply();
-						model = concat([model, ...parts]);
-					} else {
-						b.discard();
-					}
-				} else if (roll < 0.7) {
-					await store.flush();
-					flushedLen = model.length;
-				} else if (roll < 0.82 && flushedLen > 0) {
-					// Truncate requires empty staged — flush first
-					await store.flush();
-					flushedLen = model.length;
-					const newLen = randInt(flushedLen + 1);
-					await store.truncate(newLen);
-					model = model.slice(0, newLen);
-					flushedLen = newLen;
-				} else {
-					await store.flush(); // persist before reopening
-					flushedLen = model.length;
-					store = await open(dir, FUZZ_CHUNK);
+			if (roll < 0.5) {
+				// commit (or discard) a multi-blob batch
+				const parts: Uint8Array[] = [];
+				const b = store.batch();
+				const n = 1 + randInt(4);
+				for (let i = 0; i < n; i++) {
+					const blob = nextBlob(1 + randInt(FUZZ_DISK * 2)); // blobs can exceed both chunk sizes
+					b.append(blob);
+					parts.push(blob);
 				}
-
-				await check(`iter ${it} (roll=${roll.toFixed(3)})`);
+				if (rng() < 0.85) {
+					b.apply();
+					model = concat([model, ...parts]);
+				} else {
+					b.discard();
+				}
+			} else if (roll < 0.62) {
+				// batch opened and committed mid-flush (exercises the pinned stagedBase path)
+				const w = await store.createWAL();
+				const blob = nextBlob(1 + randInt(FUZZ_MEM * 2));
+				const b = store.batch();
+				b.append(blob);
+				b.apply();
+				model = concat([model, blob]);
+				if (rng() < 0.5) {
+					await w.apply();
+					await w.apply(); // sometimes double-apply to exercise idempotency
+				} else {
+					await w.apply();
+				}
+				await w.discard();
+				flushedLen = model.length;
+			} else if (roll < 0.74) {
+				await store.flush();
+				flushedLen = model.length;
+			} else if (roll < 0.86 && flushedLen > 0) {
+				await store.flush(); // truncate needs empty staged
+				flushedLen = model.length;
+				const newLen = randInt(flushedLen + 1);
+				await store.truncate(newLen);
+				model = model.slice(0, newLen);
+				flushedLen = newLen;
+			} else {
+				await store.flush(); // persist before reopening ("clean restart")
+				flushedLen = model.length;
+				store = await open(dir, FUZZ_DISK, FUZZ_MEM);
 			}
-		} catch (e) {
-			throw e;
+
+			await check(`iter ${it} (roll=${roll.toFixed(3)})`);
 		}
 	});
 });
