@@ -45,7 +45,11 @@ const MEM = 16; // small in-memory staging chunk, to exercise Stage's chunk boun
 let openStores: BlobStore[] = [];
 
 function open(dir: string, chunkByteSize = CHUNK, memChunkSize = MEM) {
-	return BlobStore.open({ path: dir, chunkByteSize, memChunkSize }).then((store) => {
+	return BlobStore.open({
+		path: dir,
+		maxDiskChunkSize: chunkByteSize,
+		maxMemoryChunkSize: memChunkSize,
+	}).then((store) => {
 		openStores.push(store);
 		return store;
 	});

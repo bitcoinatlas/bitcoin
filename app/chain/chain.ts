@@ -62,8 +62,8 @@ console.log("Stores initialized. Recovering data if needed…");
 await atomic.recover();
 console.log("Recovery complete.");
 
-function heapMB(): string {
-	return `heap=${(Deno.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)}MB`;
+function heapMiB(): string {
+	return `heap=${(Deno.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)}MiB`;
 }
 
 export const localChain = new PeerChain([]);
@@ -95,7 +95,7 @@ if (headers.length > 0) {
 			pointer: pointer ? pointer : (height ? null : 0),
 		});
 	}));
-	console.log(`[chain] chain built height=${localChain.height()} ${heapMB()}`);
+	console.log(`[chain] chain built height=${localChain.height()} ${heapMiB()}`);
 } else {
 	await atomic.stores.header.truncate(0);
 	await atomic.stores.block.truncate(0);

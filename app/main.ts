@@ -1,6 +1,6 @@
 import { delay } from "@std/async";
 import { serve } from "~/api/serve.ts";
-import { syncBodiesFromPeers } from "~/chain/bodies.ts";
+import { startDownloader, syncBodiesFromPeers } from "~/chain/bodies.ts";
 import { atomic } from "~/chain/chain.ts";
 import { syncHeadersFromPeers } from "~/chain/headers.ts";
 import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/p2p/peers.ts";
@@ -29,7 +29,9 @@ if (import.meta.main) {
 	// Local dev: single peer. For production, swap with maintain().
 	await addPeer("192.168.8.10", P2P_PORT, MAGIC);
 	// await _maintain();
-
+	let currentFlush: Promise<void> = Promise.resolve();
+	await syncHeadersFromPeers();
+	startDownloader();
 	while (true) {
 		await delay(0);
 		try {
@@ -41,10 +43,15 @@ if (import.meta.main) {
 
 	async function tick() {
 		// await maintain(); // uncomment for production peer management
+		console.log("[main] sync headers...");
 		await syncHeadersFromPeers();
+		console.log("[main] done: sync headers");
+		console.log("[main] sync txs...");
 		await syncBodiesFromPeers();
+		console.log("[main] done: txs headers");
 
 		if (global.gc) {
+			const gcStart = performance.now();
 			const pre = Deno.memoryUsage().heapUsed;
 			global.gc();
 			const post = Deno.memoryUsage().heapUsed;
@@ -52,8 +59,12 @@ if (import.meta.main) {
 			const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
 			const freed = pre - post;
 
+			const gcEnd = performance.now();
 			console.log(
-				`%cGC%c ${mib(pre)} MiB %c→%c ${mib(post)} MiB %c(freed ${mib(freed)} MiB)`,
+				[
+					`%cGC%c (${(gcEnd - gcStart).toFixed(0)}ms)`,
+					`${mib(pre)} MiB %c→%c ${mib(post)} MiB %c(freed ${mib(freed)} MiB)`,
+				].join(" "),
 				"color: #888; font-weight: bold",
 				"color: inherit",
 				"color: #888",
@@ -62,9 +73,15 @@ if (import.meta.main) {
 			);
 		}
 
+		const memory = Deno.memoryUsage();
+		if ((memory.heapUsed / (4 * 1024 * 1024 * 1204)) > .75) {
+			console.log("[main] heap usage almost at max, awaiting flush");
+			await currentFlush;
+		}
+
 		if (atomic.flushing) return;
 		console.log("[main] async flushing...");
-		atomic.flush().then(() => console.log("[main] flushed"));
+		currentFlush = atomic.flush().then(() => console.log("[main] flushed"));
 	}
 
 	async function _maintain() {

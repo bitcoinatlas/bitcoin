@@ -5,10 +5,9 @@ import { Store, WAL } from "~/storage/Store.ts";
 
 type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
 const AtomicState = new EnumCodec({
-	"started": Void,
+	"done": Void,
 	"saved": Void,
 	"applied": Void,
-	"discarded": Void,
 });
 
 type AtomicStores = { readonly [name: string]: Store };
@@ -28,12 +27,14 @@ export class Atomic<T extends AtomicStores> {
 	public readonly statePath: string;
 	public readonly stores: T;
 	public readonly storeEntries: readonly (readonly [string, Store])[];
+	public state: AtomicState;
 
 	private constructor(path: string, stores: T) {
 		this.statePath = join(path, "state.bin");
 		this.stores = stores;
 		this.storeEntries = Object.entries(stores);
 		this.flushing = false;
+		this.state = "done";
 	}
 
 	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
@@ -41,7 +42,8 @@ export class Atomic<T extends AtomicStores> {
 		const self = new Atomic<T>(options.path, options.stores);
 		// Only initialize the state file on a fresh data directory. If a state file
 		// already exists we must preserve it so recover() can resume an interrupted flush.
-		if (!await self.existsState()) await self.setState("discarded");
+		if (!await self.existsState()) await self.setState("done");
+		self.state = await self.getState();
 		return self;
 	}
 
@@ -54,6 +56,7 @@ export class Atomic<T extends AtomicStores> {
 	async setState(newState: AtomicState): Promise<void> {
 		const data = AtomicState.encode({ kind: newState, value: null });
 		await Deno.writeFile(this.statePath, data, { create: true });
+		this.state = newState;
 	}
 
 	async existsState(): Promise<boolean> {
@@ -84,18 +87,16 @@ export class Atomic<T extends AtomicStores> {
 	async flush(): Promise<void> {
 		try {
 			this.flushing = true;
-			const state = await this.getState();
-			if (state !== "discarded") {
-				throw new Error(`Can't have multiple atomic flushes in progress. state=${state}`);
+			if (this.state !== "done") {
+				throw new Error(`Can't have multiple atomic flushes in progress. state=${this.state}`);
 			}
 
-			await this.setState("started");
 			const wals = await Promise.all(this.storeEntries.map(([, store]) => store.createWAL()));
 			await this.setState("saved");
 			await Promise.all(wals.map((wal) => wal.apply()));
 			await this.setState("applied");
 			await Promise.all(wals.map((wal) => wal.discard()));
-			await this.setState("discarded");
+			await this.setState("done");
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
 			Deno.exit(1);
@@ -109,27 +110,17 @@ export class Atomic<T extends AtomicStores> {
 	 * Should be called once at startup before any writes.
 	 */
 	async recover(): Promise<void> {
-		const state = await this.getState();
-		if (state === "discarded") return;
+		const state = this.state;
 
 		const wals: WAL[] = [];
 		for (const [name, store] of this.storeEntries) {
 			const { wal } = store;
 			if (!wal) {
-				if (state === "started") continue;
 				if (state === "applied") continue;
+				if (state === "done") continue;
 				throw new Error(`WAL for store ${name} not found during atomic WAL recovery`);
 			}
 			wals.push(wal);
-		}
-
-		if (state === "started") {
-			// Most likely failed while saving WALs. Can't be sure which ones were saved, so just discard all of them.
-			for (const wal of wals) {
-				await wal.discard();
-			}
-			await this.setState("discarded");
-			return;
 		}
 
 		if (state === "saved") {
@@ -141,7 +132,7 @@ export class Atomic<T extends AtomicStores> {
 			for (const wal of wals) {
 				await wal.discard();
 			}
-			await this.setState("discarded");
+			await this.setState("done");
 			return;
 		}
 
@@ -150,11 +141,11 @@ export class Atomic<T extends AtomicStores> {
 			for (const wal of wals) {
 				await wal.discard();
 			}
-			await this.setState("discarded");
+			await this.setState("done");
 			return;
 		}
 
-		if (state === "discarded") {
+		if (state === "done") {
 			// All WALs should have been discarded, but just in case, try discarding all of them again and then delete the ids file.
 			for (const wal of wals) {
 				await wal.discard();
