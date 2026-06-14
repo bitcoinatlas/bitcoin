@@ -14,6 +14,8 @@
   the profile too much anyway.
 - a better thing would be redesigning the sync logic, so it uses rocksdb in concurrent mass bursts with `Promise.all()`
   and stuff. so we dont wait for a single answer idling.
+- while talking about the thing above, also maybe remove some helper function, they abstract too much, i cant remember
+  what stores im using.
 - another issue is now we dont wait for flush to end, flushes can take multiple ticks, which causes stage to grow so
   much, which causes next flush to take longer, which causes stage to grow more etc. this needs more than one solution,
   first if the memory usage starts to get near the max await the flush. another thing is, make the flush itself faster.
