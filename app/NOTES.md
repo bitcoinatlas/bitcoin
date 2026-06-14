@@ -20,3 +20,4 @@
   much, which causes next flush to take longer, which causes stage to grow more etc. this needs more than one solution,
   first if the memory usage starts to get near the max await the flush. another thing is, make the flush itself faster.
   and lastly incrise the v8 heap memory limit.
+- while downloading make download ahead based on size not count, kinda slow during early blocks. probably guess block size based on average block size. start with max block size, go down from there. instead of making per block append txs, append all of the txs from multiple blocks at once. then only if the batch fails. retry again until the failed block's offset. the goal here is to have the least difference between small blocks, and big blocks during ibd. 
