@@ -8,7 +8,7 @@
 - use namespaces in the backend, makes it more organized. its backend app code we dont have to worry about tree shaking.
   probably just export as object.
 - turn it into a real app with real ui. so things start to fall into their place. instead of looking like a one big sync
-  script.
+  script. (makkeei titncoool sas s fuckck llsks) 
 - maybe translating between Wire and Stored formated directly instead of doing the route
   `wire.decode() -> stored.encode()` might help a little maybe? but it would complicate the logic. and doesnt show up on
   the profile too much anyway.
