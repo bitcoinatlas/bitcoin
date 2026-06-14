@@ -21,4 +21,4 @@
   first if the memory usage starts to get near the max await the flush. another thing is, make the flush itself faster.
   and lastly incrise the v8 heap memory limit.
 - while downloading make download ahead based on size not count, kinda slow during early blocks. probably guess block size based on average block size. start with max block size, go down from there. instead of making per block append txs, append all of the txs from multiple blocks at once. then only if the batch fails. retry again until the failed block's offset. the goal here is to have the least difference between small blocks, and big blocks during ibd. 
-- process bottlenecked. rn. but i think im gonna stop trying to make it faster FOR NOW. im gonna focus on making it into an app now, fast enough for now later we can focus on making it even faster. 
+- process bottlenecked(mostly rocks and kv reads, indexes). rn. but i think im gonna stop trying to make it faster FOR NOW. im gonna focus on making it into an app now, fast enough for now later we can focus on making it even faster. 
