@@ -8,6 +8,7 @@ import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~
 const global = globalThis as never as { gc?(): void };
 
 if (import.meta.main) {
+	Deno.addSignalListener("SIGINT", () => Deno.exit(0));
 	if (Deno.args.length) {
 		const timeout = Number(Deno.args[0]);
 		setTimeout(() => Deno.exit(0), timeout * 1000);
@@ -26,7 +27,7 @@ if (import.meta.main) {
 	serve(HTTP_PORT);
 
 	// Local dev: single peer. For production, swap with maintain().
-	addPeer("192.168.8.10", P2P_PORT, MAGIC);
+	await addPeer("192.168.8.10", P2P_PORT, MAGIC);
 	// await _maintain();
 
 	while (true) {
@@ -43,7 +44,7 @@ if (import.meta.main) {
 		await syncHeadersFromPeers();
 		await syncBodiesFromPeers();
 
-		/* if (global.gc) {
+		if (global.gc) {
 			const pre = Deno.memoryUsage().heapUsed;
 			global.gc();
 			const post = Deno.memoryUsage().heapUsed;
@@ -59,10 +60,11 @@ if (import.meta.main) {
 				"color: inherit",
 				freed > 0 ? "color: #4ade80" : "color: #f87171",
 			);
-		} */
+		}
 
 		if (atomic.flushing) return;
-		atomic.flush();
+		console.log("[main] async flushing...");
+		atomic.flush().then(() => console.log("[main] flushed"));
 	}
 
 	async function _maintain() {

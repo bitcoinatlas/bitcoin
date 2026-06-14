@@ -1,10 +1,12 @@
-import { RocksDatabase, Store as RocksStore } from "@harperfast/rocksdb-js";
+import { RocksDatabase, RocksDatabaseOptions, Store as RocksStore } from "@harperfast/rocksdb-js";
 import { FixedCodec } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import type { Batch, Store, WAL } from "~/storage/Store.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
 import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+
+RocksDatabase.config({ blockCacheSize: 536870912 * 2 });
 
 /**
  * A persistent key-value store backed by RocksDB.
@@ -63,7 +65,7 @@ const WAL_HEADER = 4; // bytes reserved at the front of the WAL buffer for the u
 class BinaryStore extends RocksStore {
 	readonly #valueStride: number;
 
-	constructor(path: string, options: Record<string, unknown>, valueStride: number) {
+	constructor(path: string, options: RocksDatabaseOptions, valueStride: number) {
 		super(path, options);
 		this.#valueStride = valueStride;
 	}
@@ -83,13 +85,13 @@ class BinaryStore extends RocksStore {
 		// detached from the shared buffer, so a later db.get() overwriting that buffer cannot
 		// corrupt a value the caller is still holding. Must be slice() (a copy), not subarray()
 		// (a view), or the detachment guarantee is lost.
-		return (value as Uint8Array).slice(0, this.#valueStride);
+		return value.slice(0, this.#valueStride);
 	}
 }
 
 export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 	// deno-lint-ignore no-explicit-any
-	readonly #db: any; // RocksDatabase handle
+	readonly #db: RocksDatabase; // RocksDatabase handle
 	readonly #keyCodec: FixedCodec<K>;
 	readonly #valueCodec: FixedCodec<V>;
 	readonly #keyStride: number;
@@ -109,7 +111,7 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 
 	private constructor(
 		// deno-lint-ignore no-explicit-any
-		db: any,
+		db: RocksDatabase,
 		keyCodec: FixedCodec<K>,
 		valueCodec: FixedCodec<V>,
 		walPath: string,
@@ -129,9 +131,13 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 		await Deno.mkdir(path, { recursive: true });
 		const walPath = join(path, "data.wal");
 
-		const parallelismThreads = Math.max(1, Math.floor(navigator.hardwareConcurrency * .25));
-		const rocksStore = new BinaryStore(join(path, "rocksdb"), { parallelismThreads }, valueCodec.stride.size);
-		const db = RocksDatabase.open(rocksStore, { parallelismThreads, maxKeySize: keyCodec.stride.size });
+		const rocksOptions: RocksDatabaseOptions = {
+			parallelismThreads: Math.max(1, Math.floor(navigator.hardwareConcurrency * .5)),
+			maxKeySize: keyCodec.stride.size,
+			// enableStats: true,
+		};
+		const rocksStore = new BinaryStore(join(path, "rocksdb"), rocksOptions, valueCodec.stride.size);
+		const db = RocksDatabase.open(rocksStore);
 
 		const store = new KVStore(db, keyCodec, valueCodec, walPath);
 
@@ -141,6 +147,23 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 			const buf = await Deno.readFile(walPath);
 			store.wal = store.#makeWal(buf);
 		}
+
+		globalThis.addEventListener("unload", () => {
+			if (store.#closed) return;
+			try {
+				const miss = Number(store.#db.getStat("rocksdb.block.cache.miss"));
+				const hit = Number(store.#db.getStat("rocksdb.block.cache.hit"));
+				const bloomUseful = store.#db.getStat("rocksdb.bloom.filter.useful");
+				const bloomFull = store.#db.getStat("rocksdb.bloom.filter.full.positive");
+				const total = (hit ?? 0) + (miss ?? 0);
+				const hitRate = total > 0 ? ((hit ?? 0) / total * 100).toFixed(1) : "n/a";
+				console.log(
+					`[rocksdb:${store.#walPath}] cache hit=${hit} miss=${miss} rate=${hitRate}% bloom.useful=${bloomUseful} bloom.full=${bloomFull}`,
+				);
+			} catch {
+				/*  */
+			}
+		});
 
 		return store;
 	}

@@ -161,78 +161,109 @@ export async function appendTxs(
 	const op = async () => {
 		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
-
-		// blockPointer is where this block's blob will land — batch.size() gives the current end.
 		const blockPointer = batch.tx.append(txCountBytes);
+
+		// --- PHASE 1: prefetch all RocksDB reads up front, in parallel ---
+		// We don't know same-block pointers yet, so we just prefetch *whether* each key
+		// exists in RocksDB. Same-block cases are handled by local maps in phase 2.
+
+		// input prevOut txids (skip raw-coinbase; same-block ones resolve locally in phase 2)
+		const txidKeys = new Uint8ArrayMap<number>(64);
+		// output scriptPubKey hashes
+		const pubkeyKeys = new Uint8ArrayMap<number>(64);
+		const outputHashes: (Uint8Array | null)[][] = []; // [t][i] -> hash or null, computed once
+		for (let t = 0; t < txs.length; t++) {
+			const tx = txs[t]!;
+			for (const input of tx.data.inputs) {
+				if (input.prevOut.txId.kind === "raw") txidKeys.set(input.prevOut.txId.value, 1);
+			}
+			const hashes: (Uint8Array | null)[] = [];
+			for (const output of tx.data.outputs) {
+				if (output.scriptPubKey.kind === "pointer") {
+					hashes.push(null);
+					continue;
+				}
+				const raw = await TxOutput.getRawScriptPubKey(output, batch);
+				hashes.push(sha256(raw)); // computed ONCE here, reused everywhere below
+				pubkeyKeys.set(hashes[hashes.length - 1]!, 1);
+			}
+			outputHashes.push(hashes);
+		}
+
+		const txidPrefetch = new Uint8ArrayMap<StoredPointer>(64);
+		const pubkeyPrefetch = new Uint8ArrayMap<StoredPointer>(64);
+		await Promise.all([
+			...[...txidKeys.keys()].map(async (id) => {
+				const p = await batch.txid.get(id);
+				if (p !== undefined) txidPrefetch.set(id, p);
+			}),
+			...[...pubkeyKeys.keys()].map(async (h) => {
+				const p = await batch.pubkey.get(h);
+				if (p !== undefined) pubkeyPrefetch.set(h, p);
+			}),
+		]);
+
+		// --- PHASE 2: sequential, no RocksDB awaits ---
+		const blockTxIds = new Uint8ArrayMap<number>(txs.length * 2); // same-block txid -> pointer
+		const blockPubkeys = new Uint8ArrayMap<StoredPointer>(64); // same-block hash -> pointer
 
 		let offset = txCountBytes.length;
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
 			const txPointer = blockPointer + offset;
 			const spenderOffset = batch.spender.length();
-			tx.data;
 			batch.txid.set(tx.data.txId, txPointer);
+			blockTxIds.set(tx.data.txId, txPointer);
 
-			// Set prevOut pointers
+			// inputs: local block map first, then prefetched
 			for (let i = 0; i < tx.data.inputs.length; i++) {
 				const input = tx.data.inputs[i]!;
 				if (input.prevOut.txId.kind !== "raw") continue;
-				const pointer = await batch.txid.get(input.prevOut.txId.value);
+				const id = input.prevOut.txId.value;
+				const pointer = blockTxIds.get(id) ?? txidPrefetch.get(id);
 				if (pointer === undefined) {
-					console.error(
-						`[appendTxs] could not resolve prevOut to pointer at height=${height} tx=${t} vin=${i}: txId=${
-							Array.from(input.prevOut.txId.value).map((b) => b.toString(16).padStart(2, "0")).join("")
-						}`,
-					);
+					console.error(`[appendTxs] unresolved prevOut height=${height} tx=${t} vin=${i}`);
 					Deno.exit(1);
 				}
-
 				input.prevOut.txId = { kind: "pointer", value: pointer };
 			}
 
-			// Set scriptPubKey pointers
+			// scriptPubKey reuse: local block map first, then prefetched
+			const hashes = outputHashes[t]!;
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
 				if (output.scriptPubKey.kind === "pointer") continue;
-				const raw = await TxOutput.getRawScriptPubKey(output, batch);
-				const hash = sha256(raw);
-				const existing = await batch.pubkey.get(hash);
-				if (existing !== undefined) {
-					output.scriptPubKey = { kind: "pointer", value: existing };
-				}
+				const hash = hashes[i]!;
+				const existing = blockPubkeys.get(hash) ?? pubkeyPrefetch.get(hash);
+				if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
 			}
 
-			// Encode the final tx
 			const encoded = StoredTx.encodeWithOffsets(tx.toStore(spenderOffset));
 
-			// Update pubkey index
+			// pubkey index writes: reuse the same hashes, dedup via local + prefetch
 			for (let i = 0; i < tx.data.outputs.length; i++) {
 				const output = tx.data.outputs[i]!;
 				batch.spender.push(0);
-				// this also creates one for opreturn but without it we cant access outputs by index
-				// maybe find a better way to handle this
 				if (output.scriptPubKey.kind === "pointer") continue;
-				const raw = await TxOutput.getRawScriptPubKey(output, batch);
-				const hash = sha256(raw);
-				if (await batch.pubkey.get(hash) === undefined) {
-					batch.pubkey.set(hash, txPointer + encoded.offsets.vout[i]!);
+				const hash = hashes[i]!;
+				if (blockPubkeys.get(hash) === undefined && pubkeyPrefetch.get(hash) === undefined) {
+					const ptr = txPointer + encoded.offsets.vout[i]!;
+					batch.pubkey.set(hash, ptr);
+					blockPubkeys.set(hash, ptr); // so a later same-block output reuses it
 				}
 			}
 
-			// Update spender index
+			// spender index: still awaits — these reads depend on same-block writes (see note)
 			for (let i = 0; i < tx.data.inputs.length; i++) {
 				const input = tx.data.inputs[i]!;
-				if (input.prevOut.txId.kind !== "pointer") continue; // can't be raw, and coinbase has no prevOut
-
+				if (input.prevOut.txId.kind !== "pointer") continue;
 				const txSpenderOffset = await batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
 				const spenderIndex = txSpenderOffset + input.prevOut.vout;
 				const spender = await batch.spender.get(spenderIndex);
 				if (spender > 0) {
-					// TODO: This shouldn't throw normally, it should blacklist the block hash and skip to the next tick
 					const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
 					throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
 				}
-
 				batch.spender.set(spenderIndex, txPointer);
 			}
 
@@ -241,11 +272,8 @@ export async function appendTxs(
 		}
 
 		const currentLength = batch.block.length();
-		if (currentLength !== height) {
-			throw new Error(`Unexpected currentLength=${height}, got currentLength=${currentLength}`);
-		}
+		if (currentLength !== height) throw new Error(`Unexpected length=${height}, got ${currentLength}`);
 		batch.block.push(blockPointer);
-
 		return blockPointer;
 	};
 

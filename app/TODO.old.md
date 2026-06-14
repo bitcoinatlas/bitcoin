@@ -1,3 +1,5 @@
+**THIS IS PROBABLY MOSTLY OUTDATED NOW, BUT COME BACK TO IT SOMETIME LATER, IN CASE YOU FORGOT SOMETHING**
+
 - [x] WAL prevents read, defeats purpose of it, shouldnt.
 - [ ] in a tick some stuff should work in parallel. sequentially.
 - [x] Download should queue blocks in memory, and another loop should append them from a block pool in order.
