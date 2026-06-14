@@ -9,3 +9,12 @@
   probably just export as object.
 - turn it into a real app with real ui. so things start to fall into their place. instead of looking like a one big sync
   script.
+- maybe translating between Wire and Stored formated directly instead of doing the route
+  `wire.decode() -> stored.encode()` might help a little maybe? but it would complicate the logic. and doesnt show up on
+  the profile too much anyway.
+- a better thing would be redesigning the sync logic, so it uses rocksdb in concurrent mass bursts with `Promise.all()`
+  and stuff. so we dont wait for a single answer idling.
+- another issue is now we dont wait for flush to end, flushes can take multiple ticks, which causes stage to grow so
+  much, which causes next flush to take longer, which causes stage to grow more etc. this needs more than one solution,
+  first if the memory usage starts to get near the max await the flush. another thing is, make the flush itself faster.
+  and lastly incrise the v8 heap memory limit.
