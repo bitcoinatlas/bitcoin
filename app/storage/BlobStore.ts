@@ -162,6 +162,7 @@ class DiskRegion implements Region {
 
 		this._readers = [];
 		this._appendQueue = Promise.resolve();
+		this._readQueue = Promise.resolve();
 	}
 
 	static async open(options: DiskRegionOptions): Promise<DiskRegion> {
@@ -250,7 +251,17 @@ class DiskRegion implements Region {
 		this.size = size;
 	}
 
-	async read(offset: number, length: number): Promise<Uint8Array> {
+	// Serializes reads (and orders them against appends/truncate). A cached reader fd is shared
+	// per chunk, so two concurrent reads would interleave their seek()+read() on the same handle
+	// and tear each other's data; the queue makes each seek+read sequence atomic.
+	private _readQueue: Promise<unknown>;
+	read(offset: number, length: number): Promise<Uint8Array> {
+		const run = this._readQueue.then(() => this._read(offset, length));
+		this._readQueue = run.then(() => {}, () => {});
+		return run;
+	}
+
+	private async _read(offset: number, length: number): Promise<Uint8Array> {
 		if (offset < 0 || length < 0) {
 			throw new RangeError(`negative offset/length: offset=${offset} length=${length}`);
 		}
