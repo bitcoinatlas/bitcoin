@@ -289,24 +289,37 @@ class DiskRegion implements Region {
 	}
 
 	/** Shrink the stream to exactly `offset`. Drops cached handles since their positions / target are now stale. */
-	async truncateTo(offset: number): Promise<void> {
+	async truncate(offset: number): Promise<void> {
 		if (offset < 0) throw new RangeError(`negative offset: ${offset}`);
 		if (offset > this.size) throw new RangeError(`truncateTo grows the region: offset=${offset} size=${this.size}`);
+		const oldTailChunkIndex = Math.floor(this.size / this.maxChunkSize);
+		const newTailChunkIndex = Math.floor(offset / this.maxChunkSize);
 
 		// Drain in-flight appends, then drop every cached handle.
-		await this.close();
+		await this._appendQueue;
+
+		this._appender.close();
+
+		const readers = this._readers;
+		this._readers.splice(newTailChunkIndex);
+		for (const reader of readers.values().drop(newTailChunkIndex)) {
+			if (!reader) continue;
+			try {
+				(await reader).close();
+			} catch {
+				// already closed / open failed; nothing to do
+			}
+		}
 
 		// Set size first so any racing reader caps at the new bound.
 		this.size = offset;
-		for await (const entry of Deno.readDir(this.path)) {
-			if (!entry.isFile || !entry.name.startsWith("chunk_")) continue;
-			const index = Number(entry.name.slice("chunk_".length));
-			if (!Number.isInteger(index)) continue;
+		for (let index = newTailChunkIndex; index > oldTailChunkIndex; index--) {
+			const name = `chunk_${index}`;
 			const chunkStart = index * this.maxChunkSize;
 			if (chunkStart >= offset) {
-				await Deno.remove(join(this.path, entry.name)); // fully at/after offset -- gone
+				await Deno.remove(join(this.path, name)); // fully at/after offset -- gone
 			} else if (chunkStart + this.maxChunkSize > offset) {
-				await Deno.truncate(join(this.path, entry.name), offset - chunkStart); // straddles -- new tail
+				await Deno.truncate(join(this.path, name), offset - chunkStart); // straddles -- new tail
 			}
 			// else: fully below offset -- leave it intact
 		}
@@ -404,7 +417,7 @@ export class BlobStore implements Store<BlobStoreBatch> {
 		if (await exists(truncatePath)) {
 			const buf = await Deno.readFile(truncatePath);
 			const target = Number(new Uint8ArrayView(buf).getBigUint64(0));
-			await disk.truncateTo(target);
+			await disk.truncate(target);
 			await Deno.remove(truncatePath).catch(() => {});
 		}
 
@@ -599,7 +612,7 @@ export class BlobStore implements Store<BlobStoreBatch> {
 			const view = new Uint8ArrayView(buf);
 			const base = Number(view.getBigUint64(0));
 			const byteLen = Number(view.getBigUint64(8));
-			await this._disk.truncateTo(base);
+			await this._disk.truncate(base);
 			await this._disk.append(buf.subarray(16, 16 + byteLen));
 			await this._disk.sync(); // barrier: applied bytes must be durable before the WAL is discarded
 		};
@@ -633,7 +646,7 @@ export class BlobStore implements Store<BlobStoreBatch> {
 			this._staged = this._newMemoryRegion(); // staged was empty; reset so its base re-derives
 			if (newLength < this._disk.size) {
 				await this._writeTruncateTarget(newLength);
-				await this._disk.truncateTo(newLength);
+				await this._disk.truncate(newLength);
 				await Deno.remove(this._truncatePath).catch(() => {});
 			}
 		} finally {
