@@ -9,6 +9,7 @@ import {
 	getTxsByBlockHash,
 	getTxsByBlockHeight,
 } from "~/chain/chain.ts";
+import { ns } from "~/chain/ns.ts";
 
 const MAX_TAKE = 210;
 
@@ -89,7 +90,7 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 	}
 
 	if (!txs) return { status: "OK", data: [] };
-	const wireTxs = await Promise.all(txs.map(async (tx) => ({ wire: await tx.toWire(), stored: tx.toStore() })));
+	const wireTxs = await Promise.all(txs.map(async (tx) => ({ wire: await ns.toWire(tx), stored: tx })));
 	return { status: "OK", data: wireTxs };
 });
 
@@ -97,5 +98,5 @@ endpointRouter.registerHandler("GET /v1/tx/:txId", async ({ params }) => {
 	const txId = Uint8Array.from(decodeHex(params.pathname.txId).reverse());
 	const tx = await getTxById(txId);
 	if (!tx) return { status: "OK", data: null };
-	return { status: "OK", data: { wire: await tx.toWire(), stored: tx.toStore() } };
+	return { status: "OK", data: { wire: await ns.toWire(tx), stored: tx } };
 });

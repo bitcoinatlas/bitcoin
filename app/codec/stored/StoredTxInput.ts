@@ -1,9 +1,43 @@
 import { BytesCodec, Codec, Stride, U32LE, VarInt } from "@nomadshiba/codec";
-import { COINBASE_VOUT } from "~/constants.ts";
-import { OutPoint, TxInput } from "~/chain/TxInput.ts";
-import { SequenceLockCodec } from "~/codec/SequenceLock.ts";
+import { SequenceLock, SequenceLockCodec } from "~/codec/SequenceLock.ts";
 import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
 import { StoredWitness } from "~/codec/stored/StoredWitness.ts";
+import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
+
+export type PrevOut = {
+	txId:
+		| { kind: "pointer"; value: number }
+		| { kind: "raw"; value: Uint8Array }
+		| { kind: "coinbase"; value?: undefined };
+	vout: number;
+};
+
+export type StoredTxInput = {
+	prevOut: PrevOut;
+	scriptSig: Uint8Array;
+	sequence: SequenceLock;
+	witness: Uint8Array[];
+};
+
+export async function getPrevOutTxId(input: StoredTxInput): Promise<Uint8Array> {
+	const txId = input.prevOut.txId;
+	const { kind, value } = txId;
+	if (kind === "raw") {
+		return value;
+	}
+
+	if (kind === "pointer") {
+		// TODO: Why?
+		const { getTxByPointer } = await import("~/chain/chain.ts");
+		return await getTxByPointer(value).then((tx) => tx.txId);
+	}
+
+	if (kind === "coinbase") {
+		return COINBASE_TXID;
+	}
+
+	throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
+}
 
 /**
  * StoredTxInput binary layout
@@ -86,10 +120,10 @@ function sequenceU32ForTag(tag: number): number | null {
 }
 
 // StoredTxInput codec that decodes to plain TxInput data
-export class StoredTxInputCodec extends Codec<TxInput> {
+export class StoredTxInputCodec extends Codec<StoredTxInput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(input: TxInput): Uint8Array<ArrayBuffer> {
+	encode(input: StoredTxInput): Uint8Array<ArrayBuffer> {
 		const data = input;
 
 		// Resolve sequence to its raw u32 and decide if it needs an explicit field
@@ -149,7 +183,7 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		return result;
 	}
 
-	decode(data: Uint8Array): [TxInput, number] {
+	decode(data: Uint8Array): [StoredTxInput, number] {
 		let offset = 0;
 
 		const tagByte = data[offset]!;
@@ -158,7 +192,7 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		const prevOutKind = tagByte & PREVOUT_MASK;
 		const seqTag = (tagByte & SEQ_MASK) >>> SEQ_SHIFT;
 
-		let txId: OutPoint["txId"];
+		let txId: PrevOut["txId"];
 		let vout: number;
 
 		if (prevOutKind === PREVOUT_RESOLVED) {
@@ -194,7 +228,7 @@ export class StoredTxInputCodec extends Codec<TxInput> {
 		const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
 		offset += witnessBytes;
 
-		const input: TxInput = {
+		const input: StoredTxInput = {
 			prevOut: { txId, vout },
 			scriptSig,
 			sequence: SequenceLockCodec.fromU32(seqU32),

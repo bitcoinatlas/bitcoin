@@ -41,7 +41,7 @@ const Key = U32; // 4-byte key
 const Val = U32; // 4-byte value
 
 function open(dir: string) {
-	return KVStore.open({ path: dir, keyCodec: Key, valueCodec: Val });
+	return KVStore.open({ path: dir, keyCodec: Key, valueCodec: Val, threads: 2 });
 }
 
 async function withTmp(fn: (dir: string) => Promise<void>): Promise<void> {

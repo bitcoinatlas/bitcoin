@@ -97,7 +97,7 @@ async function applyHeaders(peer: Peer, headers: WireBlockHeader[]): Promise<num
 
 		cumulativeWork += workFromHeader(header);
 		const pointer = await getBlockPointerByHash(header.hash);
-		const node = new PeerChainNode({ header, cumulativeWork, pointer: pointer ?? null });
+		const node: PeerChainNode = { header, cumulativeWork, pointer: pointer ?? null };
 		localChain.push(node);
 
 		prevHash = header.hash;

@@ -1,16 +1,16 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
 import { formatHash } from "~/api/frontend/utils/format.ts";
+import { ns } from "~/chain/ns.ts";
 import { PeerChain } from "~/chain/PeerChain.ts";
-import { PeerChainNode } from "~/chain/PeerChainNode.ts";
-import { Tx } from "~/chain/Tx.ts";
 import { GENESIS_BLOCK } from "~/chain/utils/genesis.ts";
 import { verifyProofOfWork, workFromHeader } from "~/chain/utils/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+import { U40 } from "~/codec/primitives/U40.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { StoredTxOutput, TxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
@@ -23,7 +23,6 @@ import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
 import { KVStore } from "~/storage/KVStore.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
-import { U40 } from "~/codec/primitives/U40.ts";
 
 export const atomic = await Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
@@ -89,11 +88,11 @@ if (headers.length > 0) {
 			throw new Error();
 		}
 		cumulativeWork += workFromHeader(header);
-		return new PeerChainNode({
+		return {
 			header,
 			cumulativeWork,
 			pointer: pointer ? pointer : (height ? null : 0),
-		});
+		};
 	}));
 	console.log(`[chain] chain built height=${localChain.height()} ${heapMiB()}`);
 } else {
@@ -111,7 +110,7 @@ if (headers.length > 0) {
 
 	appendHeader([genesisBlock.header], batch);
 	const { pointer } = await appendTxs(genesisBlock.txs, 0, batch);
-	localChain.push(new PeerChainNode({ header: genesisBlock.header, cumulativeWork, pointer }));
+	localChain.push({ header: genesisBlock.header, cumulativeWork, pointer });
 
 	batch.header.apply();
 	batch.block.apply();
@@ -159,7 +158,7 @@ export async function appendTxs(
 	const batch = batches ?? atomic.batch();
 
 	const op = async () => {
-		const txs = await Promise.all(wireTxs.map((wireTx) => Tx.fromWire(wireTx)));
+		const txs = await Promise.all(wireTxs.map((wireTx) => ns.fromWire(wireTx)));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
 		const blockPointer = batch.tx.append(txCountBytes);
 
@@ -174,16 +173,16 @@ export async function appendTxs(
 		const outputHashes: (Uint8Array | null)[][] = []; // [t][i] -> hash or null, computed once
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
-			for (const input of tx.data.inputs) {
+			for (const input of tx.inputs) {
 				if (input.prevOut.txId.kind === "raw") txidKeys.set(input.prevOut.txId.value, 1);
 			}
 			const hashes: (Uint8Array | null)[] = [];
-			for (const output of tx.data.outputs) {
+			for (const output of tx.outputs) {
 				if (output.scriptPubKey.kind === "pointer") {
 					hashes.push(null);
 					continue;
 				}
-				const raw = await TxOutput.getRawScriptPubKey(output, batch);
+				const raw = await ns.getRawScriptPubKey(output, batch);
 				hashes.push(sha256(raw)); // computed ONCE here, reused everywhere below
 				pubkeyKeys.set(hashes[hashes.length - 1]!, 1);
 			}
@@ -211,13 +210,13 @@ export async function appendTxs(
 		for (let t = 0; t < txs.length; t++) {
 			const tx = txs[t]!;
 			const txPointer = blockPointer + offset;
-			const spenderOffset = batch.spender.length();
-			batch.txid.set(tx.data.txId, txPointer);
-			blockTxIds.set(tx.data.txId, txPointer);
+			tx.spender = batch.spender.length();
+			batch.txid.set(tx.txId, txPointer);
+			blockTxIds.set(tx.txId, txPointer);
 
 			// inputs: local block map first, then prefetched
-			for (let i = 0; i < tx.data.inputs.length; i++) {
-				const input = tx.data.inputs[i]!;
+			for (let i = 0; i < tx.inputs.length; i++) {
+				const input = tx.inputs[i]!;
 				if (input.prevOut.txId.kind !== "raw") continue;
 				const id = input.prevOut.txId.value;
 				const pointer = blockTxIds.get(id) ?? txidPrefetch.get(id);
@@ -230,32 +229,32 @@ export async function appendTxs(
 
 			// scriptPubKey reuse: local block map first, then prefetched
 			const hashes = outputHashes[t]!;
-			for (let i = 0; i < tx.data.outputs.length; i++) {
-				const output = tx.data.outputs[i]!;
+			for (let i = 0; i < tx.outputs.length; i++) {
+				const output = tx.outputs[i]!;
 				if (output.scriptPubKey.kind === "pointer") continue;
 				const hash = hashes[i]!;
 				const existing = blockPubkeys.get(hash) ?? pubkeyPrefetch.get(hash);
 				if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
 			}
 
-			const encoded = StoredTx.encodeWithOffsets(tx.toStore(spenderOffset));
+			const encoded = StoredTx.encodeWithOffsets(tx);
 
 			// pubkey index writes: reuse the same hashes, dedup via local + prefetch
-			for (let i = 0; i < tx.data.outputs.length; i++) {
-				const output = tx.data.outputs[i]!;
+			for (let i = 0; i < tx.outputs.length; i++) {
+				const output = tx.outputs[i]!;
 				batch.spender.push(0);
 				if (output.scriptPubKey.kind === "pointer") continue;
 				const hash = hashes[i]!;
 				if (blockPubkeys.get(hash) === undefined && pubkeyPrefetch.get(hash) === undefined) {
-					const ptr = txPointer + encoded.offsets.vout[i]!;
+					const ptr = txPointer + encoded.offsets.outputs[i]!;
 					batch.pubkey.set(hash, ptr);
 					blockPubkeys.set(hash, ptr); // so a later same-block output reuses it
 				}
 			}
 
 			// spender index: still awaits — these reads depend on same-block writes (see note)
-			for (let i = 0; i < tx.data.inputs.length; i++) {
-				const input = tx.data.inputs[i]!;
+			for (let i = 0; i < tx.inputs.length; i++) {
+				const input = tx.inputs[i]!;
 				if (input.prevOut.txId.kind !== "pointer") continue;
 				const txSpenderOffset = await batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
 				const spenderIndex = txSpenderOffset + input.prevOut.vout;
@@ -324,30 +323,30 @@ export async function getHeaderByHash(hash: Uint8Array): Promise<StoredBlockHead
 	return await getHeaderByHeight(height);
 }
 
-export async function getTxByPointer(pointer: StoredPointer): Promise<Tx> {
+export async function getTxByPointer(pointer: StoredPointer): Promise<StoredTx> {
 	const storedTx = await atomic.stores.tx.get(pointer, StoredTx, { readAheadSize: 400_000 });
-	return Tx.fromStore(storedTx);
+	return storedTx;
 }
 
-export async function getTxById(txId: Uint8Array): Promise<Tx | undefined> {
+export async function getTxById(txId: Uint8Array): Promise<StoredTx | undefined> {
 	const pointer = await atomic.stores.txid.get(txId);
 	if (pointer === undefined) return undefined;
 	return await getTxByPointer(pointer);
 }
 
-export async function getTxsByBlockPointer(pointer: StoredPointer): Promise<Tx[] | undefined> {
+export async function getTxsByBlockPointer(pointer: StoredPointer): Promise<StoredTx[] | undefined> {
 	const storedTxs = await atomic.stores.tx.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
 	if (!storedTxs) return undefined;
-	return await Promise.all(storedTxs.map(Tx.fromStore));
+	return await Promise.all(storedTxs);
 }
 
-export async function getTxsByBlockHeight(height: number): Promise<Tx[] | undefined> {
+export async function getTxsByBlockHeight(height: number): Promise<StoredTx[] | undefined> {
 	const pointer = await atomic.stores.block.get(height);
 	if (pointer === 0 && height !== 0) return undefined;
 	return await getTxsByBlockPointer(pointer);
 }
 
-export async function getTxsByBlockHash(hash: Uint8Array): Promise<Tx[] | undefined> {
+export async function getTxsByBlockHash(hash: Uint8Array): Promise<StoredTx[] | undefined> {
 	const height = headerHashMap.get(hash);
 	if (height === undefined) return undefined;
 	return await getTxsByBlockHeight(height);
@@ -388,6 +387,6 @@ export async function getChainTip(): Promise<{ height: number; header: StoredBlo
 export async function getTxOutputByPointer(
 	pointer: number,
 	batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-): Promise<TxOutput> {
+): Promise<StoredTxOutput> {
 	return await (batches ?? atomic.stores).tx.get(pointer, StoredTxOutput);
 }

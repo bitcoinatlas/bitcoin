@@ -47,8 +47,8 @@ let openStores: BlobStore[] = [];
 function open(dir: string, chunkByteSize = CHUNK, memChunkSize = MEM) {
 	return BlobStore.open({
 		path: dir,
-		maxDiskChunkSize: chunkByteSize,
-		maxMemoryChunkSize: memChunkSize,
+		chunkByteSize,
+		memChunkSize,
 	}).then((store) => {
 		openStores.push(store);
 		return store;

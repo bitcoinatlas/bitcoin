@@ -1,4 +1,4 @@
-import { PeerChainNode } from "~/chain/PeerChainNode.ts";
+import type { PeerChainNode } from "~/chain/PeerChainNode.ts";
 
 export class PeerChain implements Iterable<PeerChainNode> {
 	private nodes: PeerChainNode[];

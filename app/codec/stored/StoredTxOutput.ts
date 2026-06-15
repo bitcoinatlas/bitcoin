@@ -1,5 +1,4 @@
 import { Codec, Stride, VarInt } from "@nomadshiba/codec";
-import { atomic } from "~/chain/chain.ts";
 import {
 	EXPECTED_SCRIPT_PAYLOAD_LEN,
 	normalizeScriptPubKey,
@@ -9,41 +8,12 @@ import {
 	SCRIPTPUBKEY_PATTERN,
 } from "~/chain/ScriptPubKey.ts";
 import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
-import { InferBatches, InferStores } from "~/storage/Atomic.ts";
 
-export type TxOutput = {
+export type StoredTxOutput = {
 	value: bigint;
 	scriptPubKey:
 		| { kind: "pointer"; value: number }
 		| ScriptPubKey;
-};
-
-export const TxOutput = {
-	async getScriptPubKey(
-		output: TxOutput,
-		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): Promise<ScriptPubKey> {
-		if (output.scriptPubKey.kind === "pointer") {
-			// TODO: Why?
-			const { getTxOutputByPointer } = await import("~/chain/chain.ts");
-			const resolved = await getTxOutputByPointer(output.scriptPubKey.value, batches);
-			if (resolved.scriptPubKey.kind === "pointer") {
-				throw new Error([
-					`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
-					`Expected direct ScriptPubKey at that offset.`,
-				].join(" "));
-			}
-			return resolved.scriptPubKey;
-		} else {
-			return output.scriptPubKey;
-		}
-	},
-	async getRawScriptPubKey(
-		output: TxOutput,
-		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): Promise<Uint8Array> {
-		return rawScriptPubKey(await TxOutput.getScriptPubKey(output, batches));
-	},
 };
 
 /**
@@ -141,10 +111,10 @@ function decodeScriptPubKey(kind: StoredScriptPubKey["kind"], payload: Uint8Arra
 	return [{ kind, value: payload.subarray(0, expectedLen) }, expectedLen];
 }
 
-export class StoredTxOutputCodec extends Codec<TxOutput> {
+export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(output: TxOutput): Uint8Array<ArrayBuffer> {
+	encode(output: StoredTxOutput): Uint8Array<ArrayBuffer> {
 		const { value, scriptPubKey } = output;
 
 		if (value < 0n || value >= (1n << 51n)) {
@@ -172,7 +142,7 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		return out;
 	}
 
-	decode(bytes: Uint8Array): [TxOutput, number] {
+	decode(bytes: Uint8Array): [StoredTxOutput, number] {
 		if (bytes.length < 1) throw new Error("Invalid data length for StoredTxOutput");
 
 		let offset = 0;
@@ -190,7 +160,7 @@ export class StoredTxOutputCodec extends Codec<TxOutput> {
 		const [scriptPubKey, payloadSize] = decodeScriptPubKey(kind, bytes.subarray(offset));
 		offset += payloadSize;
 
-		const output: TxOutput = { value, scriptPubKey };
+		const output: StoredTxOutput = { value, scriptPubKey };
 		return [output, offset];
 	}
 }
