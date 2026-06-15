@@ -6,7 +6,11 @@ import type { Batch, Store, WAL } from "~/storage/Store.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
 import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 
-RocksDatabase.config({ blockCacheSize: 536870912 * 2 });
+RocksDatabase.config({
+	blockCacheSize: 4 * 1024 * 1024 * 1024,
+	writeBufferManagerSize: 512 * 1024 * 1024,
+	writeBufferManagerCostToCache: true,
+});
 
 /**
  * A persistent key-value store backed by RocksDB.
@@ -45,8 +49,7 @@ export type KVStoreOptions<K, V> = {
 	path: string;
 	keyCodec: FixedCodec<K>;
 	valueCodec: FixedCodec<V>;
-	/** Kept for backward compatibility; no longer used (RocksDB manages sharding internally). */
-	shards?: number;
+	threads: number;
 };
 
 const WAL_HEADER = 4; // bytes reserved at the front of the WAL buffer for the u32 entryCount
@@ -132,12 +135,13 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 		const walPath = join(path, "data.wal");
 
 		const rocksOptions: RocksDatabaseOptions = {
-			parallelismThreads: Math.max(1, Math.floor(navigator.hardwareConcurrency * .5)),
+			parallelismThreads: Math.min(navigator.hardwareConcurrency, options.threads),
 			maxKeySize: keyCodec.stride.size,
-			// enableStats: true,
+			disableWAL: true,
+			// enableStats: true
 		};
 		const rocksStore = new BinaryStore(join(path, "rocksdb"), rocksOptions, valueCodec.stride.size);
-		const db = RocksDatabase.open(rocksStore);
+		const db = RocksDatabase.open(rocksStore, rocksOptions);
 
 		const store = new KVStore(db, keyCodec, valueCodec, walPath);
 
@@ -317,6 +321,7 @@ export class KVStore<K, V> implements Store<KVStoreBatch<K, V>>, Disposable {
 	#makeWal(buffer: Uint8Array): WAL {
 		const apply = async (): Promise<void> => {
 			await this.#applyBuffer(buffer);
+			await this.#db.flush();
 			// Does NOT touch #staged (the fresh layer) or #frozen (reads still served from it).
 		};
 		const discard = async (): Promise<void> => {

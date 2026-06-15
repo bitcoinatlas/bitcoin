@@ -43,13 +43,13 @@ export const atomic = await Atomic.open({
 			path: join(BASE_DATA_DIR, "txid"),
 			keyCodec: Bytes32,
 			valueCodec: StoredPointer,
-			shards: 16,
+			threads: 4,
 		}),
 		pubkey: await KVStore.open({
 			path: join(BASE_DATA_DIR, "pubkey"),
 			keyCodec: Bytes32,
 			valueCodec: StoredPointer,
-			shards: 16,
+			threads: 2,
 		}),
 		spender: await IndexStore.open({
 			path: join(BASE_DATA_DIR, "spender"),
