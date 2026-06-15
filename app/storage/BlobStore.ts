@@ -1,9 +1,9 @@
-import { join } from "@std/path";
-import { exists } from "@std/fs";
 import { Codec } from "@nomadshiba/codec";
-import { readFile, writeFile } from "~/utils/fs.ts";
-import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+import { exists } from "@std/fs";
+import { join } from "@std/path";
 import type { Batch, Store, WAL } from "~/storage/Store.ts";
+import { writeFile } from "~/utils/fs.ts";
+import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 
 /**
@@ -11,12 +11,12 @@ import { MAX_BLOCK_SIZE } from "~/constants.ts";
  *
  * The stream is laid out in four contiguous regions, low offset to high:
  *
- *   disk [0, diskEnd) -> frozen [base, ...) -> staged [stagedBase, ...) -> batch [batchBase, ...)
+ *   disk [0, diskEnd) -> frozen [frozen.base, ...) -> staged [stagedBase, ...) -> batch [batchBase, ...)
  *
- * `disk` is the durable tail in fixed-size chunk files. `staged` is committed-but-unflushed
- * bytes in memory. `frozen` is the snapshot of `staged` taken when a flush starts; it serves
- * reads of the in-flight range until the flush is discarded. `batch` is the optional
- * uncommitted region of the single open batch.
+ * `disk` is the durable tail held in fixed-size chunk files (1 GiB each). `staged` is
+ * committed-but-unflushed bytes in memory. `frozen` is the snapshot of `staged` taken when a
+ * flush starts; it serves reads of the in-flight range until the flush is discarded. `batch`
+ * is the optional uncommitted region of the single open batch.
  *
  * Because the stream is append-only the regions never overlap, so a read of [p, p+len) is a
  * straight arithmetic partition across them -- no scan, no per-blob records. append() copies
@@ -25,12 +25,12 @@ import { MAX_BLOCK_SIZE } from "~/constants.ts";
  *
  * Key invariant -- stagedBase is DERIVED, never stored:
  *
- *   stagedBase = frozen ? frozen.base + frozen.region.size : disk.size
+ *   stagedBase = frozen ? frozen.base + frozen.length : disk.length
  *
  * While a flush is live, disk physically grows from frozen.base toward frozen.base+len, but
- * stagedBase stays pinned to frozen.base+len, so staged (and any batch opened during the flush)
- * never shifts. Reads cap disk at frozen.base and let `frozen` serve that range, so a
- * half-applied disk is never observed as a torn read. After discard, disk.size == frozen.base+len,
+ * stagedBase stays pinned to frozen.base+len, so the staged region (and any batch opened during
+ * the flush) never shifts. Reads cap disk at frozen.base and let `frozen` serve that range, so a
+ * half-applied disk is never observed as a torn read. After discard, disk.length == frozen.base+len,
  * so stagedBase is unchanged -- the layout is seamless across the discard.
  *
  * WAL: createWAL() freezes `staged`, installs a fresh empty `staged`, and writes
@@ -39,10 +39,6 @@ import { MAX_BLOCK_SIZE } from "~/constants.ts";
  * times after a crash. discard() drops `frozen` and deletes the WAL file; it does NOT truncate
  * (apply already wrote the data; truncating here would undo it on the happy path).
  *
- * createWAL / apply / discard are kept as three separate steps precisely so Atomic can drive
- * many stores together: create all, then apply all, then discard all, with a state file between
- * each phase. Collapsing them (as flush() does for the single-store case) breaks that.
- *
  * truncate() (reorg) is the odd one out: it requires no batch, no flush, and no staged data, and
  * shrinks disk directly. A target-length sentinel makes the shrink crash-safe.
  *
@@ -50,535 +46,455 @@ import { MAX_BLOCK_SIZE } from "~/constants.ts";
  */
 
 // ---------------------------------------------------------------------------
-// MemoryRegion: in-memory, append-only, chunked byte region. (unchanged)
+// Stage: an in-memory, append-only, chunked byte region.
+//
+// Bytes live in fixed-size chunks backed by resizable ArrayBuffers. Every chunk except the last
+// is exactly `chunkSize` bytes, so a logical offset maps to (floor(off/chunkSize), off%chunkSize)
+// with no search. Stages are never pooled -- a fresh one is created per batch / per freeze.
 // ---------------------------------------------------------------------------
 
-type Region = {
-	size: number;
-	append(bytes: Uint8Array): Promise<void> | void;
-	read(offset: number, length: number): Promise<Uint8Array> | Uint8Array;
-};
+type StageChunk = { buf: ArrayBuffer; view: Uint8Array };
 
-type MemoryRegionOptions = {
-	maxChunkSize: number;
-};
+export class Stage {
+	readonly #chunkSize: number;
+	#chunks: StageChunk[] = [];
+	#len = 0;
 
-class MemoryRegion implements Region {
-	public readonly maxChunkSize: number;
-
-	public size: number;
-	public readonly chunks: Uint8Array<ArrayBuffer>[];
-
-	constructor(options: MemoryRegionOptions) {
-		this.maxChunkSize = options.maxChunkSize;
-		this.size = 0;
-		this.chunks = [];
+	constructor(chunkSize: number) {
+		this.#chunkSize = chunkSize;
 	}
 
-	append(bytes: Uint8Array): void {
-		let tailChunk = this.chunks.at(-1);
-		if (!tailChunk) {
-			this.chunks.push(tailChunk = new Uint8Array(new ArrayBuffer(0, { maxByteLength: this.maxChunkSize })));
-		}
-
-		let offset = 0;
-		while (offset < bytes.length) {
-			let available = tailChunk.buffer.maxByteLength - tailChunk.length;
-			if (available === 0) {
-				this.chunks.push(tailChunk = new Uint8Array(new ArrayBuffer(0, { maxByteLength: this.maxChunkSize })));
-				available = tailChunk.buffer.maxByteLength;
-			}
-
-			const left = bytes.length - offset;
-			const give = Math.min(left, available);
-
-			const start = tailChunk.length;
-			tailChunk.buffer.resize(tailChunk.length + give);
-			tailChunk.set(bytes.subarray(offset, offset + give), start);
-			offset += give;
-		}
-		this.size += offset;
+	get length(): number {
+		return this.#len;
 	}
 
-	read(offset: number, length: number): Uint8Array {
-		if (offset < 0 || length < 0) {
-			throw new RangeError(`negative offset/length: offset=${offset} length=${length}`);
-		}
-		if (offset + length > this.size) {
-			throw new RangeError(`read out of bounds: offset=${offset} length=${length} size=${this.size}`);
-		}
-
-		const output = new Uint8Array(length);
-
-		let chunkIndex = Math.floor(offset / this.maxChunkSize);
-		let chunkOffset = offset % this.maxChunkSize;
-		let outputOffset = 0;
-		while (outputOffset < output.length) {
-			const chunk = this.chunks[chunkIndex];
-			if (!chunk) {
-				throw new Error(`Yo no chunk 🍣. index=${chunkIndex}`);
+	/** Copy `data` onto the end of the stage, growing / adding chunks as needed. */
+	append(data: Uint8Array): void {
+		let off = 0;
+		while (off < data.length) {
+			let last = this.#chunks[this.#chunks.length - 1];
+			if (!last || last.buf.byteLength === this.#chunkSize) {
+				const buf = new ArrayBuffer(0, { maxByteLength: this.#chunkSize });
+				last = { buf, view: new Uint8Array(buf) }; // length-tracking view follows buf.resize()
+				this.#chunks.push(last);
 			}
-
-			const start = chunkOffset;
-			const want = output.length - outputOffset;
-			const end = Math.min(start + want, chunk.length);
-
-			output.set(chunk.subarray(start, end), outputOffset);
-			const got = end - start;
-			if (got === 0) {
-				throw new Error("Bro WHAT?! got literal 0 bytes ;-; ~~");
-			}
-			outputOffset += got;
-			chunkIndex++;
-			chunkOffset = 0;
+			const used = last.buf.byteLength;
+			const take = Math.min(this.#chunkSize - used, data.length - off);
+			last.buf.resize(used + take);
+			last.view.set(data.subarray(off, off + take), used);
+			off += take;
+			this.#len += take;
 		}
+	}
 
-		return output;
+	/** Collapse another stage onto the end of this one (re-packs into this stage's chunking). */
+	appendStage(other: Stage): void {
+		for (const chunk of other.#chunks) this.append(chunk.view);
+	}
+
+	/** Copy [start, start+want) into `dst` at `dstOffset`. Returns bytes copied (clamped to length). */
+	readInto(start: number, dst: Uint8Array, dstOffset: number, want: number): number {
+		let copied = 0;
+		let chunkIndex = Math.floor(start / this.#chunkSize);
+		let offsetInChunk = start % this.#chunkSize;
+		while (copied < want && chunkIndex < this.#chunks.length) {
+			const view = this.#chunks[chunkIndex]!.view;
+			const avail = view.length - offsetInChunk;
+			if (avail <= 0) break;
+			const take = Math.min(avail, want - copied);
+			dst.set(view.subarray(offsetInChunk, offsetInChunk + take), dstOffset + copied);
+			copied += take;
+			chunkIndex += 1;
+			offsetInChunk = 0;
+		}
+		return copied;
+	}
+
+	/** Iterate the used bytes chunk by chunk (for streaming a WAL to disk without flattening). */
+	*chunks(): Generator<Uint8Array> {
+		for (const chunk of this.#chunks) yield chunk.view;
 	}
 }
 
 // ---------------------------------------------------------------------------
-// DiskRegion: the durable tail, split across fixed-size chunk files.
-//   (user's version + sync() and truncateTo(), required by the WAL / reorg paths)
+// Disk: the durable tail, split across fixed-size chunk files (chunk_0, chunk_1, ...).
+//
+// Reads are synchronous (cached read fds + readSync); appends are async (cached append fd on the
+// current tail chunk, evicted on rotation). Same (floor, mod) addressing as Stage.
 // ---------------------------------------------------------------------------
 
-type DiskRegionOptions = {
-	path: string;
-	maxChunkSize: number;
-};
+type ChunkFds = { read?: Deno.FsFile; append?: Deno.FsFile };
 
-class DiskRegion implements Region {
-	public readonly path: string;
-	public readonly maxChunkSize: number;
+export class Disk {
+	readonly #path: string;
+	readonly #chunkSize: number;
+	#length: number;
+	#fds = new Map<number, ChunkFds>();
 
-	public size: number;
-	private _appender: Deno.FsFile | null = null;
-	private _appenderIndex = 0;
-
-	private constructor(options: DiskRegionOptions) {
-		this.path = options.path;
-		this.maxChunkSize = options.maxChunkSize;
-		this.size = 0;
-
-		this._readers = [];
-		this._appendQueue = Promise.resolve();
-		this._readQueue = Promise.resolve();
+	private constructor(path: string, chunkSize: number, length: number) {
+		this.#path = path;
+		this.#chunkSize = chunkSize;
+		this.#length = length;
 	}
 
-	static async open(options: DiskRegionOptions): Promise<DiskRegion> {
-		const self = new DiskRegion(options);
-		await Deno.mkdir(self.path, { recursive: true });
-		const files = Deno.readDir(self.path);
-
-		self._appenderIndex = 0;
-		const indexSet = new Set<number>([0]);
-		for await (const file of files) {
-			if (!file.isFile) continue;
-			if (!file.name.startsWith("chunk_")) continue;
-			const index = Number(file.name.slice("chunk_".length));
-			if (!Number.isInteger(index)) continue;
-			indexSet.add(index);
-			if (index > self._appenderIndex) self._appenderIndex = index;
-		}
-
-		for (let index = 0; index < self._appenderIndex; index++) {
-			const exist = indexSet.has(index);
-			if (!exist) {
-				throw new Error("bro your chunks are fucked, has some    gaps   and  stuff");
-			}
-			const chunkStat = await Deno.stat(join(self.path, `chunk_${index}`));
-			if (chunkStat.size !== self.maxChunkSize) {
-				throw new Error(`chunk ${index} has a weird size size=${chunkStat.size}`);
+	static async open(path: string, chunkSize: number): Promise<Disk> {
+		await Deno.mkdir(path, { recursive: true });
+		let maxIndex = -1;
+		for await (const entry of Deno.readDir(path)) {
+			if (entry.isFile && entry.name.startsWith("chunk_")) {
+				const i = parseInt(entry.name.slice(6), 10);
+				if (!isNaN(i) && i > maxIndex) maxIndex = i;
 			}
 		}
-		let tailChunkSize = 0;
+		let length = 0;
+		if (maxIndex >= 0) {
+			const lastSize = (await Deno.stat(join(path, `chunk_${maxIndex}`))).size;
+			length = maxIndex * chunkSize + lastSize;
+		}
+		return new Disk(path, chunkSize, length);
+	}
+
+	get length(): number {
+		return this.#length;
+	}
+
+	#getReadHandle(chunkIndex: number): Deno.FsFile | null {
+		let fds = this.#fds.get(chunkIndex);
+		if (fds?.read) return fds.read;
+		let file: Deno.FsFile;
 		try {
-			const tailChunkStat = await Deno.stat(join(self.path, `chunk_${self._appenderIndex}`));
-			if (tailChunkStat.size > self.maxChunkSize) {
-				throw new Error(`your tail chunk is fat... size=${tailChunkStat.size}`);
-			}
-			tailChunkSize = tailChunkStat.size;
+			file = Deno.openSync(join(this.#path, `chunk_${chunkIndex}`), { read: true });
 		} catch (e) {
-			if (!(e instanceof Deno.errors.NotFound)) throw e;
+			if (e instanceof Deno.errors.NotFound) return null;
+			throw e;
 		}
-		self.size = self._appenderIndex * self.maxChunkSize + tailChunkSize;
-
-		return self;
+		if (!fds) this.#fds.set(chunkIndex, fds = {});
+		fds.read = file;
+		return file;
 	}
 
-	private _readers: (Promise<Deno.FsFile> | undefined)[];
-	private _getReader(chunkIndex: number) {
-		const file = this._readers[chunkIndex];
-		if (file) return file;
-		const chunkName = `chunk_${chunkIndex}`;
-		return this._readers[chunkIndex] = Deno.open(join(this.path, chunkName), { read: true });
+	#getAppendHandle(chunkIndex: number): Deno.FsFile {
+		let fds = this.#fds.get(chunkIndex);
+		if (fds?.append) return fds.append;
+		const file = Deno.openSync(join(this.#path, `chunk_${chunkIndex}`), { create: true, write: true });
+		if (!fds) this.#fds.set(chunkIndex, fds = {});
+		fds.append = file;
+		return file;
 	}
 
-	// Serializes appends so overlapping callers can't interleave size mutations.
-	private _appendQueue: Promise<void>;
-	append(bytes: Uint8Array): Promise<void> {
-		const run = this._appendQueue.then(() => this._append(bytes));
-		// Keep the chain alive even if a write rejects, but don't swallow the error
-		// for the caller.
-		this._appendQueue = run.then(() => {}, () => {});
-		return run;
+	#evict(chunkIndex: number): void {
+		const fds = this.#fds.get(chunkIndex);
+		if (!fds) return;
+		try {
+			fds.read?.close();
+		} catch { /* already closed */ }
+		try {
+			fds.append?.close();
+		} catch { /* already closed */ }
+		this.#fds.delete(chunkIndex);
 	}
 
-	private async _append(bytes: Uint8Array): Promise<void> {
-		let offset = 0;
-		let size = this.size;
-		while (offset < bytes.length) {
-			const tailChunkIndex = Math.floor(size / this.maxChunkSize);
-			const tailChunkOffset = size % this.maxChunkSize;
-
-			const available = this.maxChunkSize - tailChunkOffset;
-			const left = bytes.length - offset;
-			const give = Math.min(available, left);
-
-			if (!this._appender || tailChunkIndex !== this._appenderIndex) {
-				if (this._appender) this._appender.close();
-				this._appender = await Deno.open(
-					join(this.path, `chunk_${tailChunkIndex}`),
-					{ create: true, append: true },
-				);
-				this._appenderIndex = tailChunkIndex;
+	/** Sync reads against cached read fds. Returns bytes copied (may be short at EOF / missing chunk). */
+	readInto(start: number, dst: Uint8Array, dstOffset: number, want: number): number {
+		let copied = 0;
+		let cur = start;
+		while (copied < want) {
+			const chunkIndex = Math.floor(cur / this.#chunkSize);
+			const offsetInChunk = cur % this.#chunkSize;
+			const take = Math.min(want - copied, this.#chunkSize - offsetInChunk);
+			const file = this.#getReadHandle(chunkIndex);
+			if (!file) break;
+			file.seekSync(offsetInChunk, Deno.SeekMode.Start);
+			let got = 0;
+			while (got < take) {
+				const n = file.readSync(dst.subarray(dstOffset + copied + got, dstOffset + copied + take));
+				if (n === null) break;
+				got += n;
 			}
-			await writeFile(this._appender, bytes.subarray(offset, offset + give));
-
-			offset += give;
-			size += give;
+			copied += got;
+			cur += got;
+			if (got < take) break;
 		}
-		this.size = size;
+		return copied;
 	}
 
-	// Serializes reads (and orders them against appends/truncate). A cached reader fd is shared
-	// per chunk, so two concurrent reads would interleave their seek()+read() on the same handle
-	// and tear each other's data; the queue makes each seek+read sequence atomic.
-	private _readQueue: Promise<unknown>;
-	read(offset: number, length: number): Promise<Uint8Array> {
-		const run = this._readQueue.then(() => this._read(offset, length));
-		this._readQueue = run.then(() => {}, () => {});
-		return run;
+	/** Append a contiguous buffer, splitting across chunk files. */
+	async append(data: Uint8Array): Promise<void> {
+		let written = 0;
+		while (written < data.length) {
+			const cur = this.#length;
+			const chunkIndex = Math.floor(cur / this.#chunkSize);
+			const offsetInChunk = cur % this.#chunkSize;
+			const take = Math.min(this.#chunkSize - offsetInChunk, data.length - written);
+			const file = this.#getAppendHandle(chunkIndex);
+			file.seekSync(offsetInChunk, Deno.SeekMode.Start);
+			await writeFile(file, data.subarray(written, written + take));
+			written += take;
+			this.#length += take;
+			if (this.#length % this.#chunkSize === 0) this.#evict(chunkIndex); // tail chunk filled
+		}
 	}
 
-	private async _read(offset: number, length: number): Promise<Uint8Array> {
-		if (offset < 0 || length < 0) {
-			throw new RangeError(`negative offset/length: offset=${offset} length=${length}`);
-		}
-		if (offset + length > this.size) {
-			throw new RangeError(
-				`read out of bounds: offset=${offset} length=${length} size=${this.size}`,
-			);
-		}
-
-		const output = new Uint8Array(length);
-
-		let chunkIndex = Math.floor(offset / this.maxChunkSize);
-		let chunkOffset = offset % this.maxChunkSize;
-		let outputOffset = 0;
-
-		while (outputOffset < output.length) {
-			const need = output.length - outputOffset;
-			const available = this.maxChunkSize - chunkOffset;
-			const want = Math.min(need, available);
-
-			const file = await this._getReader(chunkIndex);
-			await file.seek(chunkOffset, Deno.SeekMode.Start);
-			const data = await readFile(file, want);
-			output.set(data, outputOffset);
-
-			outputOffset += want;
-			chunkIndex++;
-			chunkOffset = 0;
-		}
-
-		return output;
-	}
-
-	/** fsync the open append handle. Durability barrier; call before a WAL may be discarded. */
+	/** fsync the open append handle(s). Durability barrier; call before a WAL may be discarded. */
 	async sync(): Promise<void> {
-		await this._appendQueue; // drain in-flight appends first
-		if (this._appender) await this._appender.sync();
+		for (const [, fds] of this.#fds) {
+			if (fds.append) await fds.append.sync();
+		}
 	}
 
-	/** Shrink the stream to exactly `offset`. Drops cached handles since their positions / target are now stale. */
-	async truncate(offset: number): Promise<void> {
-		if (offset < 0) throw new RangeError(`negative offset: ${offset}`);
-		if (offset > this.size) throw new RangeError(`truncateTo grows the region: offset=${offset} size=${this.size}`);
-		const oldTailChunkIndex = this.size > 0 ? Math.floor((this.size - 1) / this.maxChunkSize) : -1;
-		const newTailChunkIndex = Math.floor(offset / this.maxChunkSize);
-
-		// Drain in-flight appends, then drop every cached handle.
-		await this._appendQueue;
-
-		if (this._appender) {
-			this._appender.close();
-			this._appender = null;
-		}
-
-		const removed = this._readers.splice(newTailChunkIndex);
-		for (const reader of removed) {
-			if (!reader) continue;
-			try {
-				(await reader).close();
-			} catch {
-				// already closed / open failed; nothing to do
-			}
-		}
-
-		// Set size first so any racing reader caps at the new bound.
-		this.size = offset;
-		for (let index = oldTailChunkIndex; index >= newTailChunkIndex; index--) {
-			const name = `chunk_${index}`;
-			const chunkPath = join(this.path, name);
-			const chunkStart = index * this.maxChunkSize;
+	/** Shrink the stream to exactly `offset`. Sets length first (sync) so concurrent reads cap there. */
+	async truncateTo(offset: number): Promise<void> {
+		this.#length = offset;
+		this.close(); // every cached fd's position / target may now be stale
+		for await (const entry of Deno.readDir(this.#path)) {
+			if (!entry.isFile || !entry.name.startsWith("chunk_")) continue;
+			const i = parseInt(entry.name.slice(6), 10);
+			if (isNaN(i)) continue;
+			const chunkStart = i * this.#chunkSize;
 			if (chunkStart >= offset) {
-				await Deno.remove(chunkPath).catch(() => {}); // fully at/after offset -- gone
-			} else if (chunkStart + this.maxChunkSize > offset) {
-				await Deno.truncate(chunkPath, offset - chunkStart); // straddles -- new tail
+				await Deno.remove(join(this.#path, entry.name));
+			} else if (chunkStart + this.#chunkSize > offset) {
+				await Deno.truncate(join(this.#path, entry.name), offset - chunkStart);
 			}
-			// else: fully below offset -- leave it intact
+			// else: fully below offset -- leave it
 		}
-
-		this._appenderIndex = newTailChunkIndex;
 	}
 
-	async close(): Promise<void> {
-		// Drain in-flight appends first.
-		await this._appendQueue;
-
-		if (this._appender) this._appender.close();
-
-		const readers = this._readers;
-		this._readers = [];
-		for (const reader of readers) {
-			if (!reader) continue;
+	close(): void {
+		for (const [, fds] of this.#fds) {
 			try {
-				(await reader).close();
-			} catch {
-				// already closed / open failed; nothing to do
-			}
+				fds.read?.close();
+			} catch { /* already closed */ }
+			try {
+				fds.append?.close();
+			} catch { /* already closed */ }
 		}
-	}
-
-	async [Symbol.asyncDispose](): Promise<void> {
-		await this.close();
+		this.#fds.clear();
 	}
 }
 
 // ---------------------------------------------------------------------------
-// BlobStore: coordinates DiskRegion + the in-memory regions, owns the WAL protocol.
+// BlobStore: coordinates Disk + the in-memory regions, and owns the WAL protocol.
 // ---------------------------------------------------------------------------
 
 export interface BlobStoreBatch extends Batch {
-	/** Stage a blob for append. Returns the logical offset where it begins (the blob pointer). */
+	/** Stage a blob for append. Returns the logical offset where it begins. */
 	append(data: Uint8Array): number;
 	get(pointer: number, length: number): Promise<Uint8Array>;
-	get<T extends Codec<any>>(
-		pointer: number,
-		codec: T,
-		options?: { readAheadSize?: number },
-	): Promise<Codec.InferOutput<T>>;
+	// deno-lint-ignore no-explicit-any
+	get<T>(pointer: number, codec: Codec<T, any>, options?: { readAheadSize?: number }): Promise<T>;
 	size(): number;
 }
 
 export type BlobStoreOptions = {
 	path: string;
 	/** Max size per on-disk chunk file in bytes. Default 1 GiB. */
-	maxDiskChunkSize?: number;
-	/** Size of each in-memory chunk in bytes. Default 8 MiB. */
-	maxMemoryChunkSize?: number;
+	chunkByteSize?: number;
+	/** Size of each in-memory staging chunk in bytes. Default 8 MiB. */
+	memChunkSize?: number;
 };
 
-type FrozenRegion = { base: number; region: MemoryRegion };
+type FrozenRegion = { base: number; stage: Stage };
+/** A region the read partition can pull from: absolute [base, base+length) + a reader. */
+type ReadRegion = {
+	base: number;
+	length: number;
+	read: (local: number, dst: Uint8Array, dstOffset: number, want: number) => number;
+};
 
 export class BlobStore implements Store<BlobStoreBatch> {
-	private readonly _disk: DiskRegion;
-	private readonly _maxMemoryChunkSize: number;
-	private readonly _walPath: string;
-	private readonly _truncatePath: string;
+	readonly #disk: Disk;
+	readonly #memChunkSize: number;
+	readonly #walPath: string;
+	readonly #truncatePath: string;
 
-	private _staged: MemoryRegion;
-	private _frozen: FrozenRegion | null = null;
+	#staged: Stage;
+	#frozen: FrozenRegion | null = null;
 
-	private _batchOpen = false;
-	private _truncating = false;
+	#batchOpen = false;
+	#truncating = false;
+
+	/** Reused readahead buffer for variable-stride codec reads (single reader assumed). */
+	#scratch: Uint8Array = new Uint8Array(0);
 
 	wal: WAL | null = null;
 
-	private constructor(disk: DiskRegion, maxMemoryChunkSize: number, walPath: string, truncatePath: string) {
-		this._disk = disk;
-		this._maxMemoryChunkSize = maxMemoryChunkSize;
-		this._walPath = walPath;
-		this._truncatePath = truncatePath;
-		this._staged = new MemoryRegion({ maxChunkSize: maxMemoryChunkSize });
+	private constructor(disk: Disk, memChunkSize: number, walPath: string, truncatePath: string) {
+		this.#disk = disk;
+		this.#memChunkSize = memChunkSize;
+		this.#walPath = walPath;
+		this.#truncatePath = truncatePath;
+		this.#staged = new Stage(memChunkSize);
 	}
 
 	static async open(options: BlobStoreOptions): Promise<BlobStore> {
 		const { path } = options;
-		const maxDiskChunkSize = options.maxDiskChunkSize ?? 1 * 1024 * 1024 * 1024; // 1 GiB
-		const maxMemoryChunkSize = options.maxMemoryChunkSize ?? 8 * 1024 * 1024; // 8 MiB
+		const chunkByteSize = options.chunkByteSize ?? 1 * 1024 * 1024 * 1024; // 1 GiB
+		const memChunkSize = options.memChunkSize ?? 8 * 1024 * 1024; // 8 MiB
 		const walPath = join(path, "data.wal");
 		const truncatePath = join(path, "truncate.target");
 
-		const disk = await DiskRegion.open({ path, maxChunkSize: maxDiskChunkSize });
-		const store = new BlobStore(disk, maxMemoryChunkSize, walPath, truncatePath);
+		const disk = await Disk.open(path, chunkByteSize);
+		const store = new BlobStore(disk, memChunkSize, walPath, truncatePath);
 
 		// Crash-safe truncate recovery (idempotent), before WAL detection (mutually exclusive).
 		if (await exists(truncatePath)) {
 			const buf = await Deno.readFile(truncatePath);
 			const target = Number(new Uint8ArrayView(buf).getBigUint64(0));
-			await disk.truncate(target);
+			await disk.truncateTo(target);
 			await Deno.remove(truncatePath).catch(() => {});
 		}
 
-		// A WAL on disk means a flush was interrupted; expose it for recover() (driven by Atomic).
-		if (await exists(walPath)) store.wal = store._makeWal();
+		// A WAL on disk means a flush was interrupted; expose it for recover().
+		if (await exists(walPath)) store.wal = store.#makeWal();
 
 		return store;
-	}
-
-	private _newMemoryRegion(): MemoryRegion {
-		return new MemoryRegion({ maxChunkSize: this._maxMemoryChunkSize });
 	}
 
 	// -- layout ----------------------------------------------------------------
 
 	/** Derived, never stored. See the class doc for why this is the load-bearing invariant. */
-	private _stagedBase(): number {
-		return this._frozen ? this._frozen.base + this._frozen.region.size : this._disk.size;
+	#stagedBase(): number {
+		return this.#frozen ? this.#frozen.base + this.#frozen.stage.length : this.#disk.length;
 	}
 
 	length(): number {
-		return this._stagedBase() + this._staged.size;
+		return this.#stagedBase() + this.#staged.length;
 	}
 
 	// -- reads ------------------------------------------------------------------
 
-	/** Walk the contiguous regions and copy [pointer, pointer+length) out. May be short only at the true end of stream. */
-	private async _gather(pointer: number, length: number, batch: FrozenRegion | null): Promise<Uint8Array> {
-		if (pointer < 0) throw new RangeError(`pointer must be non-negative: ${pointer}`);
-
-		const diskEnd = this._frozen ? this._frozen.base : this._disk.size;
-		const stagedBase = this._stagedBase();
-		const batchBase = stagedBase + this._staged.size;
-
-		type ReadRegion = {
-			base: number;
-			length: number;
-			read: (local: number, want: number) => Uint8Array | Promise<Uint8Array>;
-		};
-
+	#regions(batch: FrozenRegion | null): ReadRegion[] {
+		const diskEnd = this.#frozen ? this.#frozen.base : this.#disk.length;
 		const regions: ReadRegion[] = [
-			{ base: 0, length: diskEnd, read: (l, w) => this._disk.read(l, w) },
+			{ base: 0, length: diskEnd, read: (l, d, o, w) => this.#disk.readInto(l, d, o, w) },
 		];
-		if (this._frozen) {
-			const f = this._frozen;
-			regions.push({ base: f.base, length: f.region.size, read: (l, w) => f.region.read(l, w) });
+		if (this.#frozen) {
+			const f = this.#frozen;
+			regions.push({ base: f.base, length: f.stage.length, read: (l, d, o, w) => f.stage.readInto(l, d, o, w) });
 		}
-		regions.push({ base: stagedBase, length: this._staged.size, read: (l, w) => this._staged.read(l, w) });
+		regions.push({
+			base: this.#stagedBase(),
+			length: this.#staged.length,
+			read: (l, d, o, w) => this.#staged.readInto(l, d, o, w),
+		});
 		if (batch) {
-			regions.push({ base: batchBase, length: batch.region.size, read: (l, w) => batch.region.read(l, w) });
+			regions.push({
+				base: batch.base,
+				length: batch.stage.length,
+				read: (l, d, o, w) => batch.stage.readInto(l, d, o, w),
+			});
 		}
-
-		const out = new Uint8Array(length);
-		let filled = 0;
-		let pos = pointer;
-		for (const region of regions) {
-			if (filled >= length) break;
-			const end = region.base + region.length;
-			if (pos >= end) continue; // entirely before this region
-			if (pos < region.base) break; // hole between regions -- only reachable via a bad pointer
-			const local = pos - region.base;
-			const want = Math.min(length - filled, region.length - local);
-			const data = await region.read(local, want); // returns exactly `want` (in bounds by construction)
-			out.set(data, filled);
-			filled += data.length;
-			pos += data.length;
-		}
-		return filled === length ? out : out.subarray(0, filled);
+		return regions;
 	}
 
-	private async _read(
+	/** Fill `buf` from `pointer` by walking the contiguous regions. Returns bytes read. */
+	#readInto(pointer: number, buf: Uint8Array, allowEOF: boolean, batch: FrozenRegion | null): number {
+		if (pointer < 0) throw new Error("pointer must be non-negative");
+		let cur = pointer;
+		let got = 0;
+		for (const region of this.#regions(batch)) {
+			if (got >= buf.length) break;
+			const end = region.base + region.length;
+			if (cur >= end) continue; // entirely before this region
+			if (cur < region.base) break; // hole between regions -- only reachable via a bad pointer
+			const local = cur - region.base;
+			const want = Math.min(buf.length - got, region.length - local);
+			const n = region.read(local, buf, got, want);
+			got += n;
+			cur += n;
+			if (n < want) break; // short read (e.g. disk EOF) -- stop
+		}
+		if (!allowEOF && got < buf.length) throw new Error("Unexpected EOF reading blob");
+		return got;
+	}
+
+	// deno-lint-ignore no-explicit-any
+	#read(
 		pointer: number,
-		lengthOrCodec: number | Codec<any>,
+		lengthOrCodec: number | Codec<any, any>,
 		options: { readAheadSize?: number } | undefined,
 		batch: FrozenRegion | null,
-	): Promise<unknown> {
+	): unknown {
 		if (typeof lengthOrCodec === "number") {
-			const buf = await this._gather(pointer, lengthOrCodec, batch);
-			if (buf.length !== lengthOrCodec) throw new Error("Unexpected EOF reading blob");
+			const buf = new Uint8Array(lengthOrCodec); // fresh -- safe to return
+			this.#readInto(pointer, buf, false, batch);
 			return buf;
 		}
 		const codec = lengthOrCodec;
 		const explicit = options?.readAheadSize;
-		const length = codec.stride.kind === "fixed" && explicit === undefined
-			? codec.stride.size
-			: (explicit ?? MAX_BLOCK_SIZE);
-		const slice = await this._gather(pointer, length, batch); // may be short for variable stride -- that's fine
-		return codec.decode(slice)[0];
+		if (codec.stride.kind === "fixed" && explicit === undefined) {
+			const buf = new Uint8Array(codec.stride.size);
+			const n = this.#readInto(pointer, buf, true, batch);
+			return codec.decode(buf.subarray(0, n))[0];
+		}
+		// Variable stride: decode out of a reused scratch buffer. The decoded value is a fresh
+		// object (codec.decode allocates), never a view into scratch, so reuse is safe.
+		const readAhead = explicit ?? MAX_BLOCK_SIZE;
+		if (this.#scratch.length < readAhead) this.#scratch = new Uint8Array(readAhead);
+		const buf = this.#scratch.subarray(0, readAhead);
+		const n = this.#readInto(pointer, buf, true, batch);
+		return codec.decode(buf.subarray(0, n))[0];
 	}
 
 	get(pointer: number, length: number): Promise<Uint8Array>;
-	get<T extends Codec<any>>(
+	// deno-lint-ignore no-explicit-any
+	get<T>(pointer: number, codec: Codec<T, any>, options?: { readAheadSize?: number }): Promise<T>;
+	// deno-lint-ignore no-explicit-any
+	async get<T>(
 		pointer: number,
-		codec: T,
+		lengthOrCodec: number | Codec<T, any>,
 		options?: { readAheadSize?: number },
-	): Promise<Codec.InferOutput<T>>;
-	async get(
-		pointer: number,
-		lengthOrCodec: number | Codec<any>,
-		options?: { readAheadSize?: number },
-	): Promise<Uint8Array | unknown> {
-		return this._read(pointer, lengthOrCodec, options, null);
+	): Promise<Uint8Array | T> {
+		return this.#read(pointer, lengthOrCodec, options, null) as Uint8Array | T;
 	}
 
 	// -- batch ------------------------------------------------------------------
 
 	batch(): BlobStoreBatch {
-		if (this._batchOpen) throw new Error("A batch is already open");
-		if (this._truncating) throw new Error("Can't start a batch while a truncate is in progress");
-		this._batchOpen = true;
+		if (this.#batchOpen) throw new Error("A batch is already open");
+		if (this.#truncating) throw new Error("Can't start a batch while a truncate is in progress");
+		this.#batchOpen = true;
 
-		// base == this.length(), so the batch is contiguous with the end of staged.
-		const region: FrozenRegion = { base: this.length(), region: this._newMemoryRegion() };
+		const region: FrozenRegion = { base: this.length(), stage: new Stage(this.#memChunkSize) };
 		let live = true;
 		const close = () => {
 			live = false;
-			this._batchOpen = false;
+			this.#batchOpen = false;
 		};
 
 		return {
 			append: (data: Uint8Array): number => {
 				if (!live) throw new Error("Batch already settled");
-				const pointer = region.base + region.region.size;
-				region.region.append(data); // copies -- caller may reuse the buffer
+				const pointer = region.base + region.stage.length;
+				region.stage.append(data); // copies -- caller may reuse the buffer
 				return pointer;
 			},
-			get: ((
+			// deno-lint-ignore no-explicit-any
+			get: async (
 				pointer: number,
-				lengthOrCodec: number | Codec<any>,
+				lengthOrCodec: number | Codec<any, any>,
 				options?: { readAheadSize?: number },
 			): Promise<any> => {
-				if (!live) return Promise.reject(new Error("Batch already settled"));
-				return this._read(pointer, lengthOrCodec, options, region);
-			}) as BlobStoreBatch["get"],
-			size: (): number => region.base + region.region.size,
+				if (!live) throw new Error("Batch already settled");
+				return this.#read(pointer, lengthOrCodec, options, region);
+			},
+			size: (): number => region.base + region.stage.length,
 			apply: (): void => {
 				if (!live) throw new Error("Batch already settled");
-				for (const chunk of region.region.chunks) this._staged.append(chunk);
-				close(); // batch ended -- region dropped, next batch() gets a fresh one
+				// Batch began at this.length(), so it is contiguous with the end of staged.
+				this.#staged.appendStage(region.stage);
+				close();
 			},
 			discard: (): void => {
 				if (!live) return;
-				close(); // batch ended -- region dropped
+				close();
 			},
 		};
 	}
 
 	// -- flush / WAL ------------------------------------------------------------
 
-	/** Single-store convenience: create + apply + discard in one go. Atomic does these separately. */
 	async flush(): Promise<void> {
 		const wal = await this.createWAL();
 		await wal.apply();
@@ -586,53 +502,51 @@ export class BlobStore implements Store<BlobStoreBatch> {
 	}
 
 	async createWAL(): Promise<WAL> {
-		if (this._batchOpen) throw new Error("Can't start a flush while a batch is open");
-		if (this._truncating) throw new Error("Can't start a flush while a truncate is in progress");
-		if (this._frozen || this.wal) throw new Error("A flush is already in progress");
+		if (this.#batchOpen) throw new Error("Can't start a flush while a batch is open");
+		if (this.#truncating) throw new Error("Can't start a flush while a truncate is in progress");
+		if (this.#frozen || this.wal) throw new Error("A flush is already in progress");
 
 		// Freeze staged in place; install a fresh empty staged in the same tick. frozen.base is the
-		// current disk size (no frozen exists yet, so stagedBase == disk.size here).
-		const frozen: FrozenRegion = { base: this._disk.size, region: this._staged };
-		this._frozen = frozen;
-		this._staged = this._newMemoryRegion();
+		// current disk length (no frozen exists yet, so stagedBase == disk.length here).
+		const frozen: FrozenRegion = { base: this.#disk.length, stage: this.#staged };
+		this.#frozen = frozen;
+		this.#staged = new Stage(this.#memChunkSize);
 
 		// Stream [u64 base][u64 byteLen][bytes] to disk, fsync'd. Streaming avoids flattening the
 		// whole frozen region into one buffer (can be 100+ MiB per batch at high heights).
 		const header = new Uint8Array(16);
 		const view = new Uint8ArrayView(header);
 		view.setBigUint64(0, BigInt(frozen.base));
-		view.setBigUint64(8, BigInt(frozen.region.size));
-		const file = Deno.openSync(this._walPath, { create: true, write: true, truncate: true });
+		view.setBigUint64(8, BigInt(frozen.stage.length));
+		const file = Deno.openSync(this.#walPath, { create: true, write: true, truncate: true });
 		try {
 			await writeFile(file, header);
-			for (const chunk of frozen.region.chunks) await writeFile(file, chunk);
+			for (const chunk of frozen.stage.chunks()) await writeFile(file, chunk);
 			await file.sync(); // durability: the WAL must survive a crash for recovery to work
 		} finally {
 			file.close();
 		}
 
-		this.wal = this._makeWal();
+		this.wal = this.#makeWal();
 		return this.wal;
 	}
 
-	private _makeWal(): WAL {
+	#makeWal(): WAL {
 		const apply = async (): Promise<void> => {
-			// Self-contained: reads everything from the WAL file, so it works after a crash even
-			// though the in-memory `frozen` is gone. Idempotent -- truncate back then re-append.
-			const buf = await Deno.readFile(this._walPath);
+			const buf = await Deno.readFile(this.#walPath);
 			const view = new Uint8ArrayView(buf);
 			const base = Number(view.getBigUint64(0));
 			const byteLen = Number(view.getBigUint64(8));
-			await this._disk.truncate(base);
-			await this._disk.append(buf.subarray(16, 16 + byteLen));
-			await this._disk.sync(); // barrier: applied bytes must be durable before the WAL is discarded
+			await this.#disk.truncateTo(base);
+			await this.#disk.append(buf.subarray(16, 16 + byteLen));
+			await this.#disk.sync(); // barrier: applied bytes must be durable before the WAL is discarded
 		};
 
 		const discard = async (): Promise<void> => {
 			// Cleanup only -- apply() already wrote the data to disk. Truncating here would undo it.
-			this._frozen = null;
+			this.#frozen = null;
 			this.wal = null;
-			await Deno.remove(this._walPath).catch(() => {});
+			await Deno.remove(this.#walPath).catch(() => {});
 		};
 
 		return { apply, discard };
@@ -641,49 +555,43 @@ export class BlobStore implements Store<BlobStoreBatch> {
 	// -- truncate (reorg) -------------------------------------------------------
 
 	async truncate(newLength: number): Promise<void> {
-		if (this._batchOpen) throw new Error("Can't truncate while a batch is open");
-		if (this._frozen || this.wal) throw new Error("Can't truncate while a flush is in progress");
-		if (this._truncating) throw new Error("A truncate is already in progress");
+		if (this.#batchOpen) throw new Error("Can't truncate while a batch is open");
+		if (this.#frozen || this.wal) throw new Error("Can't truncate while a flush is in progress");
+		if (this.#truncating) throw new Error("A truncate is already in progress");
 		if (newLength < 0) throw new Error("newLength must be non-negative");
-		if (this._staged.size > 0) throw new Error("Can't truncate while staged data is present; flush first");
-		if (newLength > this._disk.size) {
+		if (this.#staged.length > 0) throw new Error("Can't truncate while staged data is present; flush first");
+		if (newLength > this.#disk.length) {
 			throw new Error(
-				`newLength (${newLength}) exceeds flushed length (${this._disk.size}); flush before truncating into staged data`,
+				`newLength (${newLength}) exceeds flushed length (${this.#disk.length}); flush before truncating into staged data`,
 			);
 		}
 
-		this._truncating = true;
+		this.#truncating = true;
 		try {
-			this._staged = this._newMemoryRegion(); // staged was empty; reset so its base re-derives
-			if (newLength < this._disk.size) {
-				await this._writeTruncateTarget(newLength);
-				await this._disk.truncate(newLength);
-				await Deno.remove(this._truncatePath).catch(() => {});
+			this.#staged = new Stage(this.#memChunkSize); // staged was empty; reset so its base re-derives
+			if (newLength < this.#disk.length) {
+				await this.#writeTruncateTarget(newLength);
+				await this.#disk.truncateTo(newLength);
+				await Deno.remove(this.#truncatePath).catch(() => {});
 			}
 		} finally {
-			this._truncating = false;
+			this.#truncating = false;
 		}
 	}
 
-	private async _writeTruncateTarget(n: number): Promise<void> {
+	async #writeTruncateTarget(n: number): Promise<void> {
 		const buf = new Uint8Array(8);
 		new Uint8ArrayView(buf).setBigUint64(0, BigInt(n));
-		const file = await Deno.open(this._truncatePath, { create: true, write: true, truncate: true });
-		try {
-			await writeFile(file, buf);
-			await file.sync();
-		} finally {
-			file.close();
-		}
+		await Deno.writeFile(this.#truncatePath, buf, { create: true });
 	}
 
 	// -- lifecycle --------------------------------------------------------------
 
-	async close(): Promise<void> {
-		await this._disk.close();
+	close(): void {
+		this.#disk.close();
 	}
 
-	async [Symbol.asyncDispose](): Promise<void> {
-		await this.close();
+	[Symbol.dispose](): void {
+		this.close();
 	}
 }
