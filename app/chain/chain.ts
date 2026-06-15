@@ -76,7 +76,7 @@ console.log(`[chain] headers loaded`);
 
 const headerHashMap = new Uint8ArrayMap<number>(Math.max(256, headers.length * 2));
 for (let i = 0; i < headers.length; i++) {
-	headerHashMap.set(headers[i]!.hash, i);
+	headerHashMap.set(headers[i]!.hash(), i);
 }
 
 localChain.clear();
@@ -130,7 +130,7 @@ export function appendHeader(
 	const op = () => {
 		for (const header of headers) {
 			const height = batch.header.push(header);
-			headerHashMap.set(header.hash, height);
+			headerHashMap.set(header.hash(), height);
 		}
 	};
 
@@ -359,7 +359,7 @@ export async function getHeightByHash(hash: Uint8Array): Promise<number | undefi
 export async function getHashByHeight(height: number): Promise<Uint8Array | undefined> {
 	const header = await getHeaderByHeight(height);
 	if (!header) return undefined;
-	return header.hash;
+	return header.hash();
 }
 
 export async function getTxPointerById(txId: Uint8Array): Promise<StoredPointer | undefined> {

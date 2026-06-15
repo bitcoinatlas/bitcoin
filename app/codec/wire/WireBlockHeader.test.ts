@@ -15,7 +15,7 @@ Deno.test("WireBlockHeader decode block1 - hash matches known value", () => {
 	const [header] = WireBlockHeader.decode(raw);
 	// Known block 1 hash (big-endian display)
 	const expected = "00000000839a8e6886ab5951d76f411475428afc90947ee320161bbf18eb6048";
-	assertEquals(encodeHex(header.hash.slice().reverse()), expected);
+	assertEquals(encodeHex(header.hash().slice().reverse()), expected);
 });
 
 Deno.test("WireBlockHeader decode block1 - fields correct", () => {

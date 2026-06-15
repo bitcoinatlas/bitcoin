@@ -11,8 +11,11 @@ export const WireBlockHeader = new StructCodec({
 	bits: U32LE,
 	nonce: U32LE,
 }).transform((value, bytes) => {
+	let hash: Uint8Array | undefined;
 	return {
-		hash: sha256(sha256(bytes)),
+		hash(): Uint8Array {
+			return hash ??= sha256(sha256(bytes));
+		},
 		...value,
 	};
 });

@@ -63,7 +63,7 @@ async function syncHeadersFromPeer(peer: Peer): Promise<boolean> {
 
 		// Next request: single locator = current tip
 		locators.length = 0;
-		locators.push(localChain.tip()!.header.hash);
+		locators.push(localChain.tip()!.header.hash());
 
 		console.log(`[sync] height=${localChain.height()} work=${localChain.tip()!.cumulativeWork}`);
 
@@ -80,7 +80,7 @@ async function applyHeaders(peer: Peer, headers: WireBlockHeader[]): Promise<num
 	if (!tip) return 0;
 
 	let count = 0;
-	let prevHash = tip.header.hash;
+	let prevHash = tip.header.hash();
 	let cumulativeWork = tip.cumulativeWork;
 
 	for (const header of headers) {
@@ -96,11 +96,11 @@ async function applyHeaders(peer: Peer, headers: WireBlockHeader[]): Promise<num
 		}
 
 		cumulativeWork += workFromHeader(header);
-		const pointer = await getBlockPointerByHash(header.hash);
+		const pointer = await getBlockPointerByHash(header.hash());
 		const node: PeerChainNode = { header, cumulativeWork, pointer: pointer ?? null };
 		localChain.push(node);
 
-		prevHash = header.hash;
+		prevHash = header.hash();
 		count++;
 	}
 
@@ -118,13 +118,13 @@ function buildLocators(): Uint8Array[] {
 	let index = localChain.height();
 
 	while (index >= 0) {
-		locators.push(localChain.at(index)!.header.hash);
+		locators.push(localChain.at(index)!.header.hash());
 		if (locators.length >= 10) step <<= 1;
 		index -= step;
 	}
 
 	// Always include genesis
-	const genesis = localChain.at(0)!.header.hash;
+	const genesis = localChain.at(0)!.header.hash();
 	if (!bytesEqual(locators.at(-1)!, genesis)) {
 		locators.push(genesis);
 	}

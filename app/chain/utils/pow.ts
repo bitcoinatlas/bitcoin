@@ -17,6 +17,6 @@ export function workFromHeader(header: WireBlockHeader): bigint {
 export function verifyProofOfWork(header: WireBlockHeader): boolean {
 	const nBits = header.bits;
 	const target = nBitsToTarget(nBits);
-	const hashInt = bytesToNumberLE(header.hash); // use LE since Bitcoin compares hashes as little-endian numbers
+	const hashInt = bytesToNumberLE(header.hash()); // use LE since Bitcoin compares hashes as little-endian numbers
 	return hashInt <= target;
 }

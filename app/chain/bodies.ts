@@ -110,7 +110,7 @@ function ensureListener(peer: Peer): void {
 			return;
 		}
 
-		const hash = block.header.hash;
+		const hash = block.header.hash();
 
 		// Only keep blocks we actually requested and still need.
 		const node = findPendingNode(hash);
@@ -132,7 +132,7 @@ function findPendingNode(hash: Uint8Array): { height: number } | null {
 	for (const [height, node] of localChain.entries()) {
 		if (height === 0) continue;
 		if (node.pointer !== null) continue;
-		if (equals(node.header.hash, hash)) return { height };
+		if (equals(node.header.hash(), hash)) return { height };
 	}
 	return null;
 }
@@ -145,7 +145,7 @@ function enumeratePending(limit: number): Pending[] {
 	for (const [height, node] of localChain.entries()) {
 		if (height === 0) continue; // genesis already seeded
 		if (node.pointer !== null) continue;
-		out.push({ height, hash: node.header.hash });
+		out.push({ height, hash: node.header.hash() });
 		if (out.length >= limit) break;
 	}
 	return out;
