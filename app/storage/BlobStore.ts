@@ -152,8 +152,8 @@ class DiskRegion implements Region {
 	public readonly maxChunkSize: number;
 
 	public size: number;
-	private _appender!: Deno.FsFile;
-	private _appenderIndex!: number;
+	private _appender: Deno.FsFile | null = null;
+	private _appenderIndex = 0;
 
 	private constructor(options: DiskRegionOptions) {
 		this.path = options.path;
@@ -190,15 +190,17 @@ class DiskRegion implements Region {
 				throw new Error(`chunk ${index} has a weird size size=${chunkStat.size}`);
 			}
 		}
-		const tailChunkStat = await Deno.stat(join(self.path, `chunk_${self._appenderIndex}`));
-		if (tailChunkStat.size > self.maxChunkSize) {
-			throw new Error(`your tail chunk is fat... size=${tailChunkStat.size}`);
+		let tailChunkSize = 0;
+		try {
+			const tailChunkStat = await Deno.stat(join(self.path, `chunk_${self._appenderIndex}`));
+			if (tailChunkStat.size > self.maxChunkSize) {
+				throw new Error(`your tail chunk is fat... size=${tailChunkStat.size}`);
+			}
+			tailChunkSize = tailChunkStat.size;
+		} catch (e) {
+			if (!(e instanceof Deno.errors.NotFound)) throw e;
 		}
-		self.size = self._appenderIndex * self.maxChunkSize + tailChunkStat.size;
-		self._appender = await Deno.open(
-			join(self.path, `chunk_${self._appenderIndex}`),
-			{ create: true, append: true },
-		);
+		self.size = self._appenderIndex * self.maxChunkSize + tailChunkSize;
 
 		return self;
 	}
@@ -232,8 +234,8 @@ class DiskRegion implements Region {
 			const left = bytes.length - offset;
 			const give = Math.min(available, left);
 
-			if (tailChunkIndex !== this._appenderIndex) {
-				this._appender.close();
+			if (!this._appender || tailChunkIndex !== this._appenderIndex) {
+				if (this._appender) this._appender.close();
 				this._appender = await Deno.open(
 					join(this.path, `chunk_${tailChunkIndex}`),
 					{ create: true, append: true },
@@ -285,24 +287,26 @@ class DiskRegion implements Region {
 	/** fsync the open append handle. Durability barrier; call before a WAL may be discarded. */
 	async sync(): Promise<void> {
 		await this._appendQueue; // drain in-flight appends first
-		await this._appender.sync();
+		if (this._appender) await this._appender.sync();
 	}
 
 	/** Shrink the stream to exactly `offset`. Drops cached handles since their positions / target are now stale. */
 	async truncate(offset: number): Promise<void> {
 		if (offset < 0) throw new RangeError(`negative offset: ${offset}`);
 		if (offset > this.size) throw new RangeError(`truncateTo grows the region: offset=${offset} size=${this.size}`);
-		const oldTailChunkIndex = Math.floor(this.size / this.maxChunkSize);
+		const oldTailChunkIndex = this.size > 0 ? Math.floor((this.size - 1) / this.maxChunkSize) : -1;
 		const newTailChunkIndex = Math.floor(offset / this.maxChunkSize);
 
 		// Drain in-flight appends, then drop every cached handle.
 		await this._appendQueue;
 
-		this._appender.close();
+		if (this._appender) {
+			this._appender.close();
+			this._appender = null;
+		}
 
-		const readers = this._readers;
-		this._readers.splice(newTailChunkIndex);
-		for (const reader of readers.values().drop(newTailChunkIndex)) {
+		const removed = this._readers.splice(newTailChunkIndex);
+		for (const reader of removed) {
 			if (!reader) continue;
 			try {
 				(await reader).close();
@@ -313,30 +317,26 @@ class DiskRegion implements Region {
 
 		// Set size first so any racing reader caps at the new bound.
 		this.size = offset;
-		for (let index = newTailChunkIndex; index > oldTailChunkIndex; index--) {
+		for (let index = oldTailChunkIndex; index >= newTailChunkIndex; index--) {
 			const name = `chunk_${index}`;
+			const chunkPath = join(this.path, name);
 			const chunkStart = index * this.maxChunkSize;
 			if (chunkStart >= offset) {
-				await Deno.remove(join(this.path, name)); // fully at/after offset -- gone
+				await Deno.remove(chunkPath).catch(() => {}); // fully at/after offset -- gone
 			} else if (chunkStart + this.maxChunkSize > offset) {
-				await Deno.truncate(join(this.path, name), offset - chunkStart); // straddles -- new tail
+				await Deno.truncate(chunkPath, offset - chunkStart); // straddles -- new tail
 			}
 			// else: fully below offset -- leave it intact
 		}
 
-		const tailChunkIndex = Math.floor(this.size / this.maxChunkSize);
-		this._appender = await Deno.open(
-			join(this.path, `chunk_${tailChunkIndex}`),
-			{ create: true, append: true },
-		);
-		this._appenderIndex = tailChunkIndex;
+		this._appenderIndex = newTailChunkIndex;
 	}
 
 	async close(): Promise<void> {
 		// Drain in-flight appends first.
 		await this._appendQueue;
 
-		this._appender.close();
+		if (this._appender) this._appender.close();
 
 		const readers = this._readers;
 		this._readers = [];
@@ -549,7 +549,7 @@ export class BlobStore implements Store<BlobStoreBatch> {
 				lengthOrCodec: number | Codec<any>,
 				options?: { readAheadSize?: number },
 			): Promise<any> => {
-				if (!live) throw new Error("Batch already settled");
+				if (!live) return Promise.reject(new Error("Batch already settled"));
 				return this._read(pointer, lengthOrCodec, options, region);
 			}) as BlobStoreBatch["get"],
 			size: (): number => region.base + region.region.size,
@@ -657,7 +657,13 @@ export class BlobStore implements Store<BlobStoreBatch> {
 	private async _writeTruncateTarget(n: number): Promise<void> {
 		const buf = new Uint8Array(8);
 		new Uint8ArrayView(buf).setBigUint64(0, BigInt(n));
-		await Deno.writeFile(this._truncatePath, buf, { create: true });
+		const file = await Deno.open(this._truncatePath, { create: true, write: true, truncate: true });
+		try {
+			await writeFile(file, buf);
+			await file.sync();
+		} finally {
+			file.close();
+		}
 	}
 
 	// -- lifecycle --------------------------------------------------------------
