@@ -1,14 +1,9 @@
-import { Codec, EnumCodec, Void } from "@nomadshiba/codec";
-import { join } from "@std/path";
 import { exists } from "@std/fs";
-import { Store, WAL } from "~/storage/Store.ts";
-
-type AtomicState = Codec.InferOutput<typeof AtomicState>["kind"];
-const AtomicState = new EnumCodec({
-	"done": Void,
-	"saved": Void,
-	"applied": Void,
-});
+import { join } from "@std/path";
+import { equals } from "@std/bytes";
+import { Store } from "~/storage/Store.ts";
+import { writeFile } from "~/utils/fs.ts";
+import { randomBytes } from "@noble/hashes/utils";
 
 type AtomicStores = { readonly [name: string]: Store };
 export type AtomicOptions<T extends AtomicStores> = {
@@ -26,140 +21,98 @@ export type InferBatches<T extends Atomic<AtomicStores>, TNames extends keyof T[
 export class Atomic<T extends AtomicStores> {
 	public readonly statePath: string;
 	public readonly stores: T;
-	public readonly storeEntries: readonly (readonly [string, Store])[];
-	public state: AtomicState;
+	public readonly storeMap: ReadonlyMap<string, Store>;
+	private _start: Uint8Array | undefined;
+	private _end: Uint8Array | undefined;
 
+	private _startPath: string;
+	private _endPath: string;
+
+	private _multiBatchObjectFactory: Function;
 	private constructor(path: string, stores: T) {
 		this.statePath = join(path, "state.bin");
 		this.stores = stores;
-		this.storeEntries = Object.entries(stores);
-		this.flushing = false;
-		this.state = "done";
+		this.storeMap = new Map(Object.entries(stores));
+		this.busy = false;
+		this._startPath = join(path, `start.id`);
+		this._endPath = join(path, "end.id");
+
+		// V8 class/struct
+		this._multiBatchObjectFactory = new Function(
+			...this.storeMap.keys().map((_, i) => `arg${i}`),
+			`return{${this.storeMap.keys().map((field, i) => `${JSON.stringify(field)}:arg${i}`).toArray().join(",")}}`,
+		);
 	}
 
 	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
 		await Deno.mkdir(options.path, { recursive: true });
 		const self = new Atomic<T>(options.path, options.stores);
-		// Only initialize the state file on a fresh data directory. If a state file
-		// already exists we must preserve it so recover() can resume an interrupted flush.
-		if (!await self.existsState()) await self.setState("done");
-		self.state = await self.getState();
+
+		self._start = await exists(self._startPath) ? await Deno.readFile(self._startPath) : undefined;
+		self._end = await exists(self._endPath) ? await Deno.readFile(self._endPath) : undefined;
+
 		return self;
 	}
 
-	async getState(): Promise<AtomicState> {
-		const data = await Deno.readFile(this.statePath);
-		const [state] = AtomicState.decode(data);
-		return state["kind"];
+	private async _setStart(id: Uint8Array) {
+		using file = await Deno.open(this._startPath, { create: true, write: true });
+		await writeFile(file, id);
+		await file.sync();
+		this._start = id;
 	}
 
-	async setState(newState: AtomicState): Promise<void> {
-		const data = AtomicState.encode({ kind: newState, value: null });
-		await Deno.writeFile(this.statePath, data, { create: true });
-		this.state = newState;
+	private async _setEnd(id: Uint8Array) {
+		using file = await Deno.open(this._endPath, { create: true, write: true });
+		await writeFile(file, id);
+		await file.sync();
+		this._end = id;
 	}
 
-	async existsState(): Promise<boolean> {
-		return await exists(this.statePath);
+	isConsistent() {
+		return (!this._start && !this._end) || equals(this._start!, this._end!);
 	}
 
-	public flushing: boolean;
+	public busy: boolean;
 
-	/**
-	 * Flush multiple stores atomically: either all changes land on disk or none do.
-	 *
-	 * The IDs file acts as the "in-progress" sentinel. Its presence means an atomic
-	 * flush is underway; its absence means we are clean. Because of this, state is
-	 * written before IDs: if we crash between the two, no IDs file exists and
-	 * `recover()` treats it as a no-op for the atomic path.
-	 *
-	 * Progress is tracked through a state machine persisted to disk so that
-	 * `recover()` can resume from wherever we crashed:
-	 *
-	 *   started  → all WALs created, IDs written, saving WALs in progress
-	 *   saved    → all WALs on disk, applying in progress
-	 *   applied  → all changes live, discarding WALs in progress
-	 *   discarded → all WALs deleted, deleting IDs file in progress
-	 *
-	 * Throws if another atomic flush is already in progress (IDs file exists).
-	 * Call `recover()` first to clear a previous crashed flush before retrying.
-	 */
 	async flush(): Promise<void> {
+		if (this.busy) {
+			throw new Error(`im busy man, STOP`);
+		}
+		if (!this.isConsistent()) {
+			throw new Error(`Previous flush state is inconsistent`);
+		}
+		this.busy = true;
 		try {
-			this.flushing = true;
-			if (this.state !== "done") {
-				throw new Error(`Can't have multiple atomic flushes in progress. state=${this.state}`);
-			}
-
-			const wals = await Promise.all(this.storeEntries.map(([, store]) => store.createWAL()));
-			await this.setState("saved");
-			await Promise.all(wals.map((wal) => wal.apply()));
-			await this.setState("applied");
-			await Promise.all(wals.map((wal) => wal.discard()));
-			await this.setState("done");
+			const id = randomBytes(32);
+			await this._setStart(id);
+			await Promise.all(this.storeMap.values().map((store) => store.flush()));
+			await this._setEnd(id);
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
 			Deno.exit(1);
 		} finally {
-			this.flushing = false;
+			this.busy = false;
 		}
 	}
 
-	/**
-	 * Recover from a crash by replaying any WALs found on disk.
-	 * Should be called once at startup before any writes.
-	 */
 	async recover(): Promise<void> {
-		const state = this.state;
-
-		const wals: WAL[] = [];
-		for (const [name, store] of this.storeEntries) {
-			const { wal } = store;
-			if (!wal) {
-				if (state === "applied") continue;
-				if (state === "done") continue;
-				throw new Error(`WAL for store ${name} not found during atomic WAL recovery`);
-			}
-			wals.push(wal);
+		if (this.isConsistent()) return;
+		if (this.busy) {
+			throw new Error("im busy man, STOP");
 		}
-
-		if (state === "saved") {
-			// Most likely failed while applying WALs. Can't be sure which ones were applied, so just apply all of them.
-			for (const wal of wals) {
-				await wal.apply();
-			}
-			await this.setState("applied");
-			for (const wal of wals) {
-				await wal.discard();
-			}
-			await this.setState("done");
-			return;
+		this.busy = true;
+		try {
+			await Promise.all(this.storeMap.values().map((store) => store.rollback()));
+		} catch (reason) {
+			console.error(`Atomic rollback failed:`, reason);
+			Deno.exit(1);
+		} finally {
+			this.busy = false;
 		}
-
-		if (state === "applied") {
-			// Most likely failed while discarding WALs. So just continue discarding all of them.
-			for (const wal of wals) {
-				await wal.discard();
-			}
-			await this.setState("done");
-			return;
-		}
-
-		if (state === "done") {
-			// All WALs should have been discarded, but just in case, try discarding all of them again and then delete the ids file.
-			for (const wal of wals) {
-				await wal.discard();
-			}
-			return;
-		}
-
-		throw new Error(`Invalid atomic flush state: ${state satisfies never}`);
 	}
 
 	batch(names?: readonly (keyof T)[]): InferBatches<Atomic<T>> {
-		return Object.fromEntries(
-			names?.map((name) => [name, this.stores[name]!.batch()]) ??
-				this.storeEntries.map(([name, store]) => [name, store.batch()]),
-		) as never;
+		if (!names) return this._multiBatchObjectFactory(...this.storeMap.values().map((store) => store.batch()));
+		return Object.fromEntries(names.map((name) => [name, this.stores[name]!.batch()])) as never;
 	}
 }

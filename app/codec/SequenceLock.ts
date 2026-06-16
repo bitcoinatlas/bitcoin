@@ -92,9 +92,7 @@ export class SequenceLockCodec extends Codec<SequenceLock> {
 		const reservedHigh = (sequence >>> 23) & 0xff;
 		const unused = (reservedHigh << 6) | reservedLow;
 
-		const relativeLock = typeFlag
-			? { kind: "time" as const, seconds: value * 512 }
-			: { kind: "block" as const, blocks: value };
+		const relativeLock = typeFlag ? { kind: "time" as const, seconds: value * 512 } : { kind: "block" as const, blocks: value };
 
 		return {
 			kind: "enable",

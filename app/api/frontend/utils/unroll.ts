@@ -1,7 +1,6 @@
 import { computed, Sync } from "@purifyjs/core";
 
-type SyncUnroll_<T, SyncExcluded = Exclude<T, Sync<any>>> = [SyncExcluded] extends [never]
-	? T extends Sync<infer U> ? SyncUnroll_<U> : T
+type SyncUnroll_<T, SyncExcluded = Exclude<T, Sync<any>>> = [SyncExcluded] extends [never] ? T extends Sync<infer U> ? SyncUnroll_<U> : T
 	: SyncExcluded;
 export type SyncUnroll<T> = SyncUnroll_<T>;
 

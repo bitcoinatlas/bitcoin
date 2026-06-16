@@ -28,16 +28,13 @@ export namespace EndpointSchema {
 
 	// Internal Helpers
 	type IsParam<T extends string> = T extends `:${infer U}` ? U : never;
-	type InferPattern<K extends EndpointSchemaKey> = K extends `${string} ${infer Path}?${infer Search}`
-		? { Path: Path; Search: Search }
+	type InferPattern<K extends EndpointSchemaKey> = K extends `${string} ${infer Path}?${infer Search}` ? { Path: Path; Search: Search }
 		: K extends `${string} ${infer Path}` ? { Path: Path; Search: "" }
 		: never;
-	type MapPathParams<T extends string> = T extends `/${infer U}/${infer Rest}`
-		? [IsParam<U>, ...MapPathParams<`/${Rest}`>]
+	type MapPathParams<T extends string> = T extends `/${infer U}/${infer Rest}` ? [IsParam<U>, ...MapPathParams<`/${Rest}`>]
 		: T extends `/${infer U}` ? [IsParam<U>]
 		: [];
-	type MapSearchParams<T extends string> = T extends `${string}=${infer U}&${infer Rest}`
-		? [IsParam<U>, ...MapSearchParams<Rest>]
+	type MapSearchParams<T extends string> = T extends `${string}=${infer U}&${infer Rest}` ? [IsParam<U>, ...MapSearchParams<Rest>]
 		: T extends `${string}=${infer U}` ? [IsParam<U>]
 		: [];
 }
@@ -65,10 +62,9 @@ export type EndpointHandlerOptions<
 	meta: TMeta;
 };
 
-export type EndpointHandlerResult<TSchema extends EndpointSchema, TSchemaKey extends EndpointSchemaKey<TSchema>> =
-	EndpointResponseOptions<
-		Codec.InferInput<InferItem<TSchema, TSchemaKey>["output"]>
-	>;
+export type EndpointHandlerResult<TSchema extends EndpointSchema, TSchemaKey extends EndpointSchemaKey<TSchema>> = EndpointResponseOptions<
+	Codec.InferInput<InferItem<TSchema, TSchemaKey>["output"]>
+>;
 
 export type EndpointMiddlewareOptions<TSchema extends EndpointSchema = _> = {
 	event: EndpointEvent;

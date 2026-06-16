@@ -12,6 +12,17 @@ export async function readFile(file: Deno.FsFile, length: number): Promise<Uint8
 	return data;
 }
 
+export async function readFileInto(file: Deno.FsFile, target: Uint8Array): Promise<void> {
+	let bytesRead = 0;
+	while (bytesRead < target.length) {
+		const n = await file.read(target.subarray(bytesRead));
+		if (n === null) {
+			throw new Error("Unexpected end of file");
+		}
+		bytesRead += n;
+	}
+}
+
 export async function writeFile(file: Deno.FsFile, data: Uint8Array): Promise<void> {
 	let bytesWritten = 0;
 	while (bytesWritten < data.length) {

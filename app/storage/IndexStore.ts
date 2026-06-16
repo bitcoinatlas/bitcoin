@@ -1,534 +1,487 @@
-import { type Codec, type FixedCodec, VarInt } from "@nomadshiba/codec";
-import { exists } from "@std/fs";
+import { Codec, type FixedCodec } from "@nomadshiba/codec";
+import { concat } from "@std/bytes";
 import { join } from "@std/path";
-import type { Batch, Store, WAL } from "~/storage/Store.ts";
-import { readFile, writeFile } from "~/utils/fs.ts";
-import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+import type { Batch, Store } from "~/storage/Store.ts";
+import { readFileInto, writeFile } from "~/utils/fs.ts";
+
+type AppendFinalizer = () => void;
 
 /**
- * Fixed-stride array on disk with random-access, same-length, in-place updates.
+ * Chunked, fixed-stride disk storage with in-place writes.
  *
- * IndexStore is ArrayStore plus `set(index, value)`. It is the "mutable index" shape:
- * a dense ordinal slot space (number → fixed bytes) where the index *is* the key. Unlike
- * a keyed store, lookups are pure arithmetic (index * stride); unlike BlobStore it never
- * holds variable-length records, so a `set` never shifts anything — pointers stay stable.
- *
- * The whole reason this exists separately from ArrayStore: ArrayStore's correctness rests
- * on "no overwrite, clean range partition, no overlay precedence". That guarantee is worth
- * keeping ironclad for genuinely append-only data (blocks, headers). IndexStore is the place
- * that *pays* for mutability, so ArrayStore doesn't have to.
- *
- * Use case (BitcoinAtlas): one slot per output ever created, holding its `spentBy` pointer
- * (SENTINEL = unspent). The txid index stores only the base slot of a tx's first output;
- * output (txid, vout) lives at base + vout by arithmetic. Marking-spent is a single
- * same-length `set`. This keeps output blobs immutable (append-only BlobStore) and the txid
- * value fixed-stride (KVStore needs no change) — the mutation lives only here.
- *
- * Layering (newest wins on read):
- *
- *   batch (pending push + set)  →  staged (committed, not flushed)  →  frozen (mid-flush)  →  disk
- *
- * Each in-memory layer carries two things:
- *   - appends: items beyond the layer's base length (index >= base), in order.
- *   - overwrites: a Map<index, bytes> for indices that live BELOW base (on disk or in frozen).
- *     A `set` to an appended slot mutates that append in place, so the overwrites map only
- *     ever holds index < base. This split is what keeps the WAL replay self-healing: every
- *     overwrite target is < base, so truncate-to-base never removes a slot an overwrite needs.
- *
- * Read precedence for index i: staged.overwrites > staged.appends (i >= base) >
- * frozen.overwrites > frozen.appends (i >= frozen.base) > disk. A same-length overwrite that
- * has been flushed is just bytes rewritten on disk, so once clean the read is a plain
- * partition again — the overlay cost is paid only during the staged/frozen window.
- *
- * Non-blocking flush (same shape as ArrayStore): createWAL() freezes the staged layer into an
- * immutable `frozen` and installs a fresh empty staged in the same tick. `frozen` serves reads
- * of the in-flight range until discard(); reads cap disk at `frozen.base`, so apply()'s disk
- * rewrite is never observed as a torn read.
- *
- * Truncate means "go back in time" (reorg tail removal): it discards ALL staged data and
- * shrinks disk to `newLength`, relative to the flushed (disk) length. Resetting spent slots
- * below the truncation point (outputs created earlier but spent in orphaned blocks) is done
- * with explicit `set(slot, SENTINEL)` calls — flush those first, then truncate the tail.
- * truncate(0) subsumes a "clear".
- *
- * Consistency note: reads are snapshot-consistent w.r.t. flush/truncate. A single writer is
- * assumed (one batch at a time, enforced), matching the IBD sync loop.
- *
- * Note: IndexStore does NOT enforce write-once semantics — it is a generic mutable array. If
- * a slot must only transition SENTINEL → value (and only back to SENTINEL on reorg), assert
- * that at the call site; it will catch indexer bugs before they corrupt the spent-index.
+ * Unlike BlobStore's DiskRegion this one is settable via {@link writeInto}.
+ * The chunk size is required to be a multiple of the item stride (enforced by
+ * IndexStore), so no single item ever straddles a chunk boundary — a set is
+ * always a single-chunk positioned write.
  */
-export type IndexStoreOptions<T extends FixedCodec> = {
-	path: string;
-	codec: T;
-	/** Codec for the on-disk WAL counters. Defaults to VarInt. */
-	counter?: Codec<number>;
-};
+class DiskRegion implements Disposable {
+	public readonly path: string;
+	public readonly maxChunkSize: number;
 
-export interface IndexStoreBatch<T extends FixedCodec> extends Batch {
-	get(index: number): Promise<Codec.InferOutput<T>>;
-	push(value: Codec.InferInput<T>): number;
-	/** Same-length in-place update at an existing index (< current length). Does not extend. */
-	set(index: number, value: Codec.InferInput<T>): void;
-	length(): number;
-}
+	public size: number;
 
-/** An in-memory layer: ordered appends beyond `base`, plus in-place overwrites below `base`. */
-type Layer = { appends: Uint8Array[]; overwrites: Map<number, Uint8Array> };
-
-/** A frozen layer being flushed. `base` is the disk length (in items) it sits on top of. */
-type Frozen = { base: number; appends: Uint8Array[]; overwrites: Map<number, Uint8Array> };
-
-function emptyLayer(): Layer {
-	return { appends: [], overwrites: new Map() };
-}
-
-/** Snapshot of mutable read state, captured synchronously so reads stay consistent across an await. */
-type ReadSnapshot = {
-	frozen: Frozen | null;
-	staged: Layer;
-	diskLength: number;
-};
-
-const APPEND_WRITE_CHUNK_BYTES = 1 << 20; // 1 MiB — keeps apply() yielding instead of one giant write
-
-export class IndexStore<T extends FixedCodec> implements Store<IndexStoreBatch<T>>, Disposable {
-	readonly #file: Deno.FsFile;
-	readonly #codec: T;
-	readonly #counter: Codec<number>;
-	readonly #walPath: string;
-	readonly #truncatePath: string;
-
-	/** Items physically on disk in data.bin. Authoritative file state. */
-	#diskLength: number;
-	/** Committed-but-unflushed appends + overwrites. New batches merge in here. */
-	#staged: Layer = emptyLayer();
-	/** Set during a flush; serves reads of the in-flight range until discard(). null when clean. */
-	#frozen: Frozen | null = null;
-
-	/** Serializes raw seek+read / seek+write on the shared fd. Does NOT gate batches or flushes. */
-	#io: Promise<unknown> = Promise.resolve();
-	#batchOpen = false;
-	#truncating = false;
-	#closed = false;
-
-	/** The current on-disk WAL, if any. Set by createWAL(), or by open() during recovery. */
-	wal: WAL | null = null;
-
-	private constructor(
-		file: Deno.FsFile,
-		codec: T,
-		counter: Codec<number>,
-		walPath: string,
-		truncatePath: string,
-		diskLength: number,
-	) {
-		this.#file = file;
-		this.#codec = codec;
-		this.#counter = counter;
-		this.#walPath = walPath;
-		this.#truncatePath = truncatePath;
-		this.#diskLength = diskLength;
+	_chunkPathCache: string[] = [];
+	private _chunkPath(index: number) {
+		return this._chunkPathCache[index] ??= join(this.path, `chunk_${index}`);
 	}
 
-	static async open<T extends FixedCodec>(options: IndexStoreOptions<T>): Promise<IndexStore<T>> {
-		const { path, codec } = options;
-		const counter = options.counter ?? VarInt;
-		const binPath = join(path, "data.bin");
-		const walPath = join(path, "data.wal");
-		const truncatePath = join(path, "truncate.target");
+	private constructor(options: { path: string; maxChunkSize: number }) {
+		this.path = options.path;
+		this.maxChunkSize = options.maxChunkSize;
+		this.size = 0;
+	}
 
-		await Deno.mkdir(path, { recursive: true });
-		const file = await Deno.open(binPath, { read: true, write: true, create: true });
+	static async open(options: { path: string; maxChunkSize: number }): Promise<DiskRegion> {
+		const self = new DiskRegion(options);
+		await Deno.mkdir(self.path, { recursive: true });
+		const files = Deno.readDir(self.path);
 
-		const size = (await file.stat()).size;
-		if (size % codec.stride.size !== 0) {
-			file.close();
-			throw new Error("File size must be a multiple of codec stride");
+		let tailIndex = 0;
+		const indexSet = new Set<number>([0]);
+		for await (const file of files) {
+			if (!file.isFile) continue;
+			if (!file.name.startsWith("chunk_")) continue;
+			const index = Number(file.name.slice("chunk_".length));
+			if (!Number.isInteger(index)) continue;
+			indexSet.add(index);
+			if (index > tailIndex) tailIndex = index;
 		}
 
-		const store = new IndexStore(file, codec, counter, walPath, truncatePath, size / codec.stride.size);
-
-		// Crash-safe truncate recovery: an interrupted truncate left a target-length sentinel.
-		// Re-applying the shrink is idempotent. Done before WAL detection — the two are mutually
-		// exclusive operations, so at most one sentinel/WAL should exist.
-		if (await exists(truncatePath)) {
-			const buf = await Deno.readFile(truncatePath);
-			const target = Number(new Uint8ArrayView(buf).getBigUint64(0));
-			const targetBytes = target * codec.stride.size;
-			if (targetBytes < size) await file.truncate(targetBytes);
-			store.#diskLength = target;
-			await Deno.remove(truncatePath).catch(() => {});
-		}
-
-		// A WAL on disk means a flush was interrupted. Expose it so recover() can replay,
-		// but reads are NOT valid until recover() runs (disk may be torn).
-		if (await exists(walPath)) {
-			store.wal = store.#makeWal();
-		}
-
-		return store;
-	}
-
-	#snapshot(): ReadSnapshot {
-		return { frozen: this.#frozen, staged: this.#staged, diskLength: this.#diskLength };
-	}
-
-	#baseLength(snap: ReadSnapshot): number {
-		return snap.frozen ? snap.frozen.base + snap.frozen.appends.length : snap.diskLength;
-	}
-
-	#total(snap: ReadSnapshot): number {
-		return this.#baseLength(snap) + snap.staged.appends.length;
-	}
-
-	/** Resolve `index` from the in-memory layers (incl. overwrites), or null if it lives on disk. */
-	#pick(snap: ReadSnapshot, index: number): Uint8Array | null {
-		const base = this.#baseLength(snap);
-		// Above base → a staged append (overwrites map never holds index >= base).
-		if (index >= base) return snap.staged.appends[index - base] ?? null;
-		// Below base → newest staged overwrite wins over frozen / disk.
-		const sow = snap.staged.overwrites.get(index);
-		if (sow !== undefined) return sow;
-		const f = snap.frozen;
-		if (f) {
-			if (index >= f.base) return f.appends[index - f.base] ?? null;
-			const fow = f.overwrites.get(index);
-			if (fow !== undefined) return fow;
-		}
-		return null; // on disk
-	}
-
-	#assertOpen(): void {
-		if (this.#closed) throw new Error("Store is closed");
-	}
-
-	length(): number {
-		return this.#total(this.#snapshot());
-	}
-
-	async get(index: number): Promise<Codec.InferOutput<T>> {
-		this.#assertOpen();
-		if (index < 0) throw new Error("Index must be non-negative");
-		const snap = this.#snapshot();
-		if (index >= this.#total(snap)) throw new Error("Index out of bounds");
-
-		const mem = this.#pick(snap, index);
-		if (mem) return this.#codec.decode(mem)[0];
-		return this.#readDisk(index);
-	}
-
-	async slice(start: number, length: number): Promise<Codec.InferOutput<T>[]> {
-		this.#assertOpen();
-		if (start < 0) throw new Error("start must be non-negative");
-		if (length < 0) throw new Error("length must be non-negative");
-
-		const snap = this.#snapshot();
-		const size = Math.min(length, this.#total(snap) - start);
-		if (size <= 0) return [];
-
-		const stride = this.#codec.stride.size;
-		const diskBase = snap.frozen ? snap.frozen.base : snap.diskLength;
-		const diskEnd = Math.min(start + size, diskBase);
-		const diskCount = Math.max(0, diskEnd - start);
-
-		// Bulk-read the disk range once. Indices that an in-memory layer overrides (appends or
-		// overwrites) are filled from #pick below; their bulk bytes are simply ignored.
-		let bulk: Uint8Array | null = null;
-		if (diskCount > 0) {
-			bulk = await this.#enqueue(async () => {
-				await this.#file.seek(start * stride, Deno.SeekMode.Start);
-				return await readFile(this.#file, diskCount * stride);
-			});
-		}
-
-		const out = new Array<Codec.InferOutput<T>>(size);
-		for (let i = 0; i < size; i++) {
-			const index = start + i;
-			const mem = this.#pick(snap, index);
-			if (mem) {
-				out[i] = this.#codec.decode(mem)[0];
-			} else {
-				const o = (index - start) * stride;
-				out[i] = this.#codec.decode(bulk!.subarray(o, o + stride))[0];
+		for (let index = 0; index < tailIndex; index++) {
+			if (!indexSet.has(index)) {
+				throw new Error("bro your chunks are fucked, has some    gaps   and  stuff");
+			}
+			const chunkStat = await Deno.stat(self._chunkPath(index));
+			if (chunkStat.size !== self.maxChunkSize) {
+				throw new Error(`chunk ${index} has a weird size size=${chunkStat.size}`);
 			}
 		}
-		return out;
-	}
 
-	#readDisk(index: number): Promise<Codec.InferOutput<T>> {
-		const stride = this.#codec.stride.size;
-		return this.#enqueue(async () => {
-			await this.#file.seek(index * stride, Deno.SeekMode.Start);
-			const data = await readFile(this.#file, stride);
-			return this.#codec.decode(data)[0];
-		});
-	}
-
-	batch(): IndexStoreBatch<T> {
-		this.#assertOpen();
-		if (this.#batchOpen) throw new Error("A batch is already open");
-		if (this.#truncating) throw new Error("Can't start a batch while a truncate is in progress");
-		// A flush can't start while a batch is open (createWAL guards on this), so the store's
-		// base length and staged layer are stable for the batch's whole lifetime.
-		this.#batchOpen = true;
-
-		const batchBaseLength = this.#total(this.#snapshot());
-		const batchAppends: Uint8Array[] = [];
-		// Pending in-place sets to indices below batchBaseLength (i.e. not this batch's appends).
-		const batchOverwrites = new Map<number, Uint8Array>();
-		let live = true;
-
-		const close = () => {
-			live = false;
-			this.#batchOpen = false;
-		};
-
-		return {
-			get: async (index: number): Promise<Codec.InferOutput<T>> => {
-				if (!live) throw new Error("Batch already settled");
-				if (index < 0) throw new Error("Index must be non-negative");
-				if (index >= batchBaseLength + batchAppends.length) {
-					throw new Error(`Index out of bounds index=${index}`);
-				}
-				if (index >= batchBaseLength) return this.#codec.decode(batchAppends[index - batchBaseLength]!)[0];
-				// This batch's own pending overwrite wins, else fall through to committed store state.
-				const ow = batchOverwrites.get(index);
-				if (ow !== undefined) return this.#codec.decode(ow)[0];
-				return this.get(index);
-			},
-			push: (value: Codec.InferInput<T>): number => {
-				if (!live) throw new Error("Batch already settled");
-				const index = batchBaseLength + batchAppends.length;
-				batchAppends.push(this.#codec.encode(value));
-				return index;
-			},
-			set: (index: number, value: Codec.InferInput<T>): void => {
-				if (!live) throw new Error("Batch already settled");
-				if (index < 0) throw new Error("Index must be non-negative");
-				if (index >= batchBaseLength + batchAppends.length) {
-					throw new Error("Index out of bounds (set does not extend; use push)");
-				}
-				const bytes = this.#codec.encode(value);
-				if (index >= batchBaseLength) {
-					batchAppends[index - batchBaseLength] = bytes; // overwrite own append in place
-					return;
-				}
-				batchOverwrites.set(index, bytes);
-			},
-			length: (): number => batchBaseLength + batchAppends.length,
-			apply: (): void => {
-				if (!live) throw new Error("Batch already settled");
-				for (const value of batchAppends) this.#staged.appends.push(value);
-				// Route overwrites: those landing in the (pre-existing) staged-append region mutate
-				// that append in place; the rest (disk / frozen indices) go to staged.overwrites.
-				// base is stable for the batch's lifetime, so index - base addresses the same append
-				// that existed at batch open (this batch's pushes were appended after it).
-				const base = this.#baseLength(this.#snapshot());
-				for (const [index, bytes] of batchOverwrites) {
-					if (index >= base) this.#staged.appends[index - base] = bytes;
-					else this.#staged.overwrites.set(index, bytes);
-				}
-				close();
-			},
-			discard: (): void => {
-				if (!live) return;
-				close();
-			},
-		};
-	}
-
-	async truncate(newLength: number): Promise<void> {
-		this.#assertOpen();
-		if (this.#batchOpen) throw new Error("Can't truncate while a batch is open");
-		if (this.#frozen || this.wal) throw new Error("Can't truncate while a flush is in progress");
-		if (this.#truncating) throw new Error("A truncate is already in progress");
-		if (newLength < 0) throw new Error("newLength must be non-negative");
-		if (this.#staged.appends.length > 0 || this.#staged.overwrites.size > 0) {
-			throw new Error("Can't truncate while staged data is present; flush first");
-		}
-		if (newLength > this.#diskLength) {
-			throw new Error(
-				`newLength (${newLength}) exceeds flushed length (${this.#diskLength}); flush before truncating into staged data`,
-			);
-		}
-
-		this.#truncating = true;
+		let tailChunkSize = 0;
 		try {
-			// Reorg discards all staged (future) data.
-			this.#staged = emptyLayer();
+			const tailChunkStat = await Deno.stat(self._chunkPath(tailIndex));
+			if (tailChunkStat.size > self.maxChunkSize) {
+				throw new Error(`your tail chunk is fat... size=${tailChunkStat.size}`);
+			}
+			tailChunkSize = tailChunkStat.size;
+		} catch (e) {
+			if (!(e instanceof Deno.errors.NotFound)) throw e;
+		}
 
-			if (newLength < this.#diskLength) {
-				// Crash safety: record the target so an interrupted shrink completes on open().
-				await this.#writeTruncateTarget(newLength);
-				// Shrink the logical length first so a concurrent read caps at newLength,
-				// then do the physical truncate, then drop the sentinel.
-				this.#diskLength = newLength;
-				await this.#file.truncate(newLength * this.#codec.stride.size);
-				await this.#removeTruncateTarget();
+		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
+		self._appender = {
+			index: tailIndex,
+			file: await Deno.open(self._chunkPath(tailIndex), { create: true, append: true }),
+		};
+
+		return self;
+	}
+
+	private _appender!: { file: Deno.FsFile; index: number };
+	private _appending = false;
+	async append(bytes: Uint8Array): Promise<AppendFinalizer> {
+		if (this._appending) throw new Error("you are trying to append back to back, check your logic");
+		if (this._truncating) throw new Error("you are trying to append while truncating, check your logic");
+		this._appending = true;
+		let size = this.size;
+
+		try {
+			let appended = 0;
+			while (appended < bytes.length) {
+				const want = bytes.length - appended;
+				const index = Math.floor(size / this.maxChunkSize);
+				const taken = size % this.maxChunkSize;
+				const available = this.maxChunkSize - taken;
+				const append = Math.min(want, available);
+
+				if (this._appender.index !== index) {
+					const file = await Deno.open(this._chunkPath(index), { create: true, append: true });
+					this._appender.file.close();
+					this._appender.file = file;
+					this._appender.index = index;
+				}
+
+				await writeFile(this._appender.file, bytes.subarray(appended, appended + append));
+				await this._appender.file.sync();
+				appended += append;
+				size += append;
 			}
 		} finally {
-			this.#truncating = false;
+			this._appending = false;
+		}
+
+		return () => this.size = size;
+	}
+
+	private _readers: Deno.FsFile[] = [];
+	private _readersPromise: Promise<Deno.FsFile>[] = [];
+	async readInto(offset: number, length: number, target: Uint8Array): Promise<void> {
+		if (offset + length > this.size) {
+			throw new Error(`read out of bounds offset=${offset} length=${length} size=${this.size}`);
+		}
+
+		let copied = 0;
+		while (copied < length) {
+			const want = length - copied;
+			const index = Math.floor(offset / this.maxChunkSize);
+			const start = offset % this.maxChunkSize;
+			const available = this.maxChunkSize - start;
+			const read = Math.min(want, available);
+
+			const reader = (this._readers[index] ??= await (
+				this._readersPromise[index] ??= Deno.open(this._chunkPath(index), { read: true })
+			));
+
+			reader.seekSync(start, Deno.SeekMode.Start);
+			await readFileInto(reader, target.subarray(copied, copied + read));
+
+			copied += read;
+			offset += read;
 		}
 	}
 
-	async #writeTruncateTarget(n: number): Promise<void> {
-		const buf = new Uint8Array(8);
-		new Uint8ArrayView(buf).setBigUint64(0, BigInt(n));
-		await Deno.writeFile(this.#truncatePath, buf, { create: true });
-	}
-
-	async #removeTruncateTarget(): Promise<void> {
-		await Deno.remove(this.#truncatePath).catch(() => {});
-	}
-
-	async flush(): Promise<void> {
-		const wal = await this.createWAL();
-		await wal.apply();
-		await wal.discard();
-	}
-
-	/**
-	 * WAL format: [base][ow_count]([ow_index][ow_value] * ow_count)[append_count][value * append_count]
-	 * apply() truncates disk to base, replays overwrites (all index < base, so they survive the
-	 * truncate), then replays appends — idempotent and self-healing (every write rewrites the same
-	 * bytes at the same offset).
-	 */
-	async createWAL(): Promise<WAL> {
-		this.#assertOpen();
-		if (this.#batchOpen) throw new Error("Can't start a flush while a batch is open");
-		if (this.#truncating) throw new Error("Can't start a flush while a truncate is in progress");
-		if (this.#frozen || this.wal) throw new Error("A flush is already in progress");
-
-		// When clean, base === diskLength, so every staged overwrite targets a disk index — the
-		// frozen layer's overwrites are therefore all < frozen.base, preserving the WAL invariant.
-		const frozen: Frozen = {
-			base: this.#diskLength,
-			appends: this.#staged.appends,
-			overwrites: this.#staged.overwrites,
-		};
-		this.#frozen = frozen;
-		this.#staged = emptyLayer();
-
-		const buf = this.#encodeWal(frozen);
-		await Deno.writeFile(this.#walPath, buf, { create: true });
-
-		this.wal = this.#makeWal();
-		return this.wal;
-	}
-
-	#encodeWal(frozen: Frozen): Uint8Array {
-		const stride = this.#codec.stride.size;
-		const baseBytes = this.#counter.encode(frozen.base);
-
-		const owEntries = [...frozen.overwrites];
-		const owIndexBytes = owEntries.map(([index]) => this.#counter.encode(index));
-		const owCountBytes = this.#counter.encode(owEntries.length);
-
-		const appendCountBytes = this.#counter.encode(frozen.appends.length);
-
-		let total = baseBytes.length + owCountBytes.length + appendCountBytes.length;
-		for (const idxBytes of owIndexBytes) total += idxBytes.length + stride;
-		total += frozen.appends.length * stride;
-
-		const buf = new Uint8Array(total);
-		let pos = 0;
-		buf.set(baseBytes, pos);
-		pos += baseBytes.length;
-
-		buf.set(owCountBytes, pos);
-		pos += owCountBytes.length;
-		for (let i = 0; i < owEntries.length; i++) {
-			buf.set(owIndexBytes[i]!, pos);
-			pos += owIndexBytes[i]!.length;
-			buf.set(owEntries[i]![1], pos);
-			pos += stride;
+	private _writers: Deno.FsFile[] = [];
+	private _writersPromise: Promise<Deno.FsFile>[] = [];
+	/** In-place positioned write. Caller guarantees `offset + bytes.length <= size`. */
+	async writeInto(offset: number, bytes: Uint8Array): Promise<void> {
+		if (this._truncating) throw new Error("you cant writeInto while truncating");
+		if (offset + bytes.length > this.size) {
+			throw new Error(`write out of bounds offset=${offset} length=${bytes.length} size=${this.size}`);
 		}
 
-		buf.set(appendCountBytes, pos);
-		pos += appendCountBytes.length;
-		for (const value of frozen.appends) {
-			buf.set(value, pos);
-			pos += stride;
+		let written = 0;
+		while (written < bytes.length) {
+			const want = bytes.length - written;
+			const index = Math.floor(offset / this.maxChunkSize);
+			const start = offset % this.maxChunkSize;
+			const available = this.maxChunkSize - start;
+			const write = Math.min(want, available);
+
+			const writer = (this._writers[index] ??= await (
+				this._writersPromise[index] ??= Deno.open(this._chunkPath(index), { read: true, write: true })
+			));
+
+			writer.seekSync(start, Deno.SeekMode.Start);
+			await writeFile(writer, bytes.subarray(written, written + write));
+			await writer.sync();
+
+			written += write;
+			offset += write;
 		}
-		return buf;
 	}
 
-	#makeWal(): WAL {
-		const stride = this.#codec.stride.size;
+	private _truncating = false;
+	async truncate(size: number) {
+		if (this._appending) throw new Error("you cant truncate while appending");
+		if (this._truncating) throw new Error("you are trying to truncate back to back, check your logic");
+		this._truncating = true;
 
-		const apply = async (): Promise<void> => {
-			const buf = await Deno.readFile(this.#walPath);
-			let pos = 0;
+		const oldTail = this._appender.index;
+		const newTail = Math.floor(size / this.maxChunkSize);
 
-			const [base, baseLen] = this.#counter.decode(buf.subarray(pos));
-			pos += baseLen;
-			await this.#file.truncate(base * stride);
-			this.#diskLength = base;
+		this._appender.file.close();
+		this._appender.index = -1;
 
-			// Overwrites: scattered single-stride writes, all at index < base (within the truncated region)
-			// Rewriting the same bytes is idempotent, so a crash mid-replay self-heals.
-			const [owCount, owCountLen] = this.#counter.decode(buf.subarray(pos));
-			pos += owCountLen;
-			for (let i = 0; i < owCount; i++) {
-				const [index, idxLen] = this.#counter.decode(buf.subarray(pos));
-				pos += idxLen;
-				const value = buf.subarray(pos, pos + stride);
-				pos += stride;
-				const at = index * stride;
-				await this.#enqueue(async () => {
-					await this.#file.seek(at, Deno.SeekMode.Start);
-					await writeFile(this.#file, value);
-				});
-			}
+		for (let index = newTail + 1; index <= oldTail; index++) {
+			(await this._readersPromise[index])?.close();
+			(await this._writersPromise[index])?.close();
+			await Deno.remove(this._chunkPath(index));
+		}
 
-			// Appends at [base, base + count), written in 1 MiB chunks so apply() keeps yielding.
-			const [count, countLen] = this.#counter.decode(buf.subarray(pos));
-			pos += countLen;
-			if (count > 0) {
-				const appendBytes = buf.subarray(pos, pos + count * stride);
-				const chunkStride = Math.max(1, Math.floor(APPEND_WRITE_CHUNK_BYTES / stride)) * stride;
-				const totalBytes = appendBytes.length;
-				let written = 0;
-				while (written < totalBytes) {
-					const end = Math.min(written + chunkStride, totalBytes);
-					const slice = appendBytes.subarray(written, end);
-					const at = base * stride + written;
-					await this.#enqueue(async () => {
-						await this.#file.seek(at, Deno.SeekMode.Start);
-						await writeFile(this.#file, slice);
-					});
-					written = end;
-				}
-				this.#diskLength = base + count;
-			}
-		};
+		this._readers.length = newTail + 1;
+		this._readersPromise.length = newTail + 1;
+		this._writers.length = newTail + 1;
+		this._writersPromise.length = newTail + 1;
 
-		const discard = async (): Promise<void> => {
-			this.#frozen = null;
-			this.wal = null;
-			await Deno.remove(this.#walPath).catch(() => {});
-		};
+		const tailEnd = size % this.maxChunkSize;
+		await Deno.truncate(this._chunkPath(newTail), tailEnd);
 
-		return { apply, discard };
+		this._appender.file = await Deno.open(this._chunkPath(newTail), { create: true, append: true });
+		this._appender.index = newTail;
+
+		this.size = size;
+
+		// Should never fail to this point.
+		// If it did data is corrupted.
+		// So that's why we are not doing try/catch.
+		this._truncating = false;
 	}
 
-	close(): void {
-		if (this.#closed) return;
-		if (this.#batchOpen) throw new Error("Can't close while a batch is open");
-		if (this.#truncating) throw new Error("Can't close while a truncate is in progress");
-		if (this.wal) throw new Error("Can't close while a flush is in progress");
-		this.#closed = true;
-		this.#file.close();
+	close() {
+		try {
+			this._appender.file.close();
+		} catch { /*  */ }
+		for (const reader of this._readers) {
+			try {
+				reader?.close();
+			} catch { /*  */ }
+		}
+		for (const writer of this._writers) {
+			try {
+				writer?.close();
+			} catch { /*  */ }
+		}
 	}
 
 	[Symbol.dispose](): void {
 		this.close();
 	}
+}
 
-	#enqueue<R>(fn: () => Promise<R>): Promise<R> {
-		const run = this.#io.then(fn, fn) as Promise<R>;
-		this.#io = run.then(() => {}, () => {});
-		return run;
+/**
+ * A keyed staging layer.
+ *
+ * `entries` holds both staged sets (index < disk length) and staged appends
+ * (index >= disk length). `length` is the logical item count as of this layer.
+ */
+type Overlay = {
+	entries: Map<number, Uint8Array>;
+	length: number;
+};
+
+export interface IndexStoreBatch<T> extends Batch {
+	/** Overwrite an existing item. `index` must be in `[0, length())`. */
+	set(index: number, item: T): void;
+	/** Append a new item. Returns its index. */
+	append(item: T): number;
+	get(index: number): Promise<T>;
+	length(): number;
+}
+
+export type IndexStoreOptions<T extends FixedCodec<any>> = {
+	path: string;
+	codec: T;
+	/** Items per disk chunk. Chunk byte size becomes `stride * itemsPerChunk`. */
+	itemsPerChunk: number;
+};
+
+/**
+ * A fixed-stride, settable array store with WAL durability.
+ *
+ * Like ArrayStore you can `append` and `get`, but unlike it you can also `set`
+ * an existing slot in place. Staging is a keyed overlay rather than a positional
+ * region stack, and rollback uses an undo log (old value per overwritten slot +
+ * the pre-flush length) instead of a single truncate point.
+ */
+export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBatch<Codec.InferOutput<T>>>, Disposable {
+	public readonly path: string;
+	public readonly itemsPerChunk: number;
+
+	private readonly _codec: T;
+	private readonly _stride: number;
+	private readonly _walPath: string;
+
+	private _disk!: DiskRegion;
+	private _staged!: Overlay;
+	private _frozen: Overlay | null = null;
+	private _batch: Overlay | null = null;
+
+	private _flushing = false;
+	private _truncating = false;
+
+	private constructor(options: IndexStoreOptions<T>) {
+		this.path = options.path;
+		this.itemsPerChunk = options.itemsPerChunk;
+		this._codec = options.codec;
+		this._stride = options.codec.stride.size;
+		this._walPath = join(this.path, "rollback.wal");
+	}
+
+	static async open<T extends FixedCodec<any>>(options: IndexStoreOptions<T>): Promise<IndexStore<T>> {
+		const self = new IndexStore(options);
+		const maxChunkSize = self._stride * options.itemsPerChunk;
+		self._disk = await DiskRegion.open({ path: options.path, maxChunkSize });
+		self._staged = { entries: new Map(), length: self._disk.size / self._stride };
+		return self;
+	}
+
+	/** Logical item count (does not include an open batch's pending appends). */
+	get length(): number {
+		return this._staged.length;
+	}
+
+	private async _read(index: number, extra?: Map<number, Uint8Array>): Promise<Codec.InferOutput<T>> {
+		const staged = extra?.get(index) ?? this._staged.entries.get(index) ?? this._frozen?.entries.get(index);
+		if (staged) {
+			const [decoded] = this._codec.decode(staged);
+			return decoded;
+		}
+
+		const offset = index * this._stride;
+		if (offset + this._stride > this._disk.size) {
+			throw new RangeError(`get out of bounds index=${index} length=${this.length}`);
+		}
+
+		const buffer = new Uint8Array(this._stride);
+		await this._disk.readInto(offset, this._stride, buffer);
+		const [decoded] = this._codec.decode(buffer);
+		return decoded;
+	}
+
+	get(index: number): Promise<Codec.InferOutput<T>> {
+		return this._read(index);
+	}
+
+	batch(): IndexStoreBatch<Codec.InferOutput<T>> {
+		if (this._truncating) throw new Error("nah you can't batch while truncating");
+		if (this._batch) throw new Error("can't have concurrent batches man, can't track length correctly");
+
+		const codec = this._codec;
+		const overlay: Overlay = this._batch = { entries: new Map(), length: this._staged.length };
+
+		const length: IndexStoreBatch<Codec.InferOutput<T>>["length"] = () => overlay.length;
+
+		const set: IndexStoreBatch<Codec.InferOutput<T>>["set"] = (index, item) => {
+			if (index < 0 || index >= overlay.length) {
+				throw new RangeError(`set out of bounds index=${index} length=${overlay.length}`);
+			}
+			overlay.entries.set(index, codec.encode(item));
+		};
+
+		const append: IndexStoreBatch<Codec.InferOutput<T>>["append"] = (item) => {
+			const index = overlay.length;
+			overlay.entries.set(index, codec.encode(item));
+			overlay.length = index + 1;
+			return index;
+		};
+
+		const get: IndexStoreBatch<Codec.InferOutput<T>>["get"] = (index) => this._read(index, overlay.entries);
+
+		const apply: IndexStoreBatch<Codec.InferOutput<T>>["apply"] = () => {
+			for (const [index, bytes] of overlay.entries) this._staged.entries.set(index, bytes);
+			this._staged.length = overlay.length;
+			this._batch = null;
+		};
+
+		const discard: IndexStoreBatch<Codec.InferOutput<T>>["discard"] = () => {
+			this._batch = null;
+		};
+
+		return { length, set, append, get, apply, discard };
+	}
+
+	async flush(): Promise<void> {
+		if (this._flushing) throw new Error("wtf are you doin man, you are already flushing");
+		if (this._truncating) throw new Error("can't flush while truncating");
+		this._flushing = true;
+
+		// Freeze so new batches can keep landing in a fresh staged layer mid-flush.
+		if (!this._frozen) {
+			this._frozen = this._staged;
+			this._staged = { entries: new Map(), length: this._frozen.length };
+		}
+
+		try {
+			const stride = this._stride;
+			const diskLength = this._disk.size / stride;
+
+			// Partition staged entries into overwrites of disk-resident slots vs new appends.
+			const sets: number[] = [];
+			const appends: number[] = [];
+			for (const index of this._frozen.entries.keys()) {
+				if (index < diskLength) sets.push(index);
+				else appends.push(index);
+			}
+			sets.sort((a, b) => a - b);
+			appends.sort((a, b) => a - b);
+
+			for (let i = 0; i < appends.length; i++) {
+				if (appends[i] !== diskLength + i) {
+					throw new Error(`appends are not contiguous, expected ${diskLength + i} got ${appends[i]}`);
+				}
+			}
+
+			// Build the undo log: pre-flush length + old value of every overwritten slot.
+			const wal = new Uint8Array(8 + 8 + sets.length * (8 + stride));
+			const view = new DataView(wal.buffer);
+			view.setBigUint64(0, BigInt(diskLength), true);
+			view.setBigUint64(8, BigInt(sets.length), true);
+
+			let cursor = 16;
+			const old = new Uint8Array(stride);
+			for (const index of sets) {
+				await this._disk.readInto(index * stride, stride, old);
+				view.setBigUint64(cursor, BigInt(index), true);
+				cursor += 8;
+				wal.set(old, cursor);
+				cursor += stride;
+			}
+
+			// Durable undo log BEFORE any mutation. This is the whole point.
+			{
+				using walFile = await Deno.open(this._walPath, { create: true, write: true, truncate: true });
+				await writeFile(walFile, wal);
+				await walFile.sync();
+			}
+
+			// Apply appends (extend), then sets (in place). The two ranges are disjoint.
+			if (appends.length > 0) {
+				const buffer = concat(appends.map((index) => this._frozen!.entries.get(index)!));
+				const finalize = await this._disk.append(buffer);
+				finalize();
+			}
+			for (const index of sets) {
+				await this._disk.writeInto(index * stride, this._frozen.entries.get(index)!);
+			}
+
+			this._frozen = null;
+		} finally {
+			this._flushing = false;
+		}
+	}
+
+	async rollback(): Promise<void> {
+		const stride = this._stride;
+
+		let wal: Uint8Array;
+		try {
+			wal = await Deno.readFile(this._walPath);
+		} catch (e) {
+			if (e instanceof Deno.errors.NotFound) return; // nothing was ever flushed
+			throw e;
+		}
+
+		const view = new DataView(wal.buffer, wal.byteOffset, wal.byteLength);
+		const oldLength = Number(view.getBigUint64(0, true));
+		const setCount = Number(view.getBigUint64(8, true));
+
+		let cursor = 16;
+		for (let i = 0; i < setCount; i++) {
+			const index = Number(view.getBigUint64(cursor, true));
+			cursor += 8;
+			const oldValue = wal.subarray(cursor, cursor + stride);
+			cursor += stride;
+			// Restore overwrites first; their offsets are < oldLength so they survive the truncate.
+			await this._disk.writeInto(index * stride, oldValue);
+		}
+
+		await this._disk.truncate(oldLength * stride);
+
+		this._batch = null;
+		this._frozen = null;
+		this._staged = { entries: new Map(), length: this._disk.size / stride };
+	}
+
+	async truncate(length: number): Promise<void> {
+		if (this._truncating) throw new Error("A truncate is already in progress");
+		if (this._batch) throw new Error("Can't truncate while a batch is open");
+		if (this._frozen) throw new Error("Can't truncate while a flush is in progress");
+		if (this._staged.entries.size > 0) throw new Error("Can't truncate while staged data is present; flush first");
+
+		this._truncating = true;
+		try {
+			await this._disk.truncate(length * this._stride);
+			this._staged.length = length;
+		} finally {
+			this._truncating = false;
+		}
+	}
+
+	close(): void {
+		this._disk.close();
+	}
+
+	[Symbol.dispose](): void {
+		this.close();
 	}
 }

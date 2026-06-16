@@ -79,7 +79,7 @@ if (import.meta.main) {
 			await currentFlush;
 		}
 
-		if (atomic.flushing) return;
+		if (atomic.busy) return;
 		console.log("[main] async flushing...");
 		currentFlush = atomic.flush().then(() => console.log("[main] flushed"));
 	}
