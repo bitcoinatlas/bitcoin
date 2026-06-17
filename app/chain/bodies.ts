@@ -234,15 +234,9 @@ async function downloaderLoop(): Promise<void> {
 			}
 			const batch = want.slice(i, i + DOWNLOAD_BATCH);
 			try {
-				const t0 = Date.now();
 				await peer.send(GetDataMessage, {
 					inventory: batch.map(({ hash }) => ({ type: invType, hash })),
 				});
-				console.log(
-					`[bodies] sent getdata heights=${batch[0]!.height}-${batch[batch.length - 1]!.height}` +
-						` count=${batch.length} took=${Date.now() - t0}ms` +
-						` window=${pool.size + inFlight.size}/${DOWNLOAD_AHEAD}`,
-				);
 			} catch (e) {
 				console.error("[bodies] getdata send error:", e);
 				// Unsend this batch and the remainder so they retry next pass.

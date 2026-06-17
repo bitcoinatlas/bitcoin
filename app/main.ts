@@ -41,6 +41,10 @@ if (import.meta.main) {
 		}
 	}
 
+	function memcheck() {
+		return (Deno.memoryUsage().heapUsed / (4 * 1024 * 1024 * 1024)) > .75;
+	}
+
 	async function tick() {
 		// await maintain(); // uncomment for production peer management
 		console.log("[main] sync headers...");
@@ -50,33 +54,33 @@ if (import.meta.main) {
 		await syncBodiesFromPeers();
 		console.log("[main] done: txs headers");
 
-		if (global.gc) {
-			const gcStart = performance.now();
-			const pre = Deno.memoryUsage().heapUsed;
-			global.gc();
-			const post = Deno.memoryUsage().heapUsed;
+		while (memcheck()) {
+			if (global.gc) {
+				const gcStart = performance.now();
+				const pre = Deno.memoryUsage().heapUsed;
+				global.gc();
+				const post = Deno.memoryUsage().heapUsed;
 
-			const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
-			const freed = pre - post;
+				const mib = (bytes: number) => (bytes / 1024 / 1024).toFixed(2);
+				const freed = pre - post;
 
-			const gcEnd = performance.now();
-			console.log(
-				[
-					`%cGC%c (${(gcEnd - gcStart).toFixed(0)}ms)`,
-					`${mib(pre)} MiB %c→%c ${mib(post)} MiB %c(freed ${mib(freed)} MiB)`,
-				].join(" "),
-				"color: #888; font-weight: bold",
-				"color: inherit",
-				"color: #888",
-				"color: inherit",
-				freed > 0 ? "color: #4ade80" : "color: #f87171",
-			);
-		}
-
-		const memory = Deno.memoryUsage();
-		if ((memory.heapUsed / (4 * 1024 * 1024 * 1204)) > .75) {
-			console.log("[main] heap usage almost at max, awaiting flush");
-			await currentFlush;
+				const gcEnd = performance.now();
+				console.log(
+					[
+						`%cGC%c (${(gcEnd - gcStart).toFixed(0)}ms)`,
+						`${mib(pre)} MiB %c→%c ${mib(post)} MiB %c(freed ${mib(freed)} MiB)`,
+					].join(" "),
+					"color: #888; font-weight: bold",
+					"color: inherit",
+					"color: #888",
+					"color: inherit",
+					freed > 0 ? "color: #4ade80" : "color: #f87171",
+				);
+			}
+			if (memcheck()) {
+				console.log("[main] heap usage almost at max even after gc, awaiting flush");
+				await Promise.race([currentFlush, delay(5_000)]);
+			}
 		}
 
 		if (atomic.busy) return;

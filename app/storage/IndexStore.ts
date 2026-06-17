@@ -3,6 +3,7 @@ import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { Batch, Store } from "~/storage/Store.ts";
 import { readFileInto, writeFile } from "~/utils/fs.ts";
+import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 
 /**
  * Chunked, fixed-stride disk storage with in-place writes.
@@ -157,6 +158,56 @@ class DiskRegion implements Disposable {
 
 			written += write;
 			offset += write;
+		}
+	}
+
+	/**
+	 * Batched in-place writes. Items never straddle a chunk (stride divides
+	 * maxChunkSize), so each lands in exactly one chunk. We group by chunk and do
+	 * a single open + single fsync per touched chunk instead of per item — turning
+	 * O(items) fsyncs into O(chunks-touched). Caller guarantees every offset is in
+	 * bounds. `writes` is sorted by offset so writes within a chunk go forward.
+	 */
+	async writeManyInto(writes: Array<{ offset: number; bytes: Uint8Array }>): Promise<void> {
+		if (this._truncating) throw new Error("you cant writeInto while truncating");
+		if (writes.length === 0) return;
+		writes.sort((a, b) => a.offset - b.offset);
+
+		let i = 0;
+		while (i < writes.length) {
+			const chunkIndex = Math.floor(writes[i]!.offset / this.maxChunkSize);
+			using writer = await Deno.open(this._chunkPath(chunkIndex), { read: true, write: true });
+			while (i < writes.length && Math.floor(writes[i]!.offset / this.maxChunkSize) === chunkIndex) {
+				const { offset, bytes } = writes[i]!;
+				if (offset + bytes.length > this.size) {
+					throw new Error(`write out of bounds offset=${offset} length=${bytes.length} size=${this.size}`);
+				}
+				await writer.seek(offset % this.maxChunkSize, Deno.SeekMode.Start);
+				await writeFile(writer, bytes);
+				i++;
+			}
+			await writer.sync(); // one fsync per chunk
+		}
+	}
+
+	/** Batched reads, grouped by chunk (one open per touched chunk, no fsync). */
+	async readManyInto(reads: Array<{ offset: number; into: Uint8Array }>): Promise<void> {
+		if (reads.length === 0) return;
+		reads.sort((a, b) => a.offset - b.offset);
+
+		let i = 0;
+		while (i < reads.length) {
+			const chunkIndex = Math.floor(reads[i]!.offset / this.maxChunkSize);
+			using reader = await Deno.open(this._chunkPath(chunkIndex), { read: true });
+			while (i < reads.length && Math.floor(reads[i]!.offset / this.maxChunkSize) === chunkIndex) {
+				const { offset, into } = reads[i]!;
+				if (offset + into.length > this.size) {
+					throw new Error(`read out of bounds offset=${offset} length=${into.length} size=${this.size}`);
+				}
+				await reader.seek(offset % this.maxChunkSize, Deno.SeekMode.Start);
+				await readFileInto(reader, into);
+				i++;
+			}
 		}
 	}
 
@@ -348,17 +399,32 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 	}
 
 	/**
-	 * Freeze the staged overlay and durably record the undo log for it, before
-	 * any disk mutation. New batches after this land in a fresh staged layer.
+	 * Synchronously snapshot the staged overlay into `_frozen` and install a fresh
+	 * staged layer. No await, no disk — see Store.freeze. Atomic calls this on every
+	 * store in one synchronous burst so they all capture the same height; a tick's
+	 * apply() can't interleave because this never yields. Idempotent while a flush
+	 * is pending, so a standalone pin()/flush() may trigger it lazily.
+	 */
+	freeze(): void {
+		if (this._frozen) return;
+		if (this._truncating) throw new Error("can't freeze while truncating");
+		this._frozen = this._staged;
+		this._staged = { entries: new Map(), length: this._frozen.length };
+	}
+
+	/**
+	 * Durably record the undo log for the frozen snapshot, before any disk
+	 * mutation. The snapshot itself is taken by {@link freeze} (Atomic freezes all
+	 * stores first); a standalone caller freezes lazily here. Must run before flush.
 	 */
 	async pin(): Promise<void> {
 		if (this._pinning) throw new Error("already pinning");
-		if (this._frozen) throw new Error("can't pin while a flush is pending/in progress");
+		if (this._flushing) throw new Error("can't pin while a flush is in progress");
 		if (this._truncating) throw new Error("can't pin while truncating");
 		this._pinning = true;
 		try {
-			const frozen = this._frozen = this._staged;
-			this._staged = { entries: new Map(), length: frozen.length };
+			if (!this._frozen) this.freeze();
+			const frozen = this._frozen!;
 
 			const stride = this._stride;
 			const diskLength = this._disk.size / stride;
@@ -381,19 +447,22 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 
 			// Undo log: pre-flush length + old (on-disk) value of every overwritten slot.
 			const wal = new Uint8Array(8 + 8 + sets.length * (8 + stride));
-			const view = new DataView(wal.buffer);
+			const view = new Uint8ArrayView(wal);
 			view.setBigUint64(0, BigInt(diskLength), true);
 			view.setBigUint64(8, BigInt(sets.length), true);
 
+			// Lay out the index headers, and read every old value straight into its WAL
+			// slot in one chunk-grouped pass (one fd per touched chunk) rather than a
+			// separate open+seek+read per overwritten slot.
+			const reads: Array<{ offset: number; into: Uint8Array }> = [];
 			let cursor = 16;
-			const old = new Uint8Array(stride);
 			for (const index of sets) {
-				await this._disk.readInto(index * stride, stride, old);
 				view.setBigUint64(cursor, BigInt(index), true);
 				cursor += 8;
-				wal.set(old, cursor);
+				reads.push({ offset: index * stride, into: wal.subarray(cursor, cursor + stride) });
 				cursor += stride;
 			}
+			await this._disk.readManyInto(reads);
 
 			// Durable BEFORE any mutation. truncate:true so a stale longer WAL can't
 			// leave trailing garbage; a fresh write every round makes stale logs moot.
@@ -431,14 +500,26 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 				const buffer = concat(appends.map((index) => frozen.entries.get(index)!));
 				await this._disk.append(buffer);
 			}
-			for (const index of sets) {
-				await this._disk.writeInto(index * stride, frozen.entries.get(index)!);
+			if (sets.length > 0) {
+				await this._disk.writeManyInto(
+					sets.map((index) => ({ offset: index * stride, bytes: frozen.entries.get(index)! })),
+				);
 			}
 
 			this._frozen = null;
 		} finally {
 			this._flushing = false;
 		}
+	}
+
+	/**
+	 * Delete the rollback WAL. Call only after every store in the atomic group
+	 * has flushed successfully — i.e. from {@link Atomic.flush} after all
+	 * flushes and the RocksDB commit are done, just before writing end.id.
+	 * Until then the WAL must stay so {@link rollback} can undo a partial flush.
+	 */
+	async finalize(): Promise<void> {
+		await Deno.remove(this._walPath).catch(() => {});
 	}
 
 	async rollback(): Promise<void> {
@@ -452,20 +533,23 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 			throw e;
 		}
 
-		const view = new DataView(wal.buffer, wal.byteOffset, wal.byteLength);
+		const view = new Uint8ArrayView(wal);
 		const oldLength = Number(view.getBigUint64(0, true));
 		const setCount = Number(view.getBigUint64(8, true));
 
 		// Restore overwrites first; their offsets are < oldLength so they survive the truncate.
+		// Use writeManyInto: one fd open + one fsync per touched chunk instead of
+		// one fd + one fsync per slot (which is what parallel writeInto() calls do).
 		let cursor = 16;
+		const writes: Array<{ offset: number; bytes: Uint8Array }> = [];
 		for (let i = 0; i < setCount; i++) {
 			const index = Number(view.getBigUint64(cursor, true));
 			cursor += 8;
 			const oldValue = wal.subarray(cursor, cursor + stride);
 			cursor += stride;
-			await this._disk.writeInto(index * stride, oldValue);
+			writes.push({ offset: index * stride, bytes: oldValue });
 		}
-
+		await this._disk.writeManyInto(writes);
 		await this._disk.truncate(oldLength * stride);
 
 		this._batch = null;

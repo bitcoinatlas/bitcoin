@@ -22,6 +22,12 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	public readonly prefix: Uint8Array;
 
 	private _staged: Uint8ArrayMap<Uint8Array>;
+	// The snapshot being flushed. Reads must consult it (it's the most recent
+	// committed-to-this-flush data) and flush() drains it; the finalizer clears
+	// it. Concurrent applies during a flush go to _staged, never here, so they
+	// survive — unlike before, where the finalizer replaced the live _staged and
+	// silently dropped anything applied mid-flush.
+	private _frozen: Uint8ArrayMap<Uint8Array> | null = null;
 
 	private constructor(options: KvStoreOptions<K, V>) {
 		super();
@@ -39,12 +45,19 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		return self;
 	}
 
+	freeze(): void {
+		if (this._frozen) return;
+		this._frozen = this._staged;
+		this._staged = new Uint8ArrayMap();
+	}
+
 	async get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined> {
 		const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
 		keyBytes.set(this.prefix);
 		this.key.encode(key, keyBytes.subarray(this.prefix.length));
 		const encodedKey = keyBytes.subarray(this.prefix.length);
-		const bytes = this._staged.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
+		// Freshness: staged > frozen (being flushed) > rocksdb.
+		const bytes = this._staged.get(encodedKey) ?? this._frozen?.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
 		if (!bytes) return undefined;
 		return this.value.decodeValue(bytes);
 	}
@@ -61,7 +74,9 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 			keyBytes.set(this.prefix);
 			this.key.encode(key, keyBytes.subarray(this.prefix.length));
 			const encodedKey = keyBytes.subarray(this.prefix.length);
-			const bytes = batch.get(encodedKey) ?? this._staged.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
+			// Freshness: batch > staged > frozen > rocksdb.
+			const bytes = batch.get(encodedKey) ?? this._staged.get(encodedKey) ?? this._frozen?.get(encodedKey) ??
+				await this.rocksdb.get(keyBytes);
 			if (!bytes) return undefined;
 			return this.value.decodeValue(bytes);
 		};
@@ -79,24 +94,28 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		return { set, get, apply, discard };
 	}
 
-	private _flushing: boolean = false;
 	async flush(trx: Transaction): Promise<FlushFinalizer> {
-		if (this._flushing) throw new Error("you are already flushing rn");
-		this._flushing = true;
-		for (const [encodedKey, bytes] of this._staged.entries()) {
+		// Standalone callers (and the test suite) flush without a separate freeze;
+		// Atomic freezes everything up front, so here _frozen is already set and
+		// this is a no-op. Either way we drain a stable snapshot, never live staged.
+		if (!this._frozen) this.freeze();
+		const frozen = this._frozen!;
+		for (const [encodedKey, bytes] of frozen.entries()) {
 			const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
 			keyBytes.set(this.prefix);
 			keyBytes.set(encodedKey, this.prefix.length);
 			await trx.put(keyBytes, bytes);
 		}
+		// Draining from _frozen (not clearing until the finalizer) also makes a
+		// transaction-callback replay safe: a retry just re-puts the same snapshot.
 		return () => {
-			this._staged = new Uint8ArrayMap();
-			this._flushing = false;
+			this._frozen = null;
 		};
 	}
 
 	async clear(): Promise<void> {
 		await this.rocksdb.clear();
 		this._staged.clear();
+		this._frozen = null;
 	}
 }

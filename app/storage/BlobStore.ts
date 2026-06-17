@@ -1,4 +1,5 @@
 import { Codec, U64 } from "@nomadshiba/codec";
+import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { Batch, Store } from "~/storage/Store.ts";
@@ -274,6 +275,7 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 	private _batch: MemoryRegion | null | undefined;
 	private _realizedDiskSize: number;
 
+	private _flushing = false;
 	private _truncating = false;
 	private _rollbackPath: string;
 
@@ -382,13 +384,27 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 		return { size, append, get, apply, discard };
 	}
 
+	// Synchronous snapshot — see Store.freeze. Splitting this out of flush() (where
+	// it used to live) is what lets Atomic freeze every store at one instant so a
+	// concurrent apply can't land in some stores' flush snapshot but not others'.
+	// size() is unchanged across a freeze: the bytes simply move staged -> frozen.
+	freeze(): void {
+		if (this._frozen) return;
+		if (this._truncating) throw new Error("can't freeze while truncating");
+		this._frozen = this._staged;
+		this._staged = new MemoryRegion({ maxChunkSize: this.maxMemoryChunkSize });
+	}
+
 	private _pinning: boolean = false;
 	async pin(): Promise<void> {
 		if (this._pinning) throw new Error("already pinning");
-		if (this._frozen) throw new Error("can't pin disk while flushing to it");
+		if (this._flushing) throw new Error("can't pin disk while flushing to it");
 		if (this._truncating) throw new Error("can't pin disk while truncating it");
 		this._pinning = true;
 		try {
+			// rollback.size is the pre-flush disk size. freeze() doesn't touch disk,
+			// so recording disk.size here is correct whether pin runs before or after
+			// freeze (Atomic freezes first, then pins).
 			using rollback = await Deno.open(this._rollbackPath, { create: true, write: true });
 			await writeFile(rollback, U64.encode(this._disk.size));
 			await rollback.sync();
@@ -398,32 +414,40 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 	}
 
 	async flush(): Promise<void> {
-		if (this._frozen) throw new Error("wtf are you doin man, you are already flushing");
+		if (this._flushing) throw new Error("wtf are you doin man, you are already flushing");
 		if (this._pinning) throw new Error("cant flush while pinning");
 		if (this._truncating) throw new Error("can't flush while truncating");
-		this._frozen = this._staged;
-		this._staged = new MemoryRegion({ maxChunkSize: this.maxMemoryChunkSize });
-
+		// Standalone callers don't freeze separately; Atomic does. Either way we
+		// drain a stable frozen snapshot, never the live staged layer.
+		if (!this._frozen) this.freeze();
+		const frozen = this._frozen!;
+		this._flushing = true;
 		try {
-			for (const chunk of this._frozen.chunks) {
+			for (const chunk of frozen.chunks) {
 				await this._disk.append(chunk);
 			}
 			this._realizedDiskSize = this._disk.size;
 		} finally {
 			this._frozen = null;
+			this._flushing = false;
 		}
 	}
 
 	async rollback(): Promise<void> {
-		let wal: Uint8Array;
-		try {
-			wal = await Deno.readFile(this._rollbackPath);
-		} catch (e) {
-			if (e instanceof Deno.errors.NotFound) return; // nothing was ever pinned
-			throw e;
-		}
-		const [size] = U64.decode(wal);
+		// No pin recorded means nothing was ever flushed under WAL protection, so
+		// there is nothing to undo. Atomic.recover() rolls back every store
+		// uniformly, and pin() always fsyncs rollback.size before any disk mutation,
+		// so a missing file can only mean "this store never got that far" — a no-op.
+		// (Matches IndexStore.rollback, which already no-ops on a missing WAL.)
+		if (!(await exists(this._rollbackPath))) return;
+		const [size] = U64.decode(await Deno.readFile(this._rollbackPath));
 		await this.truncate(Number(size));
+	}
+
+	/**
+	 * Delete the rollback size file. See {@link Store.finalize}.
+	 */
+	async finalize(): Promise<void> {
 		await Deno.remove(this._rollbackPath).catch(() => {});
 	}
 
@@ -431,7 +455,7 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 		if (this._truncating) throw new Error("A truncate is already in progress");
 		if (this._batch) throw new Error("Can't truncate while a batch is open");
 		if (this._staged.size > 0) throw new Error("Can't truncate while staged data is present; flush first");
-		if (this._frozen) throw new Error("Can't truncate while a flush is in progress");
+		if (this._frozen) throw new Error("Can't truncate while a flush is pending/in progress");
 
 		this._truncating = true;
 		try {
