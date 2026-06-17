@@ -415,8 +415,16 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 	}
 
 	async rollback(): Promise<void> {
-		const [size] = U64.decode(await Deno.readFile(this._rollbackPath));
+		let wal: Uint8Array;
+		try {
+			wal = await Deno.readFile(this._rollbackPath);
+		} catch (e) {
+			if (e instanceof Deno.errors.NotFound) return; // nothing was ever pinned
+			throw e;
+		}
+		const [size] = U64.decode(wal);
 		await this.truncate(Number(size));
+		await Deno.remove(this._rollbackPath).catch(() => {});
 	}
 
 	async truncate(size: number): Promise<void> {

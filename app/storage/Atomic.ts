@@ -140,6 +140,7 @@ export class Atomic<T extends AtomicStores> {
 				}
 			}
 			await Promise.all(this._stores.values().map((store) => store.rollback()));
+			if (this._start) await this._setEnd(this._start);
 		} catch (reason) {
 			console.error(`Atomic recover failed:`, reason);
 			Deno.exit(1);

@@ -471,6 +471,8 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		this._batch = null;
 		this._frozen = null;
 		this._staged = { entries: new Map(), length: this._disk.size / stride };
+
+		await Deno.remove(this._walPath).catch(() => {});
 	}
 
 	async truncate(length: number): Promise<void> {
