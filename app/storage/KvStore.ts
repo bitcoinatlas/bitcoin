@@ -43,7 +43,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
 		keyBytes.set(this.prefix);
 		this.key.encode(key, keyBytes.subarray(this.prefix.length));
-		const bytes = this._staged.get(key) ?? await this.rocksdb.get(keyBytes);
+		const encodedKey = keyBytes.subarray(this.prefix.length);
+		const bytes = this._staged.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
 		if (!bytes) return undefined;
 		return this.value.decodeValue(bytes);
 	}
@@ -59,7 +60,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 			const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
 			keyBytes.set(this.prefix);
 			this.key.encode(key, keyBytes.subarray(this.prefix.length));
-			const bytes = batch.get(key) ?? this._staged.get(key) ?? await this.rocksdb.get(keyBytes);
+			const encodedKey = keyBytes.subarray(this.prefix.length);
+			const bytes = batch.get(encodedKey) ?? this._staged.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
 			if (!bytes) return undefined;
 			return this.value.decodeValue(bytes);
 		};
@@ -81,10 +83,10 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	async flush(trx: Transaction): Promise<FlushFinalizer> {
 		if (this._flushing) throw new Error("you are already flushing rn");
 		this._flushing = true;
-		for (const [key, bytes] of this._staged.entries()) {
+		for (const [encodedKey, bytes] of this._staged.entries()) {
 			const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
 			keyBytes.set(this.prefix);
-			this.key.encode(key, keyBytes.subarray(this.prefix.length));
+			keyBytes.set(encodedKey, this.prefix.length);
 			await trx.put(keyBytes, bytes);
 		}
 		return () => {

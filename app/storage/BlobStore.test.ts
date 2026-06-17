@@ -215,6 +215,7 @@ Deno.test("rollback undoes the most recent flush", async () => {
 		let b = store.batch();
 		const px = b.append(u32(777));
 		b.apply();
+		await store.pin();
 		await store.flush(); // rollback.size = 0
 		const afterX = await diskBytes(path);
 
@@ -223,6 +224,7 @@ Deno.test("rollback undoes the most recent flush", async () => {
 		b = store.batch();
 		b.append(u32(888));
 		b.apply();
+		await store.pin();
 		await store.flush(); // rollback.size = afterX
 		assertEquals(await diskBytes(path), afterX + 4);
 
