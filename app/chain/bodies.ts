@@ -7,6 +7,7 @@ import { BlockMessage } from "~/p2p/messages/Block.ts";
 import { GetDataMessage, MSG_WITNESS_BLOCK } from "~/p2p/messages/GetData.ts";
 import { peers } from "~/p2p/peers.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
+import { delay } from "@std/async";
 
 /**
  * Soft byte budget for how much block payload we append per tick.  Once the
@@ -151,8 +152,6 @@ function enumeratePending(limit: number): Pending[] {
 	return out;
 }
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
 // ── Downloader (producer) ────────────────────────────────────────────────────
 
 /**
@@ -181,7 +180,7 @@ async function downloaderLoop(): Promise<void> {
 	for (;;) {
 		const peer = peers().find((p) => p.connected) ?? null;
 		if (!peer) {
-			await sleep(DOWNLOADER_IDLE_MS);
+			await delay(DOWNLOADER_IDLE_MS);
 			continue;
 		}
 		ensureListener(peer);
@@ -193,7 +192,7 @@ async function downloaderLoop(): Promise<void> {
 		// loop from dribbling 2-block getdatas every time the listener shrinks the
 		// window mid-pass.
 		if (room < DOWNLOAD_BATCH) {
-			await sleep(DOWNLOADER_IDLE_MS);
+			await delay(DOWNLOADER_IDLE_MS);
 			continue;
 		}
 
@@ -212,7 +211,7 @@ async function downloaderLoop(): Promise<void> {
 		// what we have so we don't stall at the end.
 		const tipNear = pending.length < DOWNLOAD_BATCH;
 		if (want.length === 0 || (want.length < DOWNLOAD_BATCH && !tipNear)) {
-			await sleep(DOWNLOADER_IDLE_MS);
+			await delay(DOWNLOADER_IDLE_MS);
 			continue;
 		}
 
