@@ -1,18 +1,20 @@
 import { Codec, type FixedCodec } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
-import type { Batch, Store } from "~/storage/Store.ts";
+import { Batch, Store } from "~/storage/Store.ts";
 import { readFileInto, writeFile } from "~/utils/fs.ts";
-
-type AppendFinalizer = () => void;
 
 /**
  * Chunked, fixed-stride disk storage with in-place writes.
  *
  * Unlike BlobStore's DiskRegion this one is settable via {@link writeInto}.
- * The chunk size is required to be a multiple of the item stride (enforced by
- * IndexStore), so no single item ever straddles a chunk boundary — a set is
- * always a single-chunk positioned write.
+ * `maxChunkSize` MUST be a multiple of the item stride (enforced by IndexStore),
+ * so no single item ever straddles a chunk boundary — a set is always a
+ * single-chunk positioned write.
+ *
+ * Reads and in-place writes open a fresh fd per call (closed via `using`), so
+ * each operation owns its own kernel file offset and concurrent gets/writes
+ * can never race on a shared seek position.
  */
 class DiskRegion implements Disposable {
 	public readonly path: string;
@@ -68,24 +70,23 @@ class DiskRegion implements Disposable {
 			if (!(e instanceof Deno.errors.NotFound)) throw e;
 		}
 
-		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 		self._appender = {
 			index: tailIndex,
 			file: await Deno.open(self._chunkPath(tailIndex), { create: true, append: true }),
 		};
+		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 
 		return self;
 	}
 
 	private _appender!: { file: Deno.FsFile; index: number };
 	private _appending = false;
-	async append(bytes: Uint8Array): Promise<AppendFinalizer> {
+	async append(bytes: Uint8Array): Promise<void> {
 		if (this._appending) throw new Error("you are trying to append back to back, check your logic");
 		if (this._truncating) throw new Error("you are trying to append while truncating, check your logic");
 		this._appending = true;
-		let size = this.size;
-
 		try {
+			let size = this.size;
 			let appended = 0;
 			while (appended < bytes.length) {
 				const want = bytes.length - appended;
@@ -106,15 +107,12 @@ class DiskRegion implements Disposable {
 				appended += append;
 				size += append;
 			}
+			this.size = size;
 		} finally {
 			this._appending = false;
 		}
-
-		return () => this.size = size;
 	}
 
-	private _readers: Deno.FsFile[] = [];
-	private _readersPromise: Promise<Deno.FsFile>[] = [];
 	async readInto(offset: number, length: number, target: Uint8Array): Promise<void> {
 		if (offset + length > this.size) {
 			throw new Error(`read out of bounds offset=${offset} length=${length} size=${this.size}`);
@@ -128,11 +126,8 @@ class DiskRegion implements Disposable {
 			const available = this.maxChunkSize - start;
 			const read = Math.min(want, available);
 
-			const reader = (this._readers[index] ??= await (
-				this._readersPromise[index] ??= Deno.open(this._chunkPath(index), { read: true })
-			));
-
-			reader.seekSync(start, Deno.SeekMode.Start);
+			using reader = await Deno.open(this._chunkPath(index), { read: true });
+			await reader.seek(start, Deno.SeekMode.Start);
 			await readFileInto(reader, target.subarray(copied, copied + read));
 
 			copied += read;
@@ -140,8 +135,6 @@ class DiskRegion implements Disposable {
 		}
 	}
 
-	private _writers: Deno.FsFile[] = [];
-	private _writersPromise: Promise<Deno.FsFile>[] = [];
 	/** In-place positioned write. Caller guarantees `offset + bytes.length <= size`. */
 	async writeInto(offset: number, bytes: Uint8Array): Promise<void> {
 		if (this._truncating) throw new Error("you cant writeInto while truncating");
@@ -157,11 +150,8 @@ class DiskRegion implements Disposable {
 			const available = this.maxChunkSize - start;
 			const write = Math.min(want, available);
 
-			const writer = (this._writers[index] ??= await (
-				this._writersPromise[index] ??= Deno.open(this._chunkPath(index), { read: true, write: true })
-			));
-
-			writer.seekSync(start, Deno.SeekMode.Start);
+			using writer = await Deno.open(this._chunkPath(index), { read: true, write: true });
+			await writer.seek(start, Deno.SeekMode.Start);
 			await writeFile(writer, bytes.subarray(written, written + write));
 			await writer.sync();
 
@@ -183,15 +173,8 @@ class DiskRegion implements Disposable {
 		this._appender.index = -1;
 
 		for (let index = newTail + 1; index <= oldTail; index++) {
-			(await this._readersPromise[index])?.close();
-			(await this._writersPromise[index])?.close();
 			await Deno.remove(this._chunkPath(index));
 		}
-
-		this._readers.length = newTail + 1;
-		this._readersPromise.length = newTail + 1;
-		this._writers.length = newTail + 1;
-		this._writersPromise.length = newTail + 1;
 
 		const tailEnd = size % this.maxChunkSize;
 		await Deno.truncate(this._chunkPath(newTail), tailEnd);
@@ -208,19 +191,7 @@ class DiskRegion implements Disposable {
 	}
 
 	close() {
-		try {
-			this._appender.file.close();
-		} catch { /*  */ }
-		for (const reader of this._readers) {
-			try {
-				reader?.close();
-			} catch { /*  */ }
-		}
-		for (const writer of this._writers) {
-			try {
-				writer?.close();
-			} catch { /*  */ }
-		}
+		this._appender.file.close();
 	}
 
 	[Symbol.dispose](): void {
@@ -240,10 +211,8 @@ type Overlay = {
 };
 
 export interface IndexStoreBatch<T> extends Batch {
-	/** Overwrite an existing item. `index` must be in `[0, length())`. */
 	set(index: number, item: T): void;
-	/** Append a new item. Returns its index. */
-	append(item: T): number;
+	push(item: T): number;
 	get(index: number): Promise<T>;
 	length(): number;
 }
@@ -251,7 +220,6 @@ export interface IndexStoreBatch<T> extends Batch {
 export type IndexStoreOptions<T extends FixedCodec<any>> = {
 	path: string;
 	codec: T;
-	/** Items per disk chunk. Chunk byte size becomes `stride * itemsPerChunk`. */
 	itemsPerChunk: number;
 };
 
@@ -262,8 +230,19 @@ export type IndexStoreOptions<T extends FixedCodec<any>> = {
  * an existing slot in place. Staging is a keyed overlay rather than a positional
  * region stack, and rollback uses an undo log (old value per overwritten slot +
  * the pre-flush length) instead of a single truncate point.
+ *
+ * Durability contract (Atomic-orchestrated): pin → flush → (rocks) → end.
+ *
+ * - `pin()`  — freeze the staged overlay and write the durable undo log derived
+ *              from *that* snapshot, BEFORE any disk mutation. Must run before flush.
+ * - `flush()` — apply the frozen snapshot (appends extend, sets write in place).
+ * - `rollback()` — replay the undo log: restore overwritten slots, truncate appends.
+ *
+ * Why pin freezes (unlike BlobStore, where flush freezes): IndexStore's undo is
+ * value-based, so the snapshot the undo log describes and the snapshot flush
+ * writes MUST be identical. Freezing at pin time pins both to the same overlay.
  */
-export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBatch<Codec.InferOutput<T>>>, Disposable {
+export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch<Codec.InferOutput<T>>> implements Disposable {
 	public readonly path: string;
 	public readonly itemsPerChunk: number;
 
@@ -276,10 +255,12 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 	private _frozen: Overlay | null = null;
 	private _batch: Overlay | null = null;
 
+	private _pinning = false;
 	private _flushing = false;
 	private _truncating = false;
 
 	private constructor(options: IndexStoreOptions<T>) {
+		super();
 		this.path = options.path;
 		this.itemsPerChunk = options.itemsPerChunk;
 		this._codec = options.codec;
@@ -290,17 +271,23 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 	static async open<T extends FixedCodec<any>>(options: IndexStoreOptions<T>): Promise<IndexStore<T>> {
 		const self = new IndexStore(options);
 		const maxChunkSize = self._stride * options.itemsPerChunk;
+		if (maxChunkSize % self._stride !== 0) {
+			throw new Error("chunk size must be a multiple of the item stride");
+		}
 		self._disk = await DiskRegion.open({ path: options.path, maxChunkSize });
 		self._staged = { entries: new Map(), length: self._disk.size / self._stride };
 		return self;
 	}
 
 	/** Logical item count (does not include an open batch's pending appends). */
-	get length(): number {
+	length(): number {
 		return this._staged.length;
 	}
 
 	private async _read(index: number, extra?: Map<number, Uint8Array>): Promise<Codec.InferOutput<T>> {
+		// Freshness order: batch overlay > staged > frozen > disk.
+		// Any slot being written by an in-progress flush lives in `_frozen`, so a
+		// read for it routes to the overlay and never sees a half-written disk slot.
 		const staged = extra?.get(index) ?? this._staged.entries.get(index) ?? this._frozen?.entries.get(index);
 		if (staged) {
 			const [decoded] = this._codec.decode(staged);
@@ -308,8 +295,8 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 		}
 
 		const offset = index * this._stride;
-		if (offset + this._stride > this._disk.size) {
-			throw new RangeError(`get out of bounds index=${index} length=${this.length}`);
+		if (index < 0 || offset + this._stride > this._disk.size) {
+			throw new RangeError(`get out of bounds index=${index} length=${this.length()}`);
 		}
 
 		const buffer = new Uint8Array(this._stride);
@@ -338,7 +325,7 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 			overlay.entries.set(index, codec.encode(item));
 		};
 
-		const append: IndexStoreBatch<Codec.InferOutput<T>>["append"] = (item) => {
+		const push: IndexStoreBatch<Codec.InferOutput<T>>["push"] = (item) => {
 			const index = overlay.length;
 			overlay.entries.set(index, codec.encode(item));
 			overlay.length = index + 1;
@@ -357,28 +344,29 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 			this._batch = null;
 		};
 
-		return { length, set, append, get, apply, discard };
+		return { length, set, push, get, apply, discard };
 	}
 
-	async flush(): Promise<void> {
-		if (this._flushing) throw new Error("wtf are you doin man, you are already flushing");
-		if (this._truncating) throw new Error("can't flush while truncating");
-		this._flushing = true;
-
-		// Freeze so new batches can keep landing in a fresh staged layer mid-flush.
-		if (!this._frozen) {
-			this._frozen = this._staged;
-			this._staged = { entries: new Map(), length: this._frozen.length };
-		}
-
+	/**
+	 * Freeze the staged overlay and durably record the undo log for it, before
+	 * any disk mutation. New batches after this land in a fresh staged layer.
+	 */
+	async pin(): Promise<void> {
+		if (this._pinning) throw new Error("already pinning");
+		if (this._frozen) throw new Error("can't pin while a flush is pending/in progress");
+		if (this._truncating) throw new Error("can't pin while truncating");
+		this._pinning = true;
 		try {
+			const frozen = this._frozen = this._staged;
+			this._staged = { entries: new Map(), length: frozen.length };
+
 			const stride = this._stride;
 			const diskLength = this._disk.size / stride;
 
-			// Partition staged entries into overwrites of disk-resident slots vs new appends.
+			// Partition frozen entries into in-place overwrites vs new appends.
 			const sets: number[] = [];
 			const appends: number[] = [];
-			for (const index of this._frozen.entries.keys()) {
+			for (const index of frozen.entries.keys()) {
 				if (index < diskLength) sets.push(index);
 				else appends.push(index);
 			}
@@ -391,7 +379,7 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 				}
 			}
 
-			// Build the undo log: pre-flush length + old value of every overwritten slot.
+			// Undo log: pre-flush length + old (on-disk) value of every overwritten slot.
 			const wal = new Uint8Array(8 + 8 + sets.length * (8 + stride));
 			const view = new DataView(wal.buffer);
 			view.setBigUint64(0, BigInt(diskLength), true);
@@ -407,21 +395,44 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 				cursor += stride;
 			}
 
-			// Durable undo log BEFORE any mutation. This is the whole point.
-			{
-				using walFile = await Deno.open(this._walPath, { create: true, write: true, truncate: true });
-				await writeFile(walFile, wal);
-				await walFile.sync();
-			}
+			// Durable BEFORE any mutation. truncate:true so a stale longer WAL can't
+			// leave trailing garbage; a fresh write every round makes stale logs moot.
+			using walFile = await Deno.open(this._walPath, { create: true, write: true, truncate: true });
+			await writeFile(walFile, wal);
+			await walFile.sync();
+		} finally {
+			this._pinning = false;
+		}
+	}
 
-			// Apply appends (extend), then sets (in place). The two ranges are disjoint.
+	/** Apply the frozen snapshot to disk. Requires a prior {@link pin}. */
+	async flush(): Promise<void> {
+		if (this._flushing) throw new Error("wtf are you doin man, you are already flushing");
+		if (this._pinning) throw new Error("can't flush while pinning");
+		if (this._truncating) throw new Error("can't flush while truncating");
+		const frozen = this._frozen;
+		if (!frozen) throw new Error("call pin() before flush()");
+		this._flushing = true;
+		try {
+			const stride = this._stride;
+			const diskLength = this._disk.size / stride;
+
+			const sets: number[] = [];
+			const appends: number[] = [];
+			for (const index of frozen.entries.keys()) {
+				if (index < diskLength) sets.push(index);
+				else appends.push(index);
+			}
+			appends.sort((a, b) => a - b);
+
+			// Appends extend the region; sets overwrite existing slots. Disjoint ranges,
+			// so order is irrelevant — and a crash mid-flush is fully undone by the WAL.
 			if (appends.length > 0) {
-				const buffer = concat(appends.map((index) => this._frozen!.entries.get(index)!));
-				const finalize = await this._disk.append(buffer);
-				finalize();
+				const buffer = concat(appends.map((index) => frozen.entries.get(index)!));
+				await this._disk.append(buffer);
 			}
 			for (const index of sets) {
-				await this._disk.writeInto(index * stride, this._frozen.entries.get(index)!);
+				await this._disk.writeInto(index * stride, frozen.entries.get(index)!);
 			}
 
 			this._frozen = null;
@@ -445,13 +456,13 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 		const oldLength = Number(view.getBigUint64(0, true));
 		const setCount = Number(view.getBigUint64(8, true));
 
+		// Restore overwrites first; their offsets are < oldLength so they survive the truncate.
 		let cursor = 16;
 		for (let i = 0; i < setCount; i++) {
 			const index = Number(view.getBigUint64(cursor, true));
 			cursor += 8;
 			const oldValue = wal.subarray(cursor, cursor + stride);
 			cursor += stride;
-			// Restore overwrites first; their offsets are < oldLength so they survive the truncate.
 			await this._disk.writeInto(index * stride, oldValue);
 		}
 
@@ -465,7 +476,7 @@ export class IndexStore<T extends FixedCodec<any>> implements Store<IndexStoreBa
 	async truncate(length: number): Promise<void> {
 		if (this._truncating) throw new Error("A truncate is already in progress");
 		if (this._batch) throw new Error("Can't truncate while a batch is open");
-		if (this._frozen) throw new Error("Can't truncate while a flush is in progress");
+		if (this._frozen) throw new Error("Can't truncate while a flush is pending/in progress");
 		if (this._staged.entries.size > 0) throw new Error("Can't truncate while staged data is present; flush first");
 
 		this._truncating = true;

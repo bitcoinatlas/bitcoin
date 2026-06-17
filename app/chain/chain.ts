@@ -16,13 +16,27 @@ import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { BASE_DATA_DIR } from "~/config.ts";
-import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
+import { MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { ArrayStore } from "~/storage/ArrayStore.ts";
 import { Atomic, InferBatches, InferStores } from "~/storage/Atomic.ts";
 import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
-import { KVStore } from "~/storage/KVStore.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
+import { KvStore } from "~/storage/KvStore.ts";
+import { RocksDatabase } from "@harperfast/rocksdb-js";
+
+RocksDatabase.config({
+	blockCacheSize: 4 * 1024 * 1024 * 1024,
+	writeBufferManagerSize: 512 * 1024 * 1024,
+	writeBufferManagerCostToCache: true,
+});
+
+const rocksDir = join(BASE_DATA_DIR, "rocksdb");
+await Deno.mkdir(rocksDir, { recursive: true });
+const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
+	disableWAL: true,
+	parallelismThreads: Math.min(6, navigator.hardwareConcurrency),
+});
 
 export const atomic = await Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
@@ -30,29 +44,36 @@ export const atomic = await Atomic.open({
 		header: await ArrayStore.open({
 			path: join(BASE_DATA_DIR, "header"),
 			codec: StoredBlockHeader,
+			diskItemsPerChunk: 1_000_000,
+			memoryItemsPerChunk: 1_000_000,
 		}),
 		block: await ArrayStore.open({
 			path: join(BASE_DATA_DIR, "block"),
 			codec: StoredPointer,
+			diskItemsPerChunk: 1_000_000,
+			memoryItemsPerChunk: 1_000_000,
 		}),
 		tx: await BlobStore.open({
 			path: join(BASE_DATA_DIR, "tx"),
+			maxDiskChunkSize: 1 * 1000 * 1000 * 1000,
+			maxMemoryChunkSize: MAX_BLOCK_SIZE,
 		}),
-		txid: await KVStore.open({
-			path: join(BASE_DATA_DIR, "txid"),
-			keyCodec: Bytes32,
-			valueCodec: StoredPointer,
-			threads: 4,
+		txid: await KvStore.open({
+			rocksdb,
+			prefix: new Uint8Array([0]),
+			key: Bytes32,
+			value: StoredPointer,
 		}),
-		pubkey: await KVStore.open({
-			path: join(BASE_DATA_DIR, "pubkey"),
-			keyCodec: Bytes32,
-			valueCodec: StoredPointer,
-			threads: 2,
+		pubkey: await KvStore.open({
+			rocksdb,
+			prefix: new Uint8Array([1]),
+			key: Bytes32,
+			value: StoredPointer,
 		}),
 		spender: await IndexStore.open({
 			path: join(BASE_DATA_DIR, "spender"),
 			codec: StoredPointer,
+			itemsPerChunk: 1_000_000,
 		}),
 	},
 });

@@ -1,11 +1,15 @@
+import { RocksDatabase } from "@harperfast/rocksdb-js";
+import { BytesCodec, TupleCodec, U64 } from "@nomadshiba/codec";
+import { equals } from "@std/bytes";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { equals } from "@std/bytes";
-import { Store } from "~/storage/Store.ts";
-import { writeFile } from "~/utils/fs.ts";
 import { randomBytes } from "@noble/hashes/utils";
+import { Store, StoreRocks } from "~/storage/Store.ts";
+import { writeFile } from "~/utils/fs.ts";
 
-type AtomicStores = { readonly [name: string]: Store };
+const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
+
+type AtomicStores = { readonly [name: string]: Store | StoreRocks };
 export type AtomicOptions<T extends AtomicStores> = {
 	path: string;
 	stores: T;
@@ -19,35 +23,45 @@ export type InferBatches<T extends Atomic<AtomicStores>, TNames extends keyof T[
 };
 
 export class Atomic<T extends AtomicStores> {
-	public readonly statePath: string;
 	public readonly stores: T;
-	public readonly storeMap: ReadonlyMap<string, Store>;
+
+	private _rocksdb: RocksDatabase | undefined;
+
+	private _names: readonly string[];
+	private _rocks: ReadonlyMap<string, StoreRocks>;
+	private _stores: ReadonlyMap<string, Store>;
+
 	private _start: Uint8Array | undefined;
 	private _end: Uint8Array | undefined;
 
 	private _startPath: string;
 	private _endPath: string;
 
-	private _multiBatchObjectFactory: Function;
-	private constructor(path: string, stores: T) {
-		this.statePath = join(path, "state.bin");
-		this.stores = stores;
-		this.storeMap = new Map(Object.entries(stores));
+	private constructor(options: AtomicOptions<T>) {
 		this.busy = false;
-		this._startPath = join(path, `start.id`);
-		this._endPath = join(path, "end.id");
+		this.stores = options.stores;
 
-		// V8 class/struct
-		this._multiBatchObjectFactory = new Function(
-			...this.storeMap.keys().map((_, i) => `arg${i}`),
-			`return{${this.storeMap.keys().map((field, i) => `${JSON.stringify(field)}:arg${i}`).toArray().join(",")}}`,
-		);
+		this._names = Object.keys(this.stores);
+
+		const entries = Object.entries(options.stores);
+		this._rocks = new Map(entries.filter((entry): entry is [string, StoreRocks] => entry[1] instanceof StoreRocks));
+		this._stores = new Map(entries.filter((entry): entry is [string, Store] => entry[1] instanceof Store));
+
+		this._startPath = join(options.path, `start.id`);
+		this._endPath = join(options.path, "end.id");
 	}
 
 	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
-		await Deno.mkdir(options.path, { recursive: true });
-		const self = new Atomic<T>(options.path, options.stores);
+		const self = new Atomic<T>(options);
 
+		for (const kv of self._rocks.values()) {
+			self._rocksdb ??= kv.rocksdb;
+			if (self._rocksdb !== kv.rocksdb) {
+				throw new Error("im sorry but your kv stores has to use the same rocksdb instance, for atomicity");
+			}
+		}
+
+		await Deno.mkdir(options.path, { recursive: true });
 		self._start = await exists(self._startPath) ? await Deno.readFile(self._startPath) : undefined;
 		self._end = await exists(self._endPath) ? await Deno.readFile(self._endPath) : undefined;
 
@@ -83,9 +97,25 @@ export class Atomic<T extends AtomicStores> {
 		}
 		this.busy = true;
 		try {
-			const id = randomBytes(32);
+			const id = ID.encode([Date.now(), randomBytes(2)]);
+			await Promise.all(this._stores.values().map((store) => store.pin()));
 			await this._setStart(id);
-			await Promise.all(this.storeMap.values().map((store) => store.flush()));
+			await Promise.all(this._stores.values().map((store) => store.flush()));
+
+			if (this._rocksdb) {
+				const finalizers = await this._rocksdb.transaction(async (trx) => {
+					const finalizers = await Promise.all(this._rocks.values().map((store) => store.flush(trx)));
+					await trx.put("atomic.id", id);
+					return finalizers;
+				});
+				await this._rocksdb.flush();
+				if (finalizers) {
+					for (const finalizer of finalizers) {
+						finalizer();
+					}
+				}
+			}
+
 			await this._setEnd(id);
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
@@ -96,23 +126,29 @@ export class Atomic<T extends AtomicStores> {
 	}
 
 	async recover(): Promise<void> {
-		if (this.isConsistent()) return;
 		if (this.busy) {
 			throw new Error("im busy man, STOP");
 		}
-		this.busy = true;
 		try {
-			await Promise.all(this.storeMap.values().map((store) => store.rollback()));
+			this.busy = true;
+			if (this.isConsistent()) return;
+			if (this._start && this._rocksdb) {
+				const id = await this._rocksdb.get("atomic.id");
+				if (id && equals(id, this._start)) {
+					await this._setEnd(id);
+					return;
+				}
+			}
+			await Promise.all(this._stores.values().map((store) => store.rollback()));
 		} catch (reason) {
-			console.error(`Atomic rollback failed:`, reason);
+			console.error(`Atomic recover failed:`, reason);
 			Deno.exit(1);
 		} finally {
 			this.busy = false;
 		}
 	}
 
-	batch(names?: readonly (keyof T)[]): InferBatches<Atomic<T>> {
-		if (!names) return this._multiBatchObjectFactory(...this.storeMap.values().map((store) => store.batch()));
+	batch(names: readonly (keyof T)[] = this._names): InferBatches<Atomic<T>> {
 		return Object.fromEntries(names.map((name) => [name, this.stores[name]!.batch()])) as never;
 	}
 }

@@ -1,3 +1,5 @@
+import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
+
 /**
  * An in-memory batch of writes for a store.
  *
@@ -12,8 +14,18 @@ export interface Batch {
 	discard(): void;
 }
 
-export interface Store<T extends Batch = Batch> {
-	batch(): T;
-	flush(): Promise<void>;
-	rollback(): Promise<void>;
+export abstract class Store<T extends Batch = Batch> {
+	abstract readonly path: string;
+	abstract batch(): T;
+	abstract pin(): Promise<void>;
+	abstract flush(): Promise<void>;
+	abstract rollback(): Promise<void>;
+}
+
+export type FlushFinalizer = () => void;
+
+export abstract class StoreRocks<T extends Batch = Batch> {
+	abstract readonly rocksdb: RocksDatabase;
+	abstract batch(): T;
+	abstract flush(trx: Transaction): Promise<FlushFinalizer>;
 }

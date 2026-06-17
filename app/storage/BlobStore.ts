@@ -1,18 +1,14 @@
 import { Codec, U64 } from "@nomadshiba/codec";
-import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
-import type { Batch, Store } from "~/storage/Store.ts";
+import { Batch, Store } from "~/storage/Store.ts";
 import { PromiseOrValue } from "~/types.ts";
 import { readFileInto, writeFile } from "~/utils/fs.ts";
 
-type AppendFinalizer = () => void;
-
 type Region = {
 	size: number;
-	append(bytes: Uint8Array): Promise<AppendFinalizer> | void;
+	append(bytes: Uint8Array): Promise<void> | void;
 	readInto(offset: number, length: number, target: Uint8Array): PromiseOrValue<void>;
-	truncate(size: number): PromiseOrValue<void>;
 };
 
 type MemoryRegionOptions = {
@@ -87,13 +83,6 @@ class MemoryRegion implements Region {
 			chunkOffset = 0;
 		}
 	}
-
-	truncate(size: number): PromiseOrValue<void> {
-		const newTail = Math.floor(size / this.maxChunkSize);
-		this.chunks.length = newTail + 1;
-		this.chunks[newTail]!.buffer.resize(size % this.maxChunkSize);
-		this.size = size;
-	}
 }
 
 type DiskRegionOptions = {
@@ -154,24 +143,23 @@ class DiskRegion implements Region, Disposable {
 		} catch (e) {
 			if (!(e instanceof Deno.errors.NotFound)) throw e;
 		}
-		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 		self._appender = {
 			index: tailIndex,
 			file: await Deno.open(self._chunkPath(tailIndex), { create: true, append: true }),
 		};
+		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 
 		return self;
 	}
 
 	private _appender!: { file: Deno.FsFile; index: number };
 	private _appending = false;
-	async append(bytes: Uint8Array): Promise<AppendFinalizer> {
+	async append(bytes: Uint8Array): Promise<void> {
 		if (this._appending) throw new Error("you are trying to append back to back, check your logic");
 		if (this._truncating) throw new Error("you are trying to append while truncating, check your logic");
 		this._appending = true;
-		let size = this.size;
-
 		try {
+			let size = this.size;
 			let appended = 0;
 			while (appended < bytes.length) {
 				const want = bytes.length - appended;
@@ -192,15 +180,12 @@ class DiskRegion implements Region, Disposable {
 				appended += append;
 				size += append;
 			}
+			this.size = size;
 		} finally {
 			this._appending = false;
 		}
-
-		return () => this.size = size;
 	}
 
-	private _readers: Deno.FsFile[] = [];
-	private _readersPromise: Promise<Deno.FsFile>[] = [];
 	async readInto(offset: number, length: number, target: Uint8Array): Promise<void> {
 		if (offset >= this.size) {
 			throw new Error(`yeah you wanna read from offset=${offset}, but all i have is size=${this.size}`);
@@ -214,11 +199,8 @@ class DiskRegion implements Region, Disposable {
 			const available = this.maxChunkSize - start;
 			const read = Math.min(want, available);
 
-			const reader = (this._readers[index] ??= await (
-				this._readersPromise[index] ??= Deno.open(this._chunkPath(index), { read: true })
-			));
-
-			reader.seekSync(start, Deno.SeekMode.Start);
+			using reader = await Deno.open(this._chunkPath(index), { read: true });
+			await reader.seek(start, Deno.SeekMode.Start);
 			await readFileInto(reader, target.subarray(copied, copied + read));
 
 			copied += read;
@@ -239,13 +221,8 @@ class DiskRegion implements Region, Disposable {
 		this._appender.index = -1;
 
 		for (let index = newTail + 1; index <= oldTail; index++) {
-			const reader = await this._readersPromise[index];
-			reader?.close();
 			await Deno.remove(this._chunkPath(index));
 		}
-
-		this._readers.length = newTail + 1;
-		this._readersPromise.length = newTail + 1;
 
 		const tailEnd = size % this.maxChunkSize;
 		await Deno.truncate(this._chunkPath(newTail), tailEnd);
@@ -262,15 +239,7 @@ class DiskRegion implements Region, Disposable {
 	}
 
 	close() {
-		try {
-			this._appender.file.close();
-		} catch { /*  */ }
-
-		for (const reader of this._readers) {
-			try {
-				reader?.close();
-			} catch { /*  */ }
-		}
+		this._appender.file.close();
 	}
 
 	[Symbol.dispose](): void {
@@ -294,7 +263,7 @@ export type BlobStoreOptions = {
 	maxMemoryChunkSize: number;
 };
 
-export class BlobStore implements Store<BlobStoreBatch>, Disposable {
+export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 	public readonly path: string;
 	public readonly maxDiskChunkSize: number;
 	public readonly maxMemoryChunkSize: number;
@@ -303,15 +272,18 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 	private _staged!: MemoryRegion;
 	private _frozen: MemoryRegion | null | undefined;
 	private _batch: MemoryRegion | null | undefined;
+	private _realizedDiskSize: number;
 
 	private _truncating = false;
 	private _rollbackPath: string;
 
 	private constructor(options: BlobStoreOptions) {
+		super();
 		this.path = options.path;
 		this.maxDiskChunkSize = options.maxDiskChunkSize;
 		this.maxMemoryChunkSize = options.maxMemoryChunkSize;
 
+		this._realizedDiskSize = 0;
 		this._rollbackPath = join(this.path, `rollback.size`);
 	}
 
@@ -323,6 +295,7 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 		const store = new BlobStore(options);
 		store._disk = await DiskRegion.open({ path, maxChunkSize: maxDiskChunkSize });
 		store._staged = new MemoryRegion({ maxChunkSize: maxMemoryChunkSize });
+		store._realizedDiskSize = store._disk.size;
 
 		return store;
 	}
@@ -345,13 +318,15 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 		let total = 0;
 		let copied = 0;
 		for (const region of this._regions(includeBatch)) {
+			const regionSize = region === this._disk ? this._realizedDiskSize : region.size;
+
 			if (copied >= output.length) break;
 			const regionStart = total;
-			total += region.size;
+			total += regionSize;
 			if (pointer >= total) continue; // region lies entirely before the pointer
 
 			const localpointer = Math.max(0, pointer - regionStart);
-			const available = region.size - localpointer;
+			const available = regionSize - localpointer;
 			const want = output.length - copied;
 			const copy = Math.min(available, want);
 			if (copy <= 0) continue;
@@ -369,7 +344,7 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 	}
 
 	size() {
-		return this._disk.size + this._staged.size + (this._frozen?.size ?? 0);
+		return this._realizedDiskSize + this._staged.size + (this._frozen?.size ?? 0);
 	}
 
 	batch(): BlobStoreBatch {
@@ -407,25 +382,35 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 		return { size, append, get, apply, discard };
 	}
 
-	public flushing: boolean = false;
-	async flush(): Promise<void> {
-		if (this.flushing) throw new Error("wtf are you doin man, you are already flushing");
-		if (this._truncating) throw new Error("can't flush while truncating");
-		this.flushing = true;
-		if (!this._frozen) {
-			this._frozen = this._staged;
-			this._staged = new MemoryRegion({ maxChunkSize: this.maxMemoryChunkSize });
-		}
+	private _pinning: boolean = false;
+	async pin(): Promise<void> {
+		if (this._pinning) throw new Error("already pinning");
+		if (this._frozen) throw new Error("can't pin disk while flushing to it");
+		if (this._truncating) throw new Error("can't pin disk while truncating it");
+		this._pinning = true;
 		try {
 			using rollback = await Deno.open(this._rollbackPath, { create: true, write: true });
 			await writeFile(rollback, U64.encode(this._disk.size));
 			await rollback.sync();
-
-			const finalize = await this._disk.append(concat(this._frozen.chunks));
-			finalize(); // sets the disk size to the new size
-			this._frozen = null;
 		} finally {
-			this.flushing = false;
+			this._pinning = false;
+		}
+	}
+
+	async flush(): Promise<void> {
+		if (this._frozen) throw new Error("wtf are you doin man, you are already flushing");
+		if (this._pinning) throw new Error("cant flush while pinning");
+		if (this._truncating) throw new Error("can't flush while truncating");
+		this._frozen = this._staged;
+		this._staged = new MemoryRegion({ maxChunkSize: this.maxMemoryChunkSize });
+
+		try {
+			for (const chunk of this._frozen.chunks) {
+				await this._disk.append(chunk);
+			}
+			this._realizedDiskSize = this._disk.size;
+		} finally {
+			this._frozen = null;
 		}
 	}
 
@@ -443,6 +428,7 @@ export class BlobStore implements Store<BlobStoreBatch>, Disposable {
 		this._truncating = true;
 		try {
 			await this._disk.truncate(size);
+			this._realizedDiskSize = size;
 		} finally {
 			this._truncating = false;
 		}

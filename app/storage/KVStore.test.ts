@@ -1,8 +1,8 @@
 /**
- * KVStore test suite.
+ * KvStore test suite.
  *
- * Place next to KVStore.ts (e.g. app/lib/storage/KVStore.test.ts) and run:
- *   deno test --allow-read --allow-write app/lib/storage/KVStore.test.ts
+ * Place next to KvStore.ts (e.g. app/lib/storage/KvStore.test.ts) and run:
+ *   deno test --allow-read --allow-write app/lib/storage/KvStore.test.ts
  *
  * Coverage:
  *   - open / RocksDB init, undefined on missing key
@@ -32,7 +32,7 @@ import { U32 } from "@nomadshiba/codec";
 import { assertEquals, assertExists, assertFalse, assertRejects, assertThrows } from "@std/assert";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
-import { KVStore } from "./KVStore.ts";
+import { KvStore } from "./KvStore.ts";
 import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
 
 // ── harness ───────────────────────────────────────────────────────────────────
@@ -41,7 +41,7 @@ const Key = U32; // 4-byte key
 const Val = U32; // 4-byte value
 
 function open(dir: string) {
-	return KVStore.open({ path: dir, keyCodec: Key, valueCodec: Val, threads: 2 });
+	return KvStore.open({ path: dir, keyCodec: Key, valueCodec: Val, threads: 2 });
 }
 
 async function withTmp(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -53,7 +53,7 @@ async function withTmp(fn: (dir: string) => Promise<void>): Promise<void> {
 	}
 }
 
-function closeQuiet(store: KVStore<number, number>): void {
+function closeQuiet(store: KvStore<number, number>): void {
 	try {
 		store.close();
 	} catch {
@@ -62,14 +62,14 @@ function closeQuiet(store: KVStore<number, number>): void {
 }
 
 /** Commit a batch of [key, value] pairs in one apply. */
-function setAll(store: KVStore<number, number>, entries: [number, number][]): void {
+function setAll(store: KvStore<number, number>, entries: [number, number][]): void {
 	const b = store.batch();
 	for (const [k, v] of entries) b.set(k, v);
 	b.apply();
 }
 
-/** Read several keys at once. Test convenience — KVStore exposes only get(). */
-function getAll(store: KVStore<number, number>, keys: number[]): Promise<(number | undefined)[]> {
+/** Read several keys at once. Test convenience — KvStore exposes only get(). */
+function getAll(store: KvStore<number, number>, keys: number[]): Promise<(number | undefined)[]> {
 	return Promise.all(keys.map((k) => store.get(k)));
 }
 
