@@ -1,9 +1,7 @@
 import { delay } from "@std/async";
 import { serve } from "~/api/serve.ts";
-import { startDownloader, syncBodiesFromPeers } from "~/chain/bodies.ts";
-import { atomic } from "~/chain/chain.ts";
-import { syncHeadersFromPeers } from "~/chain/headers.ts";
-import { addPeer, addPeersFromDNS, availablePeers, expireFailed, peers } from "~/p2p/peers.ts";
+import { syncBodiesFromPeers } from "~/chain/bodies.ts";
+import { atomic, ChainStore } from "~/chain/chain.ts";
 
 const global = globalThis as never as { gc?(): void };
 
@@ -14,24 +12,12 @@ if (import.meta.main) {
 		setTimeout(() => Deno.exit(0), timeout * 1000);
 	}
 
-	const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
-	const P2P_PORT = 8333;
-	const HTTP_PORT = 50021;
-	const MAX_PEERS = 8;
-	const FAILED_RETRY_MS = 5 * 60 * 1000;
+	serve(50021);
 
-	const DNS_SEEDS = [
-		"dnsseed.bitcoin.dashjr.org",
-	];
+	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
+	const chainStore = await ChainStore.open(p2pWorker);
 
-	serve(HTTP_PORT);
-
-	// Local dev: single peer. For production, swap with maintain().
-	await addPeer("192.168.8.10", P2P_PORT, MAGIC);
-	// await _maintain();
 	let lastFlush: Promise<void> = Promise.resolve();
-	await syncHeadersFromPeers();
-	startDownloader();
 	while (true) {
 		await delay(0);
 		try {
@@ -46,7 +32,6 @@ if (import.meta.main) {
 	}
 
 	async function tick() {
-		// await maintain(); // uncomment for production peer management
 		await syncHeadersFromPeers();
 		await syncBodiesFromPeers();
 
@@ -81,24 +66,5 @@ if (import.meta.main) {
 
 		if (atomic.busy) return;
 		lastFlush = atomic.flush();
-	}
-
-	async function _maintain() {
-		expireFailed(FAILED_RETRY_MS);
-
-		if (peers().length >= MAX_PEERS) return;
-
-		const available = availablePeers();
-		const needed = MAX_PEERS - peers().length;
-		await Promise.allSettled(
-			available.slice(0, needed).map(({ host, port }) => addPeer(host, port, MAGIC)),
-		);
-
-		if (peers().length >= MAX_PEERS) return;
-
-		for (const seed of DNS_SEEDS) {
-			const added = await addPeersFromDNS(seed, P2P_PORT);
-			if (added > 0) break;
-		}
 	}
 }

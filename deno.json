@@ -39,7 +39,8 @@
 			"deno.unstable",
 			"esnext",
 			"dom",
-			"dom.iterable"
+			"dom.iterable",
+			"deno.worker"
 		],
 		"strict": true,
 		"noUncheckedIndexedAccess": true

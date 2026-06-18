@@ -3,7 +3,7 @@ import type { PeerChainNode } from "~/chain/PeerChainNode.ts";
 export class PeerChain implements Iterable<PeerChainNode> {
 	private nodes: PeerChainNode[];
 
-	constructor(nodes: PeerChainNode[]) {
+	constructor(nodes: PeerChainNode[] = []) {
 		this.nodes = nodes;
 	}
 

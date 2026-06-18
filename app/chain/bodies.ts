@@ -5,16 +5,21 @@ import { type Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
 import { GetDataMessage, MSG_WITNESS_BLOCK } from "~/p2p/messages/GetData.ts";
 import { peers } from "~/p2p/peers.ts";
-import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { delay } from "@std/async";
 
 /**
  * Soft byte budget for how much block payload we append per tick.  Once the
  * append loop has committed at least this many bytes it stops and lets the tick
- * end, bounding how long a single tick runs and how much work the verify path
- * does before yielding.
+ * end, then flushes.  This is the single most important throughput knob during
+ * IBD: flush cost is roughly linear in staged bytes, so the budget directly
+ * bounds per-flush latency.  Keep it an explicit byte count: the block-size
+ * constant is the serialized max (~4 MiB), so deriving the budget from it (e.g.
+ * ×30 ≈ 120 MiB) let dense-block ticks balloon to ~114 MiB and stall 5-6s in a
+ * single flush, collapsing blocks/s past ~130k.  32 MiB keeps each flush in the ~1.5-2s band, firing more often, which is
+ * faster on average (steady beats spiky) for the same total work — mirrors
+ * Bitcoin Core's dbcache-driven flush cadence.
  */
-const TICK_BYTE_BUDGET = MAX_BLOCK_SIZE * 30;
+const TICK_BYTE_BUDGET = 32 * 1024 * 1024;
 
 /**
  * How many blocks ahead of the appended tip the downloader keeps

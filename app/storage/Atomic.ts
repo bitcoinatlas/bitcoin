@@ -171,6 +171,7 @@ export class Atomic<T extends AtomicStores> {
 		try {
 			this.busy = true;
 			if (this.isConsistent()) return;
+			console.log("atomic state is not consistent, recovering...");
 			if (this._start && this._rocksdb) {
 				const id = await this._rocksdb.get("atomic.id");
 				if (id && equals(id, this._start)) {
@@ -187,6 +188,7 @@ export class Atomic<T extends AtomicStores> {
 			// markers. Without this, isConsistent() stays false forever and every
 			// subsequent flush() throws "Previous flush state is inconsistent".
 			await this._setEnd(this._start ?? this._end!);
+			console.log("recovered atomic state");
 		} catch (reason) {
 			console.error(`Atomic recover failed:`, reason);
 			Deno.exit(1);

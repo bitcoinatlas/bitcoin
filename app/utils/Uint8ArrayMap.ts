@@ -1,12 +1,6 @@
-type Bucket<V> = Array<[number, Uint8Array, V]>; // [hash, key, value]
+import { equals } from "@std/bytes";
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) {
-		if (a[i] !== b[i]) return false;
-	}
-	return true;
-}
+type Bucket<V> = Array<[number, Uint8Array, V]>; // [hash, key, value]
 
 export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	private buckets: Array<Bucket<V>>;
@@ -49,7 +43,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
-			if (entry[0] === hash && bytesEqual(entry[1], key)) return entry[2];
+			if (entry[0] === hash && equals(entry[1], key)) return entry[2];
 		}
 		return undefined;
 	}
@@ -59,7 +53,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
-			if (entry[0] === hash && bytesEqual(entry[1], key)) {
+			if (entry[0] === hash && equals(entry[1], key)) {
 				entry[2] = value;
 				return;
 			}
@@ -91,7 +85,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
-			if (entry[0] === hash && bytesEqual(entry[1], key)) {
+			if (entry[0] === hash && equals(entry[1], key)) {
 				const last = bucket.length - 1;
 				if (i !== last) bucket[i] = bucket[last]!; // swap-remove, O(1)
 				bucket.pop();
