@@ -1,8 +1,10 @@
+import { RocksDatabase } from "@harperfast/rocksdb-js";
 import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
 import { formatHash } from "~/api/frontend/utils/format.ts";
 import { ns } from "~/chain/ns.ts";
 import { PeerChain } from "~/chain/PeerChain.ts";
+import { rawScriptPubKey } from "~/chain/ScriptPubKey.ts";
 import { GENESIS_BLOCK } from "~/chain/utils/genesis.ts";
 import { verifyProofOfWork, workFromHeader } from "~/chain/utils/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
@@ -21,21 +23,22 @@ import { ArrayStore } from "~/storage/ArrayStore.ts";
 import { Atomic, InferBatches, InferStores } from "~/storage/Atomic.ts";
 import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
-import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
 import { KvStore } from "~/storage/KvStore.ts";
-import { RocksDatabase } from "@harperfast/rocksdb-js";
+import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
 
 RocksDatabase.config({
 	blockCacheSize: 4 * 1024 * 1024 * 1024,
-	writeBufferManagerSize: 512 * 1024 * 1024,
-	writeBufferManagerCostToCache: true,
+	writeBufferManagerSize: 2 * 1024 * 1024 * 1024, // was 512MB
+	writeBufferManagerCostToCache: false, // was true — stop cache thrash
+	writeBufferManagerAllowStall: false, // keep memtables soft, no hard write wall
 });
 
-const rocksDir = join(BASE_DATA_DIR, "rocksdb");
-await Deno.mkdir(rocksDir, { recursive: true });
-const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
+export const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	disableWAL: true,
-	parallelismThreads: Math.min(6, navigator.hardwareConcurrency),
+	pessimistic: true,
+	parallelismThreads: Math.min(10, navigator.hardwareConcurrency),
+	transactionLogRetention: 0,
+	transactionLogMaxSize: 0,
 	keyEncoder: {
 		readKey(source: any, start: number, end?: number) {
 			return source.subarray(start, end);
@@ -188,7 +191,7 @@ export async function appendTxs(
 	const batch = batches ?? atomic.batch();
 
 	const op = async () => {
-		const txs = await Promise.all(wireTxs.map((wireTx) => ns.fromWire(wireTx)));
+		const txs = wireTxs.map((wireTx) => ns.fromWire(wireTx));
 		const txCountBytes = StoredTxs.counter.encode(txs.length);
 		const blockPointer = batch.tx.append(txCountBytes);
 
@@ -212,7 +215,7 @@ export async function appendTxs(
 					hashes.push(null);
 					continue;
 				}
-				const raw = await ns.getRawScriptPubKey(output, batch);
+				const raw = rawScriptPubKey(output.scriptPubKey);
 				hashes.push(sha256(raw)); // computed ONCE here, reused everywhere below
 				pubkeyKeys.set(hashes[hashes.length - 1]!, 1);
 			}
@@ -289,7 +292,7 @@ export async function appendTxs(
 				const txSpenderOffset = await batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
 				const spenderIndex = txSpenderOffset + input.prevOut.vout;
 				const spender = await batch.spender.get(spenderIndex);
-				if (spender > 0) {
+				if (spender && spender > 0) {
 					const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
 					throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
 				}
@@ -371,8 +374,8 @@ export async function getTxsByBlockPointer(pointer: StoredPointer): Promise<Stor
 }
 
 export async function getTxsByBlockHeight(height: number): Promise<StoredTx[] | undefined> {
-	const pointer = await atomic.stores.block.get(height);
-	if (pointer === 0 && height !== 0) return undefined;
+	const pointer = height === 0 ? 0 : await atomic.stores.block.get(height);
+	if (pointer === undefined) return undefined;
 	return await getTxsByBlockPointer(pointer);
 }
 

@@ -31,8 +31,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 
 	// Reusable buffer for encoding prefixed keys. get(), flush(), and
 	// batch.get() are never concurrent, so a single shared buffer is safe.
-	private readonly _keyBuf: Uint8Array;
-	private readonly _encodedKeyView: Uint8Array;
+	private readonly _keyBuf: Uint8Array<ArrayBuffer>;
+	private readonly _encodedKeyView: Uint8Array<ArrayBuffer>;
 
 	private constructor(options: KvStoreOptions<K, V>) {
 		super();
@@ -63,7 +63,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	async get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined> {
 		this.key.encode(key, this._encodedKeyView);
 		// Freshness: staged > frozen (being flushed) > rocksdb.
-		const bytes = this._staged.get(this._encodedKeyView) ?? this._frozen?.get(this._encodedKeyView) ?? await this.rocksdb.get(this._keyBuf);
+		const bytes = this._staged.get(this._encodedKeyView) ?? this._frozen?.get(this._encodedKeyView) ??
+			await this.rocksdb.get(this._keyBuf);
 		if (!bytes) return undefined;
 		return this.value.decodeValue(bytes);
 	}
@@ -103,10 +104,12 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		// this is a no-op. Either way we drain a stable snapshot, never live staged.
 		if (!this._frozen) this.freeze();
 		const frozen = this._frozen!;
-		for (const [encodedKey, bytes] of frozen.entries()) {
-			this._keyBuf.set(encodedKey, this.prefix.length);
-			await trx.put(this._keyBuf, bytes);
-		}
+		await Promise.all(
+			frozen.entries().map(async ([encodedKey, bytes]) => {
+				this._keyBuf.set(encodedKey, this.prefix.length);
+				await trx.put(this._keyBuf, bytes);
+			}),
+		);
 		// Draining from _frozen (not clearing until the finalizer) also makes a
 		// transaction-callback replay safe: a retry just re-puts the same snapshot.
 		return () => {

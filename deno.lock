@@ -49,8 +49,7 @@
     "jsr:@std/streams@^1.1.1": "1.1.1",
     "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/uuid@^1.1.1": "1.1.1",
-    "npm:@harperfast/rocksdb-js@*": "1.4.0",
-    "npm:@harperfast/rocksdb-js@^1.4.0": "1.4.0",
+    "npm:@harperfast/rocksdb-js@^2.1.0": "2.1.0",
     "npm:@jsr/nomadshiba__codec@0.2.0": "0.2.0"
   },
   "jsr": {
@@ -259,48 +258,48 @@
     "@harperfast/extended-iterable@1.0.3": {
       "integrity": "sha512-sSAYhQca3rDWtQUHSAPeO7axFIUJOI6hn1gjRC5APVE1a90tuyT8f5WIgRsFhhWA7htNkju2veB9eWL6YHi/Lw=="
     },
-    "@harperfast/rocksdb-js-darwin-arm64@1.4.0": {
-      "integrity": "sha512-78nT13T3P0Am0UfppPkMgUcTqS5Xx2ftXGl9IsmjWfrDawM1HOJt00n0GtPLoqOqrs80QVGbH9qgBZ22Bpty6Q==",
+    "@harperfast/rocksdb-js-darwin-arm64@2.1.0": {
+      "integrity": "sha512-KATHEEcKv1sBsuqaxgAd5ZqRNN63f/dedl5ilE0aZKubDjPHJFWLl1USZZXd4FMR7bYHzCV823S9RxZII1UTjA==",
       "os": ["darwin"],
       "cpu": ["arm64"]
     },
-    "@harperfast/rocksdb-js-darwin-x64@1.4.0": {
-      "integrity": "sha512-Ck+m4bfaiGikq1I0IAHS8AELnRL+GeKB99hR8ASR7DRAvQqYGYbPtUQQUKIQk9/8S8LviKUfto/cla1nRAcslg==",
+    "@harperfast/rocksdb-js-darwin-x64@2.1.0": {
+      "integrity": "sha512-8PgipGp9uviZ+c8amA1MiKthekL4Qxmd/wPGbaa2P5MEj7cW3nXwuwuLrXFtj0plfbGJZDKHAoHH1MQc63JiHQ==",
       "os": ["darwin"],
       "cpu": ["x64"]
     },
-    "@harperfast/rocksdb-js-linux-arm64-glibc@1.4.0": {
-      "integrity": "sha512-1yJkGMYR5Zh45j6joCu0cgQ+LPlsU0hjiPfv0f0cmXdjPiccXu7TemADjf3fnLz6p4p2VLP46s1fwJL7W+4lFw==",
+    "@harperfast/rocksdb-js-linux-arm64-glibc@2.1.0": {
+      "integrity": "sha512-kzlN++3RaECDeKLYP7a3A/7D1IrTu8DzVRdvQ90rjNi67ZhiTfPGLwkEJgSheGRaKOkvtXOcqaG+G0uLCmY2qg==",
       "os": ["linux"],
       "cpu": ["arm64"]
     },
-    "@harperfast/rocksdb-js-linux-arm64-musl@1.4.0": {
-      "integrity": "sha512-wIUqCl95Fs7WL0Ecm2j6Lu9TAFMbeDageMn2MfzqTtjx6fcQRL9dPH9o8HfIOfQ6Q0T0HTPpRwBTAtryYLmcFA==",
+    "@harperfast/rocksdb-js-linux-arm64-musl@2.1.0": {
+      "integrity": "sha512-Wm3GCuII2+2wUdpF14qMJpFBvYMS5LCNmqYqc8PLQdM9+1C0pp2xp/YlXz295lSJwDRBGpZQ4tT/fCIhQb3RZg==",
       "os": ["linux"],
       "cpu": ["arm64"]
     },
-    "@harperfast/rocksdb-js-linux-x64-glibc@1.4.0": {
-      "integrity": "sha512-J8anAA31Dv6+h+Uu/mDlszQOoEZiTOGqrLVbWQ7/W5cET2pKZ9IC6NJjvG3rjkkFT82G+spqJ+aESY2yuEJv5Q==",
+    "@harperfast/rocksdb-js-linux-x64-glibc@2.1.0": {
+      "integrity": "sha512-JOR19bhySF+fwFoxsR1JOURSxUySL1NE6wLBtWfLSA4SEQZXi/Xzkkq7Up92JuL9E4ATcEkVJjPy52azUUE4VA==",
       "os": ["linux"],
       "cpu": ["x64"]
     },
-    "@harperfast/rocksdb-js-linux-x64-musl@1.4.0": {
-      "integrity": "sha512-bHJvxKlx/UqeG++aLpEcm6DDzNeGvDWvBZ+LKstVmF4mNZnR/QZ8TX9dYEGHFHMB+/PVrotRzUaMA5jgjfaMFQ==",
+    "@harperfast/rocksdb-js-linux-x64-musl@2.1.0": {
+      "integrity": "sha512-HhUeWFqlEdjDPQecO1Exp3zm4LmXV2biyWPycXWBwXpitaI3YbDaUkiZHLT5QmGdYMHQou9s9RrcJ0B0xBpaYA==",
       "os": ["linux"],
       "cpu": ["x64"]
     },
-    "@harperfast/rocksdb-js-win32-arm64@1.4.0": {
-      "integrity": "sha512-r6F+ZQWZmppu4mkuZwlyYDaXWXZ/AQldP2qdIRhICxXNfxcvQUxW0+CKmfnor3X3GNk46ThIaP7tM08fu7/Zag==",
+    "@harperfast/rocksdb-js-win32-arm64@2.1.0": {
+      "integrity": "sha512-pUxyRGlyx+o0zU/ioUb4Z7ZQPy01iDU0gr7YQnOn9gCyDo1ibeeZVKDYZJ+WEpQCWEdea5YJVrSt597BQPAJiQ==",
       "os": ["win32"],
       "cpu": ["arm64"]
     },
-    "@harperfast/rocksdb-js-win32-x64@1.4.0": {
-      "integrity": "sha512-msYlg3D2sm33sw7Uyiuxw04Jt8mrzcKOhjHFZbGAM9bqlUE0lar3txcO03oHwcKYVyoIEsnYgyddQFHdRLAU+A==",
+    "@harperfast/rocksdb-js-win32-x64@2.1.0": {
+      "integrity": "sha512-C0XFhYIUAJxYKUV+P12lgzEhsH7NMzlSBq8WtEQun8PLI2WJIWpeo/UI7Z/YLKcO8dR8mYh1w/uui/vBC86sRg==",
       "os": ["win32"],
       "cpu": ["x64"]
     },
-    "@harperfast/rocksdb-js@1.4.0": {
-      "integrity": "sha512-Qa62jWYG5GO+OI3gEHJI3WyhzgA6OdFLthbmB7TRJJMa2Zu8s3psKuAnM0t2v963ohRFF4UbyRw24zt5PX3k3A==",
+    "@harperfast/rocksdb-js@2.1.0": {
+      "integrity": "sha512-1E6Yiu7U0HHVPzJQE3t3ifwyfqXjmmhaoBahN6JWzswu6TMkY3EpCNDozpZ2MVom/4b/7sUG9IRKUpX8h9XK/Q==",
       "dependencies": [
         "@harperfast/extended-iterable",
         "msgpackr",
@@ -371,8 +370,8 @@
       "scripts": true,
       "bin": true
     },
-    "msgpackr@2.0.1": {
-      "integrity": "sha512-9J+tqTEsbHqY8YohazYgty7LgerFIWxvMLpUjqETSmjHojtJm2WnX2kK/2a1fLI7CO7ERP1YSEUXMucz4j+yBA==",
+    "msgpackr@2.0.4": {
+      "integrity": "sha512-o1C5KRmuRt+apqMr1HuGSqWStZoRBUpEsCsl15uM9VdAF1qHLtvMOU2En747EnTyEl6c4pzPewRMFF31s1CNbA==",
       "optionalDependencies": [
         "msgpackr-extract"
       ]
@@ -427,7 +426,7 @@
       "jsr:@std/path@1.1.2",
       "jsr:@std/streams@1.0.12",
       "jsr:@std/uuid@^1.1.1",
-      "npm:@harperfast/rocksdb-js@^1.4.0"
+      "npm:@harperfast/rocksdb-js@^2.1.0"
     ]
   }
 }

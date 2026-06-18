@@ -23,7 +23,7 @@ function appendAll(store: IndexStore<typeof U64>, values: bigint[]): void {
 
 async function readAll(store: IndexStore<typeof U64>): Promise<bigint[]> {
 	const out: bigint[] = [];
-	for (let i = 0; i < store.length(); i++) out.push(await store.get(i));
+	for (let i = 0; i < store.length(); i++) out.push((await store.get(i))!);
 	return out;
 }
 
@@ -100,11 +100,11 @@ Deno.test("concurrent batch throws", async () => {
 	});
 });
 
-Deno.test("get out of bounds rejects", async () => {
+Deno.test("get out of bounds returns undefined", async () => {
 	await withTemp(async (path) => {
 		using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
 		appendAll(store, [10n]);
-		await assertRejects(() => store.get(5), RangeError);
+		assertEquals(await store.get(5), undefined);
 	});
 });
 
@@ -112,14 +112,14 @@ Deno.test("flush persists across reopen", async () => {
 	await withTemp(async (path) => {
 		{
 			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
-		appendAll(store, [10n, 20n, 30n]);
-		await store.pin();
-		await store.flush();
-	}
-	{
-		using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
-		assertEquals(store.length(), 3);
-		assertEquals(await readAll(store), [10n, 20n, 30n]);
+			appendAll(store, [10n, 20n, 30n]);
+			await store.pin();
+			await store.flush();
+		}
+		{
+			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
+			assertEquals(store.length(), 3);
+			assertEquals(await readAll(store), [10n, 20n, 30n]);
 		}
 	});
 });
@@ -128,15 +128,15 @@ Deno.test("set on a disk-resident slot persists across reopen", async () => {
 	await withTemp(async (path) => {
 		{
 			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
-		appendAll(store, [10n, 20n, 30n]);
-		await store.pin();
-		await store.flush();
+			appendAll(store, [10n, 20n, 30n]);
+			await store.pin();
+			await store.flush();
 
-		const b = store.batch();
-		b.set(1, 99n);
-		b.apply();
-		await store.pin();
-		await store.flush();
+			const b = store.batch();
+			b.set(1, 99n);
+			b.apply();
+			await store.pin();
+			await store.flush();
 		}
 		{
 			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: BIG });
@@ -151,9 +151,9 @@ Deno.test("appends spanning multiple chunks persist", async () => {
 		{
 			// itemsPerChunk=2 with stride 8 => 16-byte chunks; 5 items => 3 chunks.
 			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: 2 });
-		appendAll(store, values);
-		await store.pin();
-		await store.flush();
+			appendAll(store, values);
+			await store.pin();
+			await store.flush();
 		}
 		{
 			using store = await IndexStore.open({ path, codec: U64, itemsPerChunk: 2 });
@@ -208,7 +208,7 @@ Deno.test("truncate shrinks length and drops items", async () => {
 
 		assertEquals(store.length(), 2);
 		assertEquals(await store.get(1), 2n);
-		await assertRejects(() => store.get(2), RangeError);
+		assertEquals(await store.get(2), undefined);
 	});
 });
 

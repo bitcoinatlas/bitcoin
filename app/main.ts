@@ -29,7 +29,7 @@ if (import.meta.main) {
 	// Local dev: single peer. For production, swap with maintain().
 	await addPeer("192.168.8.10", P2P_PORT, MAGIC);
 	// await _maintain();
-	let currentFlush: Promise<void> = Promise.resolve();
+	let lastFlush: Promise<void> = Promise.resolve();
 	await syncHeadersFromPeers();
 	startDownloader();
 	while (true) {
@@ -79,13 +79,12 @@ if (import.meta.main) {
 			}
 			if (memcheck()) {
 				console.log("[main] heap usage almost at max even after gc, awaiting flush");
-				await Promise.race([currentFlush, delay(30_000)]);
+				await Promise.race([lastFlush, delay(30_000)]);
 			}
 		}
 
 		if (atomic.busy) return;
-		console.log("[main] firing flush...");
-		currentFlush = atomic.flush();
+		lastFlush = atomic.flush();
 	}
 
 	async function _maintain() {

@@ -1,4 +1,5 @@
 import { Codec, type FixedCodec } from "@nomadshiba/codec";
+import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { Batch, Store } from "~/storage/Store.ts";
 import { readFileInto, writeFile } from "~/utils/fs.ts";
@@ -161,11 +162,18 @@ class DiskRegion implements Disposable {
 	}
 
 	/**
-	 * Batched in-place writes. Items never straddle a chunk (stride divides
-	 * maxChunkSize), so each lands in exactly one chunk. We group by chunk and do
-	 * a single open + single fsync per touched chunk instead of per item — turning
-	 * O(items) fsyncs into O(chunks-touched). Caller guarantees every offset is in
-	 * bounds. `writes` is sorted by offset so writes within a chunk go forward.
+	 * Batched in-place writes via per-chunk read-modify-write.
+	 *
+	 * Items never straddle a chunk (stride divides maxChunkSize). For each touched
+	 * chunk we read the single contiguous span [minOffset, maxEnd) covering all its
+	 * writes into one buffer, patch every target in memory (cheap memcpy), then
+	 * write the whole span back with ONE write + ONE fsync.
+	 *
+	 * This is the difference between O(items) and O(chunks) async disk round-trips.
+	 * The previous version did `await seek; await write` per item; a flush window
+	 * with millions of spender backfills meant millions of round-trips (~hundreds
+	 * of seconds, all idle-waiting). Reading back the untouched bytes in the span
+	 * and rewriting them is far cheaper than paying a syscall round-trip per slot.
 	 */
 	async writeManyInto(writes: Array<{ offset: number; bytes: Uint8Array }>): Promise<void> {
 		if (this._truncating) throw new Error("you cant writeInto while truncating");
@@ -175,21 +183,43 @@ class DiskRegion implements Disposable {
 		let i = 0;
 		while (i < writes.length) {
 			const chunkIndex = Math.floor(writes[i]!.offset / this.maxChunkSize);
-			using writer = await Deno.open(this._chunkPath(chunkIndex), { read: true, write: true });
-			while (i < writes.length && Math.floor(writes[i]!.offset / this.maxChunkSize) === chunkIndex) {
-				const { offset, bytes } = writes[i]!;
-				if (offset + bytes.length > this.size) {
-					throw new Error(`write out of bounds offset=${offset} length=${bytes.length} size=${this.size}`);
-				}
-				await writer.seek(offset % this.maxChunkSize, Deno.SeekMode.Start);
-				await writeFile(writer, bytes);
-				i++;
+
+			// Bound the span for this chunk (writes are sorted, so min is writes[i]).
+			const minOffset = writes[i]!.offset;
+			let j = i;
+			let maxEnd = minOffset;
+			while (j < writes.length && Math.floor(writes[j]!.offset / this.maxChunkSize) === chunkIndex) {
+				const end = writes[j]!.offset + writes[j]!.bytes.length;
+				if (end > maxEnd) maxEnd = end;
+				j++;
 			}
-			await writer.sync(); // one fsync per chunk
+			if (maxEnd > this.size) {
+				throw new Error(`write out of bounds end=${maxEnd} size=${this.size}`);
+			}
+
+			const span = new Uint8Array(maxEnd - minOffset);
+			const chunkStart = minOffset % this.maxChunkSize;
+
+			using file = await Deno.open(this._chunkPath(chunkIndex), { read: true, write: true });
+			// Read the current span so untouched bytes are preserved on write-back.
+			await file.seek(chunkStart, Deno.SeekMode.Start);
+			await readFileInto(file, span);
+			// Patch every target in memory.
+			for (let k = i; k < j; k++) span.set(writes[k]!.bytes, writes[k]!.offset - minOffset);
+			// One write + one fsync for the whole span.
+			await file.seek(chunkStart, Deno.SeekMode.Start);
+			await writeFile(file, span);
+			await file.sync();
+
+			i = j;
 		}
 	}
 
-	/** Batched reads, grouped by chunk (one open per touched chunk, no fsync). */
+	/**
+	 * Batched reads via per-chunk span read: read [minOffset, maxEnd) once per
+	 * touched chunk, then memcpy each requested slice into its `into` buffer. One
+	 * disk read per chunk instead of one per item.
+	 */
 	async readManyInto(reads: Array<{ offset: number; into: Uint8Array }>): Promise<void> {
 		if (reads.length === 0) return;
 		reads.sort((a, b) => a.offset - b.offset);
@@ -197,16 +227,29 @@ class DiskRegion implements Disposable {
 		let i = 0;
 		while (i < reads.length) {
 			const chunkIndex = Math.floor(reads[i]!.offset / this.maxChunkSize);
-			using reader = await Deno.open(this._chunkPath(chunkIndex), { read: true });
-			while (i < reads.length && Math.floor(reads[i]!.offset / this.maxChunkSize) === chunkIndex) {
-				const { offset, into } = reads[i]!;
-				if (offset + into.length > this.size) {
-					throw new Error(`read out of bounds offset=${offset} length=${into.length} size=${this.size}`);
-				}
-				await reader.seek(offset % this.maxChunkSize, Deno.SeekMode.Start);
-				await readFileInto(reader, into);
-				i++;
+
+			const minOffset = reads[i]!.offset;
+			let j = i;
+			let maxEnd = minOffset;
+			while (j < reads.length && Math.floor(reads[j]!.offset / this.maxChunkSize) === chunkIndex) {
+				const end = reads[j]!.offset + reads[j]!.into.length;
+				if (end > maxEnd) maxEnd = end;
+				j++;
 			}
+			if (maxEnd > this.size) {
+				throw new Error(`read out of bounds end=${maxEnd} size=${this.size}`);
+			}
+
+			const span = new Uint8Array(maxEnd - minOffset);
+			using file = await Deno.open(this._chunkPath(chunkIndex), { read: true });
+			await file.seek(minOffset % this.maxChunkSize, Deno.SeekMode.Start);
+			await readFileInto(file, span);
+			for (let k = i; k < j; k++) {
+				const at = reads[k]!.offset - minOffset;
+				reads[k]!.into.set(span.subarray(at, at + reads[k]!.into.length));
+			}
+
+			i = j;
 		}
 	}
 
@@ -263,7 +306,7 @@ type Overlay = {
 export interface IndexStoreBatch<T> extends Batch {
 	set(index: number, item: T): void;
 	push(item: T): number;
-	get(index: number): Promise<T>;
+	get(index: number): Promise<T | undefined>;
 	length(): number;
 }
 
@@ -334,7 +377,7 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		return this._staged.length;
 	}
 
-	private async _read(index: number, extra?: Map<number, Uint8Array>): Promise<Codec.InferOutput<T>> {
+	private async _read(index: number, extra?: Map<number, Uint8Array>): Promise<Codec.InferOutput<T> | undefined> {
 		// Freshness order: batch overlay > staged > frozen > disk.
 		// Any slot being written by an in-progress flush lives in `_frozen`, so a
 		// read for it routes to the overlay and never sees a half-written disk slot.
@@ -345,8 +388,11 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		}
 
 		const offset = index * this._stride;
-		if (index < 0 || offset + this._stride > this._disk.size) {
+		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${this.length()}`);
+		}
+		if (offset + this._stride > this._disk.size) {
+			return undefined;
 		}
 
 		const buffer = new Uint8Array(this._stride);
@@ -355,7 +401,7 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		return decoded;
 	}
 
-	get(index: number): Promise<Codec.InferOutput<T>> {
+	get(index: number): Promise<Codec.InferOutput<T> | undefined> {
 		return this._read(index);
 	}
 
@@ -495,11 +541,13 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 
 			// Appends extend the region; sets overwrite existing slots. Disjoint ranges,
 			// so order is irrelevant — and a crash mid-flush is fully undone by the WAL.
-			// Append each entry individually rather than concat-ing into one buffer first —
-			// DiskRegion.append fsyncs per chunk boundary regardless, so the fsync count is
-			// identical but we avoid allocating a merged buffer for the whole batch.
-			for (const index of appends) {
-				await this._disk.append(frozen.entries.get(index)!);
+			// Concatenate all append values into ONE buffer and append once: DiskRegion.append
+			// fsyncs once per chunk-segment, so this is ~1 fsync per flush instead of one per
+			// item. (Appending per entry meant one fsync per slot — ~43k fsyncs/flush, which
+			// was the entire flush cost.) The merged buffer is tiny (items * stride).
+			if (appends.length > 0) {
+				const buffer = concat(appends.map((index) => frozen.entries.get(index)!));
+				await this._disk.append(buffer);
 			}
 			if (sets.length > 0) {
 				await this._disk.writeManyInto(

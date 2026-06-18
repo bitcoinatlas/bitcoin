@@ -279,11 +279,6 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 	private _truncating = false;
 	private _rollbackPath: string;
 
-	// Reusable read buffer — grown on demand, never shrunk. _get is never
-	// concurrent (the batch/flush protocol enforces single-reader), so one
-	// shared buffer per BlobStore instance is safe.
-	private _readBuf: Uint8Array = new Uint8Array(0);
-
 	private constructor(options: BlobStoreOptions) {
 		super();
 		this.path = options.path;
@@ -321,8 +316,7 @@ export class BlobStore extends Store<BlobStoreBatch> implements Disposable {
 		readAheadSize?: number,
 	): Promise<Codec.InferOutput<T>> {
 		const needed = codec.stride.size ?? readAheadSize ?? MAX_BLOCK_SIZE;
-		if (this._readBuf.length < needed) this._readBuf = new Uint8Array(needed);
-		const output = this._readBuf.subarray(0, needed);
+		const output = new Uint8Array(needed);
 
 		let total = 0;
 		let copied = 0;

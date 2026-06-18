@@ -1,14 +1,14 @@
-import { atomic, getTxPointerById } from "~/chain/chain.ts";
-import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
-import { InferBatches, InferStores } from "~/storage/Atomic.ts";
+import { equals } from "@std/bytes";
+import { atomic } from "~/chain/chain.ts";
 import { parseScriptPubKey, rawScriptPubKey, ScriptPubKey } from "~/chain/ScriptPubKey.ts";
-import { WireTx } from "~/codec/wire/WireTx.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { getPrevOutTxId, PrevOut, StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
-import { equals } from "@std/bytes";
-import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
-import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
+import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
+import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
+import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
+import { InferBatches, InferStores } from "~/storage/Atomic.ts";
 
 export const ns = {
 	async getScriptPubKey(
@@ -69,31 +69,21 @@ export const ns = {
 		return { txId, version, locktime, inputs, outputs, witness };
 	},
 
-	async fromWire(wireTx: WireTx): Promise<StoredTx> {
-		const inputs: StoredTxInput[] = await Promise.all(
-			wireTx.inputs.map(async (wireInput, i): Promise<StoredTxInput> => {
-				const prevOutTxPointer = await getTxPointerById(wireInput.prevOut.txId);
-				const inputWitness = wireTx.witness[i] ?? [];
-
-				let txId: PrevOut["txId"];
-				if (prevOutTxPointer === undefined) {
-					if (equals(wireInput.prevOut.txId, COINBASE_TXID) && wireInput.prevOut.vout === COINBASE_VOUT) {
-						txId = { kind: "coinbase" };
-					} else {
-						txId = { kind: "raw", value: wireInput.prevOut.txId };
-					}
-				} else {
-					txId = { kind: "pointer", value: prevOutTxPointer };
-				}
-
-				return {
-					prevOut: { txId, vout: wireInput.prevOut.vout },
-					scriptSig: wireInput.scriptSig,
-					sequence: wireInput.sequence,
-					witness: inputWitness,
-				};
-			}),
-		);
+	fromWire(wireTx: WireTx): StoredTx {
+		const inputs: StoredTxInput[] = wireTx.inputs.map((wireInput, i): StoredTxInput => {
+			let txId: PrevOut["txId"];
+			if (equals(wireInput.prevOut.txId, COINBASE_TXID) && wireInput.prevOut.vout === COINBASE_VOUT) {
+				txId = { kind: "coinbase" };
+			} else {
+				txId = { kind: "raw", value: wireInput.prevOut.txId };
+			}
+			return {
+				prevOut: { txId, vout: wireInput.prevOut.vout },
+				scriptSig: wireInput.scriptSig,
+				sequence: wireInput.sequence,
+				witness: wireTx.witness[i] ?? [],
+			};
+		});
 
 		const outputs: StoredTxOutput[] = [];
 		for (const wireOutput of wireTx.outputs) {

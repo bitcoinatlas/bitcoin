@@ -4,7 +4,7 @@ import { BlobStore, type BlobStoreBatch } from "./BlobStore.ts";
 
 export interface ArrayStoreBatch<T> extends Batch {
 	push(item: T): number;
-	get(index: number): Promise<T>;
+	get(index: number): Promise<T | undefined>;
 	length(): number;
 }
 
@@ -46,21 +46,19 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		return this._blob.size() / this._stride;
 	}
 
-	async get(index: number): Promise<Codec.InferOutput<T>> {
+	async get(index: number): Promise<Codec.InferOutput<T> | undefined> {
 		const length = this.length();
-		if (index < 0 || index >= length) {
-			// Without this, an out-of-range read falls through BlobStore._get, which
-			// silently zero-pads and decodes garbage. In a Bitcoin index a zero
-			// "pointer" is a valid offset, so a silent zero read is corruption that
-			// only surfaces much later. Match IndexStore and reject loudly.
+		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
+		if (index >= length) return undefined;
 		return this._blob.get(index * this._stride, this._codec);
 	}
 
 	async slice(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
 		const length = this.length();
-		if (start < 0 || end > length || start > end) {
+		if (end > length) end = length;
+		if (start < 0) {
 			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
 		}
 		// start/end are item indices, so the blob pointer must be a byte offset.

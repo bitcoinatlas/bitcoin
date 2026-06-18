@@ -39,7 +39,7 @@ Deno.test("WireBlockHeader roundtrip preserves hash", () => {
 	const raw = decodeHex(BLOCK1_HEADER_HEX);
 	const [h1] = WireBlockHeader.decode(raw);
 	const [h2] = WireBlockHeader.decode(WireBlockHeader.encode(h1));
-	assertEquals(h2.hash, h1.hash);
+	assertEquals(h2.hash(), h1.hash());
 });
 
 Deno.test("WireBlockHeader encode is deterministic", () => {

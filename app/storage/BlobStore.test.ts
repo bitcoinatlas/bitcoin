@@ -238,6 +238,17 @@ Deno.test("rollback undoes the most recent flush", async () => {
 // concurrency / state guards
 // ---------------------------------------------------------------------------
 
+Deno.test("concurrent gets use independent read buffers", async () => {
+	await withStore({}, async (store) => {
+		const b = store.batch();
+		const first = b.append(u32(11));
+		const second = b.append(u32(22));
+		b.apply();
+
+		assertEquals(await Promise.all([store.get(first, U32), store.get(second, U32)]), [11, 22]);
+	});
+});
+
 Deno.test("a second concurrent batch throws", async () => {
 	await withStore({}, async (store) => {
 		const b = store.batch();

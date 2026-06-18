@@ -172,13 +172,25 @@ export class Atomic<T extends AtomicStores> {
 
 			if (this._rocksdb) {
 				await timePhase("rocksTrx", async (rec) => {
+					let putsWall = 0;
+					let idPut = 0;
+					let callbackEnd = 0;
 					const finalizers = await this._rocksdb!.transaction(async (trx) => {
+						const putsStart = performance.now();
 						const finalizers = await Promise.all(
 							[...this._rocks.entries()].map(([name, store]) => timeStore(rec, name, () => store.flush(trx))),
 						);
+						const idStart = performance.now();
+						putsWall = idStart - putsStart; // wall time of the put loops (concurrent)
 						await trx.put("atomic.id", id);
+						callbackEnd = performance.now();
+						idPut = callbackEnd - idStart;
 						return finalizers;
-					});
+					}, { disableSnapshot: true, retryOnBusy: false });
+					const commit = performance.now() - callbackEnd; // <-- the missing time
+					rec("putsWall", putsWall);
+					rec("idPut", idPut);
+					rec("commit", commit);
 					await timePhase("rocksFlush", async () => {
 						await this._rocksdb!.flush();
 					});
