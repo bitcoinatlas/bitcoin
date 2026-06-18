@@ -1,5 +1,4 @@
 import { Codec, type FixedCodec } from "@nomadshiba/codec";
-import { concat } from "@std/bytes";
 import { join } from "@std/path";
 import { Batch, Store } from "~/storage/Store.ts";
 import { readFileInto, writeFile } from "~/utils/fs.ts";
@@ -496,9 +495,11 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 
 			// Appends extend the region; sets overwrite existing slots. Disjoint ranges,
 			// so order is irrelevant — and a crash mid-flush is fully undone by the WAL.
-			if (appends.length > 0) {
-				const buffer = concat(appends.map((index) => frozen.entries.get(index)!));
-				await this._disk.append(buffer);
+			// Append each entry individually rather than concat-ing into one buffer first —
+			// DiskRegion.append fsyncs per chunk boundary regardless, so the fsync count is
+			// identical but we avoid allocating a merged buffer for the whole batch.
+			for (const index of appends) {
+				await this._disk.append(frozen.entries.get(index)!);
 			}
 			if (sets.length > 0) {
 				await this._disk.writeManyInto(

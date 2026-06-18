@@ -36,6 +36,15 @@ await Deno.mkdir(rocksDir, { recursive: true });
 const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	disableWAL: true,
 	parallelismThreads: Math.min(6, navigator.hardwareConcurrency),
+	keyEncoder: {
+		readKey(source: any, start: number, end?: number) {
+			return source.subarray(start, end);
+		},
+		writeKey(key: any, target: any, start: number) {
+			target.set(key, start);
+			return start + key.length;
+		},
+	},
 });
 
 export const atomic = await Atomic.open({

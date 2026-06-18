@@ -54,7 +54,7 @@ if (import.meta.main) {
 		await syncBodiesFromPeers();
 		console.log("[main] done: txs headers");
 
-		while (memcheck()) {
+		while (atomic.busy && memcheck()) {
 			if (global.gc) {
 				const gcStart = performance.now();
 				const pre = Deno.memoryUsage().heapUsed;
@@ -79,13 +79,13 @@ if (import.meta.main) {
 			}
 			if (memcheck()) {
 				console.log("[main] heap usage almost at max even after gc, awaiting flush");
-				await Promise.race([currentFlush, delay(5_000)]);
+				await Promise.race([currentFlush, delay(30_000)]);
 			}
 		}
 
 		if (atomic.busy) return;
-		console.log("[main] async flushing...");
-		currentFlush = atomic.flush().then(() => console.log("[main] flushed"));
+		console.log("[main] firing flush...");
+		currentFlush = atomic.flush();
 	}
 
 	async function _maintain() {

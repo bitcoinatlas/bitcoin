@@ -29,6 +29,11 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	// silently dropped anything applied mid-flush.
 	private _frozen: Uint8ArrayMap<Uint8Array> | null = null;
 
+	// Reusable buffer for encoding prefixed keys. get(), flush(), and
+	// batch.get() are never concurrent, so a single shared buffer is safe.
+	private readonly _keyBuf: Uint8Array;
+	private readonly _encodedKeyView: Uint8Array;
+
 	private constructor(options: KvStoreOptions<K, V>) {
 		super();
 		this.rocksdb = options.rocksdb;
@@ -37,6 +42,10 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		this.prefix = options.prefix;
 
 		this._staged = new Uint8ArrayMap();
+
+		this._keyBuf = new Uint8Array(this.key.stride.size + this.prefix.length);
+		this._keyBuf.set(this.prefix);
+		this._encodedKeyView = this._keyBuf.subarray(this.prefix.length);
 	}
 
 	static async open<K extends FixedCodec, V extends FixedCodec>(options: KvStoreOptions<K, V>): Promise<KvStore<K, V>> {
@@ -52,12 +61,9 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	}
 
 	async get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined> {
-		const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
-		keyBytes.set(this.prefix);
-		this.key.encode(key, keyBytes.subarray(this.prefix.length));
-		const encodedKey = keyBytes.subarray(this.prefix.length);
+		this.key.encode(key, this._encodedKeyView);
 		// Freshness: staged > frozen (being flushed) > rocksdb.
-		const bytes = this._staged.get(encodedKey) ?? this._frozen?.get(encodedKey) ?? await this.rocksdb.get(keyBytes);
+		const bytes = this._staged.get(this._encodedKeyView) ?? this._frozen?.get(this._encodedKeyView) ?? await this.rocksdb.get(this._keyBuf);
 		if (!bytes) return undefined;
 		return this.value.decodeValue(bytes);
 	}
@@ -70,13 +76,10 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		};
 
 		const get: KvStoreBatch<K, V>["get"] = async (key) => {
-			const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
-			keyBytes.set(this.prefix);
-			this.key.encode(key, keyBytes.subarray(this.prefix.length));
-			const encodedKey = keyBytes.subarray(this.prefix.length);
+			this.key.encode(key, this._encodedKeyView);
 			// Freshness: batch > staged > frozen > rocksdb.
-			const bytes = batch.get(encodedKey) ?? this._staged.get(encodedKey) ?? this._frozen?.get(encodedKey) ??
-				await this.rocksdb.get(keyBytes);
+			const bytes = batch.get(this._encodedKeyView) ?? this._staged.get(this._encodedKeyView) ??
+				this._frozen?.get(this._encodedKeyView) ?? await this.rocksdb.get(this._keyBuf);
 			if (!bytes) return undefined;
 			return this.value.decodeValue(bytes);
 		};
@@ -101,10 +104,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		if (!this._frozen) this.freeze();
 		const frozen = this._frozen!;
 		for (const [encodedKey, bytes] of frozen.entries()) {
-			const keyBytes = new Uint8Array(this.key.stride.size + this.prefix.length);
-			keyBytes.set(this.prefix);
-			keyBytes.set(encodedKey, this.prefix.length);
-			await trx.put(keyBytes, bytes);
+			this._keyBuf.set(encodedKey, this.prefix.length);
+			await trx.put(this._keyBuf, bytes);
 		}
 		// Draining from _frozen (not clearing until the finalizer) also makes a
 		// transaction-callback replay safe: a retry just re-puts the same snapshot.
