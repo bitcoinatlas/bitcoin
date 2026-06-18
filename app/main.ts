@@ -47,12 +47,8 @@ if (import.meta.main) {
 
 	async function tick() {
 		// await maintain(); // uncomment for production peer management
-		console.log("[main] sync headers...");
 		await syncHeadersFromPeers();
-		console.log("[main] done: sync headers");
-		console.log("[main] sync txs...");
 		await syncBodiesFromPeers();
-		console.log("[main] done: txs headers");
 
 		while (atomic.busy && memcheck()) {
 			if (global.gc) {

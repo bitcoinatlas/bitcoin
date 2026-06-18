@@ -271,8 +271,6 @@ function reapTimedOut(): void {
  * Returns the new tip (height + timestamp) if anything was appended, else null.
  */
 export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp: number } | null> {
-	console.log(`[bodies] tick start (pool=${pool.size} inFlight=${inFlight.size})`);
-
 	if (!_downloaderRunning) {
 		console.warn("[bodies] downloader not started — call startDownloader() at boot");
 	}
@@ -307,13 +305,7 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 		// downloaded yet, stop — we don't skip ahead, and the downloader will have
 		// it ready on a later tick.
 		const entry = pool.get(hash);
-		if (!entry) {
-			console.log(
-				`[bodies] tick: height=${height} not in pool yet` +
-					` (inFlight=${inFlight.has(hash)}), stopping`,
-			);
-			break;
-		}
+		if (!entry) break;
 
 		try {
 			const { pointer } = await appendTxs(entry.block.txs, height);
@@ -331,11 +323,6 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 			break; // don't advance past a block we couldn't append
 		}
 	}
-
-	console.log(
-		`[bodies] tick end: appended=${appendedCount} bytes=${fmtBytes(appendedBytes)}` +
-			` (pool=${pool.size} retained)`,
-	);
 
 	if (appendedCount > 0) {
 		_sessionBlocks += appendedCount;
