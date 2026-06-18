@@ -1,4 +1,3 @@
-import { equals } from "@std/bytes";
 import { appendTxs, localChain } from "~/chain/chain.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
@@ -15,7 +14,7 @@ import { delay } from "@std/async";
  * end, bounding how long a single tick runs and how much work the verify path
  * does before yielding.
  */
-const TICK_BYTE_BUDGET = MAX_BLOCK_SIZE * 10;
+const TICK_BYTE_BUDGET = MAX_BLOCK_SIZE * 30;
 
 /**
  * How many blocks ahead of the appended tip the downloader keeps
@@ -81,6 +80,62 @@ let _unlisten: (() => void) | null = null;
 /** Whether the background downloader loop has been started. */
 let _downloaderRunning = false;
 
+// ── Frontier tracking ────────────────────────────────────────────────────────
+//
+// Pending bodies are always the contiguous run [_pendingTip .. localChain.height()]
+// (bodies append in strict height order; genesis at height 0 already has a
+// pointer). Previously every tick AND every downloader pass AND every received
+// block rescanned the chain from genesis to (re)discover this frontier — an O(n)
+// walk whose cost grew with height, starving both the append loop and the
+// downloader as the sync advanced. Instead we keep:
+//
+//   _pendingTip  — lowest height not yet appended (cursor; only moves up).
+//   _pendingHashes — hash → height for every pending block we've enumerated,
+//                    so the block listener resolves an incoming hash in O(1)
+//                    instead of scanning the chain.
+//
+// _pendingTip is lazily initialised on first use to the first height whose
+// pointer is null (handles a partially-synced chain loaded from disk).
+
+let _pendingTip = -1; // -1 = uninitialised
+const _pendingHashes = new Uint8ArrayMap<number>(DOWNLOAD_AHEAD * 4); // hash → height
+
+/** Initialise/repair the cursor: lowest height with pointer === null. */
+function ensurePendingTip(): void {
+	if (_pendingTip >= 0) return;
+	const h = localChain.height();
+	let tip = 1; // genesis (0) always has a pointer
+	while (tip <= h && localChain.at(tip)?.pointer !== null) tip++;
+	_pendingTip = tip;
+}
+
+/**
+ * Reset the frontier cursor and pending-hash index. The cursor assumes the
+ * chain only grows (append-only) during a session, which holds for IBD. If a
+ * reorg ever rewrites history at or below the current tip (rolling a node's
+ * pointer back to null), call this so the frontier is recomputed from the new
+ * chain state on the next enumerate. Cheap; the next enumerate re-seeds both.
+ */
+export function resetPendingFrontier(): void {
+	_pendingTip = -1;
+	_pendingHashes.clear();
+}
+
+/**
+ * Advance the cursor past any heights that are now appended (pointer set),
+ * dropping their hashes from the pending index. Called after appends.
+ */
+function advancePendingTip(): void {
+	const h = localChain.height();
+	while (_pendingTip <= h) {
+		const node = localChain.at(_pendingTip);
+		if (!node || node.pointer === null) break;
+		// This height is done; if we ever indexed its hash, drop it.
+		_pendingHashes.delete(node.header.hash());
+		_pendingTip++;
+	}
+}
+
 const invType = MSG_WITNESS_BLOCK;
 
 /**
@@ -113,40 +168,38 @@ function ensureListener(peer: Peer): void {
 
 		const hash = block.header.hash();
 
-		// Only keep blocks we actually requested and still need.
-		const node = findPendingNode(hash);
-		if (node === null) return; // unsolicited or already appended
+		// Only keep blocks we actually requested and still need. O(1) lookup
+		// against the pending-hash index instead of a full chain scan.
+		const height = _pendingHashes.get(hash);
+		if (height === undefined) return; // unsolicited, or already appended
 		if (pool.has(hash)) return; // duplicate body
 
-		pool.set(hash, { height: node.height, payload: msg.payload, block });
+		pool.set(hash, { height, payload: msg.payload, block });
 		inFlight.delete(hash);
 	});
 	console.log("[bodies] block listener attached");
 }
 
-/**
- * Resolve a block hash to its still-pending chain node (pointer === null), or
- * null if it isn't a pending body.  Linear scan of the chain is fine: the chain
- * is in memory and this only runs per received block.
- */
-function findPendingNode(hash: Uint8Array): { height: number } | null {
-	for (const [height, node] of localChain.entries()) {
-		if (height === 0) continue;
-		if (node.pointer !== null) continue;
-		if (equals(node.header.hash(), hash)) return { height };
-	}
-	return null;
-}
-
 type Pending = { height: number; hash: Uint8Array };
 
-/** Enumerate pending bodies in height order, capped to keep the scan cheap. */
+/**
+ * Enumerate pending bodies in height order, starting from the frontier cursor
+ * instead of genesis, capped to keep the scan cheap. Each enumerated block's
+ * hash is recorded in _pendingHashes so the block listener can resolve incoming
+ * bodies in O(1). The walk is bounded by `limit` and by the current chain tip,
+ * so its cost is independent of how many blocks are already appended.
+ */
 function enumeratePending(limit: number): Pending[] {
+	ensurePendingTip();
+	advancePendingTip();
 	const out: Pending[] = [];
-	for (const [height, node] of localChain.entries()) {
-		if (height === 0) continue; // genesis already seeded
-		if (node.pointer !== null) continue;
-		out.push({ height, hash: node.header.hash() });
+	const top = localChain.height();
+	for (let height = _pendingTip; height <= top; height++) {
+		const node = localChain.at(height);
+		if (!node || node.pointer !== null) continue;
+		const hash = node.header.hash();
+		_pendingHashes.set(hash, height); // index for the listener
+		out.push({ height, hash });
 		if (out.length >= limit) break;
 	}
 	return out;
@@ -324,6 +377,11 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 		}
 	}
 
+	// Move the frontier past everything we just appended (drops their hashes
+	// from the pending index) so the next enumerate/listener/downloader pass
+	// starts at the new tip instead of rescanning from genesis.
+	if (appendedCount > 0) advancePendingTip();
+
 	if (appendedCount > 0) {
 		_sessionBlocks += appendedCount;
 
@@ -348,9 +406,10 @@ export async function syncBodiesFromPeers(): Promise<{ height: number; timestamp
 			_bytesPerSecEwma += SPEED_EWMA_ALPHA * (tickBytesPerSec - _bytesPerSecEwma);
 		}
 
-		const remaining = [...localChain.entries()].filter(
-			([h, n]) => h > 0 && n.pointer === null,
-		).length;
+		// Remaining pending = chain tip minus the frontier cursor. The cursor is
+		// the lowest not-yet-appended height, and pending bodies are the
+		// contiguous run above it, so this is exact without a chain scan.
+		const remaining = Math.max(0, localChain.height() - _pendingTip + 1);
 		const etaStr = _blocksPerSecEwma > 0 && remaining > 0
 			? `eta=${fmtDuration(remaining / _blocksPerSecEwma)}`
 			: remaining === 0
