@@ -105,33 +105,6 @@ export class Atomic<T extends AtomicStores> {
 		}
 		this.busy = true;
 		const flushStart = performance.now();
-		console.log("[flush] starting...");
-
-		// Per-phase timing: each entry is [phaseMs, Map<storeName, ms>]
-		const phases: Array<[label: string, ms: number, children: Map<string, number>]> = [];
-
-		const timePhase = async <T>(
-			label: string,
-			fn: (record: (name: string, ms: number) => void) => Promise<T>,
-		): Promise<T> => {
-			const children = new Map<string, number>();
-			const t0 = performance.now();
-			try {
-				return await fn((name, ms) => children.set(name, ms));
-			} finally {
-				phases.push([label, performance.now() - t0, children]);
-			}
-		};
-
-		// Time one store op and report it via the phase recorder.
-		const timeStore = async <T>(record: (name: string, ms: number) => void, name: string, fn: () => Promise<T>): Promise<T> => {
-			const t0 = performance.now();
-			try {
-				return await fn();
-			} finally {
-				record(name, performance.now() - t0);
-			}
-		};
 
 		try {
 			const id = ID.encode([Date.now(), randomBytes(2)]);
@@ -156,77 +129,38 @@ export class Atomic<T extends AtomicStores> {
 			for (const store of this._rocks.values()) store.freeze();
 			// ===== everything below drains the frozen snapshots; ticks may run =====
 
-			await timePhase(
-				"pin",
-				(rec) => Promise.all([...this._stores.entries()].map(([name, store]) => timeStore(rec, name, () => store.pin()))),
-			);
+			await Promise.all([...this._stores.values()].map((store) => store.pin()));
 
-			await timePhase("setStart", async () => {
-				await this._setStart(id);
-			});
+			await this._setStart(id);
 
-			await timePhase(
-				"storeFlushs",
-				(rec) => Promise.all([...this._stores.entries()].map(([name, store]) => timeStore(rec, name, () => store.flush()))),
-			);
+			await Promise.all([...this._stores.values()].map((store) => store.flush()));
 
 			if (this._rocksdb) {
-				await timePhase("rocksTrx", async (rec) => {
-					let putsWall = 0;
-					let idPut = 0;
-					let callbackEnd = 0;
-					const finalizers = await this._rocksdb!.transaction(async (trx) => {
-						const putsStart = performance.now();
-						const finalizers = await Promise.all(
-							[...this._rocks.entries()].map(([name, store]) => timeStore(rec, name, () => store.flush(trx))),
-						);
-						const idStart = performance.now();
-						putsWall = idStart - putsStart; // wall time of the put loops (concurrent)
-						await trx.put("atomic.id", id);
-						callbackEnd = performance.now();
-						idPut = callbackEnd - idStart;
-						return finalizers;
-					}, { disableSnapshot: true, retryOnBusy: false });
-					const commit = performance.now() - callbackEnd; // <-- the missing time
-					rec("putsWall", putsWall);
-					rec("idPut", idPut);
-					rec("commit", commit);
-					await timePhase("rocksFlush", async () => {
-						await this._rocksdb!.flush();
-					});
-					if (finalizers) {
-						for (const finalizer of finalizers) finalizer();
-					}
-				});
+				const finalizers = await this._rocksdb.transaction(async (trx) => {
+					const finalizers = await Promise.all(
+						[...this._rocks.values()].map((store) => store.flush(trx)),
+					);
+					await trx.put("atomic.id", id);
+					return finalizers;
+				}, { disableSnapshot: true, retryOnBusy: false });
+				await this._rocksdb.flush();
+				if (finalizers) {
+					for (const finalizer of finalizers) finalizer();
+				}
 			}
 
 			// All stores and RocksDB have committed — rollback files are no longer
 			// needed. Delete them before writing end.id (best-effort; a leftover
 			// rollback file is harmless on next recover since the data is consistent).
-			await timePhase(
-				"finalize",
-				(rec) => Promise.all([...this._stores.entries()].map(([name, store]) => timeStore(rec, name, () => store.finalize()))),
-			);
+			await Promise.all([...this._stores.values()].map((store) => store.finalize()));
 
-			await timePhase("setEnd", async () => {
-				await this._setEnd(id);
-			});
+			await this._setEnd(id);
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
 			Deno.exit(1);
 		} finally {
 			this.busy = false;
-			const total = performance.now() - flushStart;
-			const pad = (s: string, n: number) => s.padEnd(n);
-			const ms = (v: number) => `${v.toFixed(0)}ms`.padStart(7);
-			let log = `[flush] total=${total.toFixed(0)}ms\n`;
-			for (const [label, phaseMs, children] of phases) {
-				const childStr = children.size > 0
-					? "  " + [...children.entries()].map(([n, v]) => `${n}=${v.toFixed(0)}ms`).join(" ")
-					: "";
-				log += `  ${pad(label, 14)}${ms(phaseMs)}${childStr}\n`;
-			}
-			console.log(log.trimEnd());
+			console.log(`[flush] flushed ${(performance.now() - flushStart).toFixed(0)}ms`);
 		}
 	}
 
