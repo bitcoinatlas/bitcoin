@@ -3,6 +3,45 @@ import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { addPeer } from "~/p2p/peers.ts";
 import { syncHeader, verifyAndPushHeaders } from "~/p2p/utils/headers.ts";
 
+/*
+
+start
+get the loaded headers to sync with the mainthread
+verify and push them to your localchain
+
+send back `headers` messages to send header updates such:
+- new headers
+- or reorg point
+
+just makes sure each time you reorg
+or push to your headers also let the mainthread know
+
+time to time the mainthread will send you things like target block height
+
+this is for download block txs (aka block bodies).
+
+you should sync and send txs to them until that point,
+of course this point can change over time
+
+if you ever send reorg assume target height is also resetted so expect it back.
+
+---
+
+so basically at first on start:
+- you get the initial header state from the mainthread
+
+then:
+- you keep your own local copy of the headers
+- and push the new headers to the mainthread
+- push reorgs
+- and also based on the height mainthread wants you send blocks(txs) in chunks
+
+you just keep doing that.
+
+make sure to do message queues, and handle them in order.
+
+*/
+
 await new Promise<void>((resolve) => {
 	const controller = new AbortController();
 	self.addEventListener("message", (event) => {
