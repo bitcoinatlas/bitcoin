@@ -40,6 +40,10 @@ you just keep doing that.
 
 make sure to do message queues, and handle them in order.
 
+---
+
+ALSO, main thread can give you a list of blacklisted blocks in the future. or another verification worker
+
 */
 
 await new Promise<void>((resolve) => {
