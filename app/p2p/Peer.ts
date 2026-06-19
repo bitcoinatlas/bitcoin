@@ -36,9 +36,9 @@ export type DisconnectReason =
 	| { type: "connection_closed" }
 	| { type: "write_timeout" };
 
-export type PeerMessage<T extends Codec> = {
+export type PeerMessage<Sent extends Codec> = {
 	command: string;
-	codec: T;
+	codec: Sent;
 };
 
 function makePeerMessage(command: string, payload: Uint8Array): PeerMessageEvent {
@@ -158,7 +158,11 @@ export class Peer {
 		}
 	}
 
-	expect<T extends Codec>(type: PeerMessage<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Codec.InferOutput<T>> {
+	expect<T extends Codec>(
+		type: PeerMessage<T>,
+		filter?: (data: Codec.InferOutput<T>, bytes: Uint8Array) => boolean,
+		timeoutMs = DEFAULT_TIMEOUT_MS,
+	): Promise<[Codec.InferOutput<T>, Uint8Array]> {
 		return new Promise((resolve, reject) => {
 			const tid = setTimeout(() => {
 				unlisten();
@@ -170,19 +174,26 @@ export class Peer {
 				clearTimeout(tid);
 				unlisten();
 				const [data] = type.codec.decode(message.payload);
-				resolve(data);
+				if (filter && !filter(data, message.payload)) return;
+				resolve([data, message.payload]);
 			});
 		});
 	}
 
-	async sendAndExpect<Outgoing extends Codec, Incoming extends Codec>(
-		ougoingType: PeerMessage<Outgoing>,
-		outgoingData: Codec.InferInput<Outgoing>,
-		incomingType: PeerMessage<Incoming>,
-		timeoutMs = DEFAULT_TIMEOUT_MS,
-	): Promise<Codec.InferOutput<Incoming>> {
-		const promise = this.expect(incomingType, timeoutMs);
-		await this.send(ougoingType, outgoingData, timeoutMs);
+	async sendAndExpect<Outgoing extends Codec, Incoming extends Codec>(params: {
+		send: {
+			type: PeerMessage<Outgoing>;
+			data: Codec.InferInput<Outgoing>;
+		};
+		receive: {
+			type: PeerMessage<Incoming>;
+			filter(data: Codec.InferOutput<Incoming>, bytes: Uint8Array): boolean;
+		};
+		timeoutMs?: number;
+	}): Promise<[Codec.InferOutput<Incoming>, Uint8Array]> {
+		const timeout = params.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		const promise = this.expect(params.receive.type, params.receive.filter, timeout);
+		await this.send(params.send.type, params.send.data, timeout);
 		return promise;
 	}
 

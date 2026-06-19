@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
 import { serve } from "~/api/serve.ts";
-import { syncBodiesFromPeers } from "~/chain/bodies.ts";
-import { atomic, ChainStore } from "~/chain/chain.ts";
+import { ChainStore } from "~/chain/chain.ts";
+import { registerEndpoints } from "~/api/handlers/block.ts";
 
 const global = globalThis as never as { gc?(): void };
 
@@ -16,6 +16,7 @@ if (import.meta.main) {
 
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
 	const chainStore = await ChainStore.open(p2pWorker);
+	registerEndpoints(chainStore);
 
 	let lastFlush: Promise<void> = Promise.resolve();
 	while (true) {
@@ -32,10 +33,9 @@ if (import.meta.main) {
 	}
 
 	async function tick() {
-		await syncHeadersFromPeers();
-		await syncBodiesFromPeers();
+		// probably should call chain store sync or tick or something here?
 
-		while (atomic.busy && memcheck()) {
+		while (chainStore.atomic.busy && memcheck()) {
 			if (global.gc) {
 				const gcStart = performance.now();
 				const pre = Deno.memoryUsage().heapUsed;
@@ -64,7 +64,7 @@ if (import.meta.main) {
 			}
 		}
 
-		if (atomic.busy) return;
-		lastFlush = atomic.flush();
+		if (chainStore.atomic.busy) return;
+		lastFlush = chainStore.atomic.flush();
 	}
 }

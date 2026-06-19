@@ -2,8 +2,7 @@ import { RocksDatabase } from "@harperfast/rocksdb-js";
 import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
 import { formatHash } from "~/api/frontend/utils/format.ts";
-import { ns } from "~/chain/ns.ts";
-import { rawScriptPubKey } from "~/chain/ScriptPubKey.ts";
+import { rawScriptPubKey, ScriptPubKey } from "~/chain/ScriptPubKey.ts";
 import { GENESIS_BLOCK } from "~/chain/utils/genesis.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { U40 } from "~/codec/primitives/U40.ts";
@@ -14,16 +13,16 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
-import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { BASE_DATA_DIR } from "~/config.ts";
-import { MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { ArrayStore } from "~/storage/ArrayStore.ts";
 import { Atomic, InferBatches, InferStores } from "~/storage/Atomic.ts";
 import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
 import { KvStore } from "~/storage/KvStore.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
+import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 
 RocksDatabase.config({
 	blockCacheSize: 4 * 1024 * 1024 * 1024,
@@ -32,7 +31,7 @@ RocksDatabase.config({
 	writeBufferManagerAllowStall: false, // keep memtables soft, no hard write wall
 });
 
-export const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
+const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	disableWAL: true,
 	pessimistic: true,
 	parallelismThreads: Math.min(10, navigator.hardwareConcurrency),
@@ -49,7 +48,7 @@ export const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	},
 });
 
-export const atomic = await Atomic.open({
+const atomic = await Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
 	stores: {
 		header: await ArrayStore.open({
@@ -93,6 +92,7 @@ await atomic.recover();
 
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<StoredPointer>;
+	public readonly atomic = atomic;
 
 	private constructor(initialHeaders: WireBlockHeader[]) {
 		this.blockHashToHeightMap = new Uint8ArrayMap<number>(Math.max(256, initialHeaders.length * 2));
@@ -119,8 +119,8 @@ export class ChainStore {
 
 			const batch = atomic.batch();
 
-			self.pushHeaders([genesisBlock.header], batch);
-			await self.appendTxs(genesisBlock.txs, 0, batch);
+			self._pushHeaders([genesisBlock.header], batch);
+			await self._appendTxs(genesisBlock.txs, 0, batch);
 
 			batch.header.apply();
 			batch.block.apply();
@@ -130,9 +130,11 @@ export class ChainStore {
 			batch.pubkey.apply();
 			await atomic.flush();
 		}
+
+		return self;
 	}
 
-	pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
+	private _pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
 		const batch = batches ?? atomic.batch(["header"]);
 
 		const op = () => {
@@ -158,7 +160,7 @@ export class ChainStore {
 		}
 	}
 
-	async appendTxs(
+	private async _appendTxs(
 		wireTxs: WireTx[],
 		height: number,
 		batches?: InferBatches<typeof atomic>,
@@ -166,7 +168,7 @@ export class ChainStore {
 		const batch = batches ?? atomic.batch();
 
 		const op = async () => {
-			const txs = wireTxs.map((wireTx) => ns.fromWire(wireTx));
+			const txs = wireTxs.map((wireTx) => StoredTx.fromWire(wireTx));
 			const txCountBytes = StoredTxs.counter.encode(txs.length);
 			const blockPointer = batch.tx.append(txCountBytes);
 
@@ -397,5 +399,48 @@ export class ChainStore {
 		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
 	): Promise<StoredTxOutput> {
 		return await (batches ?? atomic.stores).tx.get(pointer, StoredTxOutput);
+	}
+
+	async getScriptPubKey(
+		output: StoredTxOutput,
+		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
+	): Promise<ScriptPubKey> {
+		if (output.scriptPubKey.kind === "pointer") {
+			const resolved = await this.getTxOutputByPointer(output.scriptPubKey.value, batches);
+			if (resolved.scriptPubKey.kind === "pointer") {
+				throw new Error([
+					`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
+					`Expected direct ScriptPubKey at that offset.`,
+				].join(" "));
+			}
+			return resolved.scriptPubKey;
+		} else {
+			return output.scriptPubKey;
+		}
+	}
+
+	async getRawScriptPubKey(
+		output: StoredTxOutput,
+		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
+	): Promise<Uint8Array> {
+		return rawScriptPubKey(await this.getScriptPubKey(output, batches));
+	}
+
+	async getPrevOutTxId(input: StoredTxInput): Promise<Uint8Array> {
+		const txId = input.prevOut.txId;
+		const { kind, value } = txId;
+		if (kind === "raw") {
+			return value;
+		}
+
+		if (kind === "pointer") {
+			return await this.getTxByPointer(value).then((tx) => tx.txId);
+		}
+
+		if (kind === "coinbase") {
+			return COINBASE_TXID;
+		}
+
+		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
 	}
 }

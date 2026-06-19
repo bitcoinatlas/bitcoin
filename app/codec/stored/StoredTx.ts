@@ -2,8 +2,15 @@ import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { U40 } from "~/codec/primitives/U40.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
-import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
+import { PrevOut, StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { parseScriptPubKey, rawScriptPubKey } from "~/chain/ScriptPubKey.ts";
+import { WireTx } from "~/codec/wire/WireTx.ts";
+import { equals } from "@std/bytes";
+import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
+import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
+import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
+import { ChainStore } from "~/chain/chain.ts";
 
 /**
  * StoredTx binary layout (optimized for disk storage)
@@ -63,6 +70,72 @@ export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
  */
 export class StoredTxCodec extends Codec<StoredTx> {
 	public readonly stride = { kind: "variable" } as const;
+
+	async toWire(storedTx: StoredTx, chainStore: ChainStore): Promise<WireTx> {
+		const { txId, version, locktime } = storedTx;
+
+		const inputs: WireTxInput[] = [];
+		const witness: Uint8Array[][] = [];
+
+		for (const input of storedTx.inputs) {
+			const prevTxId = await chainStore.getPrevOutTxId(input);
+			inputs.push({
+				prevOut: {
+					txId: prevTxId,
+					vout: input.prevOut.vout,
+				},
+				scriptSig: input.scriptSig,
+				sequence: input.sequence,
+			});
+			if (input.witness) witness.push(input.witness);
+		}
+
+		const outputs: WireTxOutput[] = [];
+		for (const output of storedTx.outputs) {
+			const scriptPubKey = await chainStore.getScriptPubKey(output);
+			outputs.push({
+				value: output.value,
+				scriptPubKey: rawScriptPubKey(scriptPubKey),
+			});
+		}
+
+		return { txId, version, locktime, inputs, outputs, witness };
+	}
+
+	fromWire(wireTx: WireTx): StoredTx {
+		const inputs: StoredTxInput[] = wireTx.inputs.map((wireInput, i): StoredTxInput => {
+			let txId: PrevOut["txId"];
+			if (equals(wireInput.prevOut.txId, COINBASE_TXID) && wireInput.prevOut.vout === COINBASE_VOUT) {
+				txId = { kind: "coinbase" };
+			} else {
+				txId = { kind: "raw", value: wireInput.prevOut.txId };
+			}
+			return {
+				prevOut: { txId, vout: wireInput.prevOut.vout },
+				scriptSig: wireInput.scriptSig,
+				sequence: wireInput.sequence,
+				witness: wireTx.witness[i] ?? [],
+			};
+		});
+
+		const outputs: StoredTxOutput[] = [];
+		for (const wireOutput of wireTx.outputs) {
+			const scriptPubKey = parseScriptPubKey(wireOutput.scriptPubKey);
+			const output: StoredTxOutput = { value: wireOutput.value, scriptPubKey };
+			outputs.push(output);
+		}
+
+		const tx: StoredTx = {
+			txId: wireTx.txId,
+			spender: 0,
+			version: wireTx.version,
+			locktime: wireTx.locktime,
+			inputs: inputs,
+			outputs: outputs,
+		};
+
+		return tx;
+	}
 
 	public encode(value: StoredTx, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 		const txIdBytes = TXID.encode(value.txId);
