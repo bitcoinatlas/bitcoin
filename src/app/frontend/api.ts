@@ -1,7 +1,7 @@
 import { Codec } from "@nomadshiba/codec";
 import { STATUS_TEXT } from "@std/http";
-import { ENDPOINT_SCHEMA } from "~/server/schema.ts";
-import type { EndpointSchema, EndpointSchemaKey } from "~/server/utils/EndpointRouter.ts";
+import { ENDPOINT_SCHEMA } from "~/app/backend/schema.ts";
+import type { EndpointSchema, EndpointSchemaKey } from "~/app/backend/utils/EndpointRouter.ts";
 import { Empty, NeverFallback, StringInput } from "~/types.ts";
 
 type TSchema = typeof ENDPOINT_SCHEMA;

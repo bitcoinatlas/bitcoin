@@ -1,5 +1,5 @@
 import { decodeHex } from "@std/encoding";
-import { endpointRouter } from "~/server/router.ts";
+import { endpointRouter } from "~/app/backend/router.ts";
 import { ChainStore } from "~/chain/ChainStore.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 

@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
-import { serve } from "~/server/serve.ts";
+import { serve } from "~/app/serve.ts";
 import { ChainStore } from "~/chain/ChainStore.ts";
-import { registerEndpoints } from "~/server/handlers/block.ts";
+import { registerEndpoints } from "~/app/backend/handlers/block.ts";
 
 const global = globalThis as never as { gc?(): void };
 
@@ -14,7 +14,9 @@ if (import.meta.main) {
 
 	serve(50021);
 
+	const appWorker = new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "app" });
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
+
 	const chainStore = await ChainStore.open(p2pWorker);
 	registerEndpoints(chainStore);
 

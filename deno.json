@@ -17,6 +17,7 @@
 		"@std/path": "jsr:@std/path@1.1.2",
 		"@std/streams": "jsr:@std/streams@1.0.12",
 		"@std/uuid": "jsr:@std/uuid@^1.1.1",
+		"@webview/webview": "jsr:@webview/webview@^0.9.0",
 		"~/": "./src/"
 	},
 	"tasks": {

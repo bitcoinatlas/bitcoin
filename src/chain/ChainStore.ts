@@ -1,7 +1,7 @@
 import { RocksDatabase } from "@harperfast/rocksdb-js";
 import { sha256 } from "@noble/hashes/sha2";
 import { join } from "@std/path";
-import { formatHash } from "~/server/frontend/utils/format.ts";
+import { formatHash } from "~/app/frontend/utils/format.ts";
 import { rawScriptPubKey, ScriptPubKey } from "~/chain/ScriptPubKey.ts";
 import { GENESIS_BLOCK } from "~/chain/genesis.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";

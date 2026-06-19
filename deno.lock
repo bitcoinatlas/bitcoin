@@ -49,6 +49,7 @@
     "jsr:@std/streams@^1.1.1": "1.1.1",
     "jsr:@std/testing@*": "1.0.17",
     "jsr:@std/uuid@^1.1.1": "1.1.1",
+    "jsr:@webview/webview@0.9": "0.9.0",
     "npm:@harperfast/rocksdb-js@^2.1.0": "2.1.0",
     "npm:@jsr/nomadshiba__codec@0.2.0": "0.2.0"
   },
@@ -252,6 +253,12 @@
         "jsr:@std/bytes@^1.0.6",
         "jsr:@std/crypto"
       ]
+    },
+    "@webview/webview@0.9.0": {
+      "integrity": "a7c4d787aafa43258ff287f71a16679d5ca3d9b65e5d232c60c3985f9ab3e0ce",
+      "dependencies": [
+        "jsr:@denosaurs/plug"
+      ]
     }
   },
   "npm": {
@@ -426,6 +433,7 @@
       "jsr:@std/path@1.1.2",
       "jsr:@std/streams@1.0.12",
       "jsr:@std/uuid@^1.1.1",
+      "jsr:@webview/webview@0.9",
       "npm:@harperfast/rocksdb-js@^2.1.0"
     ]
   }

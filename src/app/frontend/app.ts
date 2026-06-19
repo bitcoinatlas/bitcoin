@@ -1,6 +1,6 @@
 import appCss from "./app.css" with { type: "text" };
-import { api } from "~/server/frontend/api.ts";
-import { formatHash } from "~/server/frontend/utils/format.ts";
+import { api } from "~/app/frontend/api.ts";
+import { formatHash } from "~/app/frontend/utils/format.ts";
 
 const appSheet = new CSSStyleSheet();
 appSheet.replaceSync(appCss);
