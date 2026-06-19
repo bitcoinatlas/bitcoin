@@ -32,7 +32,7 @@
 		"profile": "deno run --v8-flags=--expose-gc -A --cpu-prof src/main.ts",
 		"compile": "deno compile -A --output=out/bitcoin src/main.ts"
 	},
-	"unstable": ["raw-imports", "kv"],
+	"unstable": ["raw-imports"],
 	"compilerOptions": {
 		"lib": [
 			"deno.ns",

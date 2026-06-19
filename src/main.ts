@@ -1,20 +1,20 @@
 import { delay } from "@std/async";
+import { parseArgs } from "@std/cli";
+import { registerEndpoints } from "~/app/backend/handlers/block.ts";
 import { serve } from "~/app/serve.ts";
 import { ChainStore } from "~/chain/ChainStore.ts";
-import { registerEndpoints } from "~/app/backend/handlers/block.ts";
 
 const global = globalThis as never as { gc?(): void };
 
 if (import.meta.main) {
 	Deno.addSignalListener("SIGINT", () => Deno.exit(0));
-	if (Deno.args.length) {
-		const timeout = Number(Deno.args[0]);
-		setTimeout(() => Deno.exit(0), timeout * 1000);
-	}
+	const args = parseArgs(Deno.args, { boolean: ["background"] });
 
 	serve(50021);
 
-	const appWorker = new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "app" });
+	if (!args.background) {
+		const guiWorker = new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "gui" });
+	}
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
 
 	const chainStore = await ChainStore.open(p2pWorker);
