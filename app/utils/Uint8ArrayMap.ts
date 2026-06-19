@@ -63,6 +63,25 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		if (this._size > this.threshold) this.rehash(this.buckets.length * 2);
 	}
 
+	// Like set, but stores `key` by reference with NO defensive copy. Only safe
+	// when the caller guarantees `key` is never mutated after insertion (e.g.
+	// block hashes, which are immutable once computed). Saves a 32-byte copy per
+	// insert — meaningful when indexing 800k+ hashes.
+	setOwned(key: Uint8Array, value: V): void {
+		const hash = this.hash(key);
+		const bucket = this.buckets[hash & this.mask]!;
+		for (let i = 0; i < bucket.length; i++) {
+			const entry = bucket[i]!;
+			if (entry[0] === hash && equals(entry[1], key)) {
+				entry[2] = value;
+				return;
+			}
+		}
+		bucket.push([hash, key, value]);
+		this._size++;
+		if (this._size > this.threshold) this.rehash(this.buckets.length * 2);
+	}
+
 	private rehash(newCapacity: number): void {
 		const newBuckets: Array<Bucket<V>> = new Array(newCapacity);
 		for (let i = 0; i < newCapacity; i++) newBuckets[i] = [];
