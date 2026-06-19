@@ -225,26 +225,6 @@ function verifyAndPushHeaders(chain: PeerChain, headers: WireBlockHeader[]): { r
 	return { pushed, reorgHeight };
 }
 
-function buildLocators(chain: PeerChain): Uint8Array[] {
-	const locators: Uint8Array[] = [];
-	let step = 1;
-	let index = chain.height();
-
-	while (index >= 0) {
-		locators.push(chain.at(index)!.header.hash());
-		if (locators.length >= 10) step <<= 1;
-		index -= step;
-	}
-
-	// Always include genesis
-	const genesis = chain.at(0)!.header.hash();
-	if (!equals(locators.at(-1)!, genesis)) {
-		locators.push(genesis);
-	}
-
-	return locators;
-}
-
 // ── block bodies ───────────────────────────────────────────────────────────
 
 /**
@@ -284,7 +264,7 @@ async function syncBlocks(): Promise<void> {
 		const top = Math.min(targetDownloadHeight, localChain.height());
 		if (packHeight > top) break; // target reached
 
-		const live = [...peers].filter((p) => p.connected);
+		const live = peers.values().filter((p) => p.connected).toArray();
 		if (live.length === 0) break; // no peers
 		for (const peer of live) ensureBlockListener(peer);
 
@@ -431,6 +411,26 @@ async function _searchBlock(hash: Uint8Array) {
 		});
 		if (block) return block;
 	}
+}
+
+function buildLocators(chain: PeerChain): Uint8Array[] {
+	const locators: Uint8Array[] = [];
+	let step = 1;
+	let index = chain.height();
+
+	while (index >= 0) {
+		locators.push(chain.at(index)!.header.hash());
+		if (locators.length >= 10) step <<= 1;
+		index -= step;
+	}
+
+	// Always include genesis
+	const genesis = chain.at(0)!.header.hash();
+	if (!equals(locators.at(-1)!, genesis)) {
+		locators.push(genesis);
+	}
+
+	return locators;
 }
 
 while (true) {
