@@ -5,7 +5,6 @@ import { formatHash } from "~/api/frontend/utils/format.ts";
 import { ns } from "~/chain/ns.ts";
 import { rawScriptPubKey } from "~/chain/ScriptPubKey.ts";
 import { GENESIS_BLOCK } from "~/chain/utils/genesis.ts";
-import { verifyProofOfWork, workFromHeader } from "~/chain/utils/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { U40 } from "~/codec/primitives/U40.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
@@ -15,6 +14,7 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { BASE_DATA_DIR } from "~/config.ts";
 import { MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
@@ -24,7 +24,6 @@ import { BlobStore } from "~/storage/BlobStore.ts";
 import { IndexStore } from "~/storage/IndexStore.ts";
 import { KvStore } from "~/storage/KvStore.ts";
 import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
-import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 
 RocksDatabase.config({
 	blockCacheSize: 4 * 1024 * 1024 * 1024,
@@ -104,21 +103,9 @@ export class ChainStore {
 
 	static async open(p2pWorker: Worker) {
 		const initialHeaderLength = atomic.stores.header.length();
+		const intialHeaders = await atomic.stores.header.slice(0, initialHeaderLength);
 		console.log(`[chain] loading headers count=${initialHeaderLength}`);
 		console.log(`[chain] headers loaded`);
-
-		const headersBytes = WireBlockHeaders.encode(await atomic.stores.header.slice(0, initialHeaderLength));
-		const headers = await new Promise<WireBlockHeader[]>((resolve) => {
-			const controller = new AbortController();
-			p2pWorker.addEventListener("message", (event) => {
-				const message = event.data;
-				if (message.name !== "headers") return;
-				controller.abort();
-				const [headers] = WireBlockHeaders.decode(message.data);
-				resolve(headers);
-			});
-			p2pWorker.postMessage({ name: "start", data: headersBytes }, [headersBytes.buffer]);
-		});
 
 		const self = new ChainStore(headers);
 		if (headers.length === 0) {

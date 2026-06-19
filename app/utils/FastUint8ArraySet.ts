@@ -19,27 +19,27 @@ function hashKeyU32(key: Uint8Array): number {
 // chained map can tolerate.
 const LOAD = 0.7;
 
-// Open-addressed (linear-probing) map keyed by Uint8Array.
+// Open-addressed (linear-probing) set keyed by Uint8Array.
 //
 // Append-only + no-copy + no-delete, which is what makes it fast and simple:
 //   - keys are stored BY REFERENCE (no defensive copy). Safe only when keys are
 //     immutable after insertion — e.g. block hashes. Don't hand it a buffer you
 //     later mutate.
-//   - `put` never checks for an existing key (no dedup scan). Caller guarantees
-//     uniqueness; a double-put inserts a second slot the lookups can't see.
+//   - `add` checks membership while probing (a set must dedup), so a re-add is a
+//     cheap no-op rather than a second hidden slot. This is the one place it
+//     diverges from the map, whose `set` skips the existence scan.
 //   - no per-key delete -> no tombstones -> probing stops cleanly at the first
 //     empty slot. Shrink/reset is wholesale via `clear`.
 //
 // Storage is parallel arrays: a Uint32Array of cached hashes (cache-friendly
-// linear scan) and a plain array of key references — no [hash,key,value] tuple
-// is allocated per entry, which is where the chained version spent its time.
+// linear scan) and a plain array of key references — no [hash,key] tuple is
+// allocated per entry, which is where the chained version spent its time.
 //
 // An empty slot is `keys[slot] === undefined`. That doubles as the occupancy
 // flag, so no separate bitset is needed.
-export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
+export class FastUint8ArraySet implements Iterable<Uint8Array> {
 	private _keys: Array<Uint8Array | undefined>;
 	private _hashes: Uint32Array;
-	private _vals: Array<V | undefined>;
 	private _mask: number;
 	private _threshold: number;
 	private _size = 0;
@@ -48,32 +48,22 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(Math.max(1, capacity))));
 		this._keys = new Array(pow2);
 		this._hashes = new Uint32Array(pow2);
-		this._vals = new Array(pow2);
 		this._mask = pow2 - 1;
 		this._threshold = (pow2 * LOAD) | 0;
 	}
 
-	[Symbol.iterator](): Iterator<[Uint8Array, V]> {
-		return this.entries();
+	[Symbol.iterator](): Iterator<Uint8Array> {
+		return this.values();
 	}
 
 	size() {
 		return this._size;
 	}
 
-	// Append a unique key/value. No existence check, no copy.
-	set(key: Uint8Array, value: V): void {
+	// Insert a key, deduping by reference-independent value equality. Returns
+	// true if newly added, false if it was already present. No copy.
+	add(key: Uint8Array): boolean {
 		if (this._size >= this._threshold) this.grow();
-		const hash = hashKeyU32(key);
-		let slot = hash & this._mask;
-		while (this._keys[slot] !== undefined) slot = (slot + 1) & this._mask;
-		this._keys[slot] = key;
-		this._hashes[slot] = hash;
-		this._vals[slot] = value;
-		this._size++;
-	}
-
-	get(key: Uint8Array): V | undefined {
 		const hash = hashKeyU32(key);
 		const keys = this._keys;
 		const hashes = this._hashes;
@@ -81,25 +71,36 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		let slot = hash & mask;
 		let k: Uint8Array | undefined;
 		while ((k = keys[slot]) !== undefined) {
-			if (hashes[slot] === hash && equals(k, key)) return this._vals[slot];
+			if (hashes[slot] === hash && equals(k, key)) return false;
 			slot = (slot + 1) & mask;
 		}
-		return undefined;
+		keys[slot] = key;
+		hashes[slot] = hash;
+		this._size++;
+		return true;
 	}
 
 	has(key: Uint8Array): boolean {
-		return this.get(key) !== undefined;
+		const hash = hashKeyU32(key);
+		const keys = this._keys;
+		const hashes = this._hashes;
+		const mask = this._mask;
+		let slot = hash & mask;
+		let k: Uint8Array | undefined;
+		while ((k = keys[slot]) !== undefined) {
+			if (hashes[slot] === hash && equals(k, key)) return true;
+			slot = (slot + 1) & mask;
+		}
+		return false;
 	}
 
 	private grow(): void {
 		const oldKeys = this._keys;
 		const oldHashes = this._hashes;
-		const oldVals = this._vals;
 		const cap = oldKeys.length * 2;
 
 		this._keys = new Array(cap);
 		this._hashes = new Uint32Array(cap);
-		this._vals = new Array(cap);
 		this._mask = cap - 1;
 		this._threshold = (cap * LOAD) | 0;
 
@@ -112,7 +113,6 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 			while (this._keys[slot] !== undefined) slot = (slot + 1) & mask;
 			this._keys[slot] = k;
 			this._hashes[slot] = hash;
-			this._vals[slot] = oldVals[i];
 		}
 	}
 
@@ -120,20 +120,11 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	// without immediately re-growing.
 	clear(): void {
 		this._keys.fill(undefined);
-		this._vals.fill(undefined);
 		this._hashes.fill(0);
 		this._size = 0;
 	}
 
-	*entries(): Generator<[Uint8Array, V]> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
-			if (k !== undefined) yield [k, this._vals[i]!];
-		}
-	}
-
-	*keys(): Generator<Uint8Array> {
+	*values(): Generator<Uint8Array> {
 		const keys = this._keys;
 		for (let i = 0; i < keys.length; i++) {
 			const k = keys[i];
@@ -141,11 +132,8 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		}
 	}
 
-	*values(): Generator<V> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
-			if (k !== undefined) yield this._vals[i]!;
-		}
+	// Alias to mirror the map's surface, where callers may expect `keys()`.
+	keys(): Generator<Uint8Array> {
+		return this.values();
 	}
 }

@@ -5,6 +5,7 @@ const MAGIC_LEN = 4;
 const CMD_LEN = 12;
 const HDR_LEN = 24; // magic(4) + cmd(12) + len(4) + checksum(4)
 const READ_CHUNK = 32 * 1024;
+const DEFAULT_TIMEOUT_MS = 10_000;
 
 const ASCII = new TextDecoder("ascii");
 const ASCII_ENC = new TextEncoder();
@@ -49,14 +50,14 @@ function makePeerMessage(command: string, payload: Uint8Array): PeerMessageEvent
 }
 
 export class Peer {
-	readonly host: string;
-	readonly port: number;
-	readonly #magic: Uint8Array;
+	public readonly host: string;
+	public readonly port: number;
+	public readonly magic: Uint8Array;
 
-	#connected = false;
-	#conn: Deno.Conn | null = null;
-	#listeners = new Set<(msg: PeerMessageEvent) => void>();
-	#disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
+	private _connected = false;
+	private _connection: Deno.Conn | null = null;
+	private _listeners = new Set<(msg: PeerMessageEvent) => void>();
+	private _disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
 
 	/** Remote peer's version payload, populated after handshake. */
 	remoteVersion: number = 0;
@@ -64,22 +65,22 @@ export class Peer {
 	remoteServices: bigint = 0n;
 
 	get connected(): boolean {
-		return this.#connected;
+		return this._connected;
 	}
 
 	constructor(host: string, port: number, magic: Uint8Array) {
 		if (magic.length !== MAGIC_LEN) throw new Error("magic must be 4 bytes");
 		this.host = host;
 		this.port = port;
-		this.#magic = magic;
+		this.magic = magic;
 	}
 
-	async connect(timeoutMs = 5_000): Promise<void> {
-		if (this.#connected) return;
+	async connect(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+		if (this._connected) return;
 		const abort = new AbortController();
 		const timer = setTimeout(() => abort.abort(), timeoutMs);
 		try {
-			this.#conn = await Deno.connect({
+			this._connection = await Deno.connect({
 				hostname: this.host,
 				port: this.port,
 				transport: "tcp",
@@ -88,18 +89,18 @@ export class Peer {
 		} finally {
 			clearTimeout(timer);
 		}
-		this.#connected = true;
-		void this.#readLoop(this.#conn);
+		this._connected = true;
+		void this._readLoop(this._connection);
 	}
 
 	disconnect(reason: DisconnectReason = { type: "manual" }): void {
-		if (!this.#connected) return;
-		this.#connected = false;
+		if (!this._connected) return;
+		this._connected = false;
 		try {
-			this.#conn?.close();
+			this._connection?.close();
 		} catch { /* noop */ }
-		this.#conn = null;
-		for (const cb of this.#disconnectCallbacks) {
+		this._connection = null;
+		for (const cb of this._disconnectCallbacks) {
 			try {
 				cb(reason);
 			} catch { /* noop */ }
@@ -107,33 +108,33 @@ export class Peer {
 	}
 
 	onDisconnect(cb: (reason: DisconnectReason) => void): () => void {
-		this.#disconnectCallbacks.add(cb);
-		return () => this.#disconnectCallbacks.delete(cb);
+		this._disconnectCallbacks.add(cb);
+		return () => this._disconnectCallbacks.delete(cb);
 	}
 
 	onMessage(listener: (msg: PeerMessageEvent) => void): () => void {
-		this.#listeners.add(listener);
-		return () => this.#listeners.delete(listener);
+		this._listeners.add(listener);
+		return () => this._listeners.delete(listener);
 	}
 
-	async send<T extends Codec>(def: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = 10_000): Promise<void> {
-		const conn = this.#conn;
-		if (!this.#connected || !conn) throw new Error("not connected");
+	async send<T extends Codec>(type: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+		const connection = this._connection;
+		if (!this._connected || !connection) throw new Error("not connected");
 
-		const { command: cmd, codec } = def;
-		if (cmd.length < 1 || cmd.length > CMD_LEN) throw new Error("invalid command length");
-		for (let i = 0; i < cmd.length; i++) {
-			const c = cmd.charCodeAt(i);
+		const { command, codec } = type;
+		if (command.length < 1 || command.length > CMD_LEN) throw new Error("invalid command length");
+		for (let i = 0; i < command.length; i++) {
+			const c = command.charCodeAt(i);
 			if (c < 0x20 || c > 0x7e) throw new Error("command must be printable ASCII");
 		}
 
 		const payload = codec.encode(data);
 		const frame = new Uint8Array(HDR_LEN + payload.length);
 
-		frame.set(this.#magic, 0);
-		const cmdBytes = ASCII_ENC.encode(cmd);
-		frame.set(cmdBytes, 4);
-		frame.fill(0, 4 + cmdBytes.length, 16);
+		frame.set(this.magic, 0);
+		const commandBytes = ASCII_ENC.encode(command);
+		frame.set(commandBytes, 4);
+		frame.fill(0, 4 + commandBytes.length, 16);
 		putU32le(frame, 16, payload.length);
 		const cs = sha256(sha256(payload));
 		frame[20] = cs[0]!;
@@ -145,7 +146,7 @@ export class Peer {
 		const abort = new AbortController();
 		const timer = setTimeout(() => abort.abort(), timeoutMs);
 		try {
-			await conn.write(frame);
+			await connection.write(frame);
 		} catch (e) {
 			if (abort.signal.aborted) {
 				this.disconnect({ type: "write_timeout" });
@@ -157,28 +158,39 @@ export class Peer {
 		}
 	}
 
-	expect<T extends Codec>(def: PeerMessage<T>, timeoutMs = 5_000): Promise<Codec.InferOutput<T>> {
+	expect<T extends Codec>(type: PeerMessage<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Codec.InferOutput<T>> {
 		return new Promise((resolve, reject) => {
 			const tid = setTimeout(() => {
 				unlisten();
-				reject(new Error(`timeout waiting for ${def.command}`));
+				reject(new Error(`timeout waiting for ${type.command}`));
 			}, timeoutMs);
 
-			const unlisten = this.onMessage((msg) => {
-				if (msg.command !== def.command) return;
+			const unlisten = this.onMessage((message) => {
+				if (message.command !== type.command) return;
 				clearTimeout(tid);
 				unlisten();
-				const [data] = def.codec.decode(msg.payload);
+				const [data] = type.codec.decode(message.payload);
 				resolve(data);
 			});
 		});
 	}
 
-	async #readLoop(conn: Deno.Conn): Promise<void> {
+	async sendAndExpect<Outgoing extends Codec, Incoming extends Codec>(
+		ougoingType: PeerMessage<Outgoing>,
+		outgoingData: Codec.InferInput<Outgoing>,
+		incomingType: PeerMessage<Incoming>,
+		timeoutMs = DEFAULT_TIMEOUT_MS,
+	): Promise<Codec.InferOutput<Incoming>> {
+		const promise = this.expect(incomingType, timeoutMs);
+		await this.send(ougoingType, outgoingData, timeoutMs);
+		return promise;
+	}
+
+	private async _readLoop(conn: Deno.Conn): Promise<void> {
 		let buf = new Uint8Array(64 * 1024);
 		let len = 0;
 		const tmp = new Uint8Array(READ_CHUNK);
-		const magic = this.#magic;
+		const magic = this.magic;
 
 		const grow = (need: number) => {
 			let cap = buf.length;
@@ -191,7 +203,7 @@ export class Peer {
 		};
 
 		try {
-			while (this.#connected) {
+			while (this._connected) {
 				const n = await conn.read(tmp);
 				if (n === null) {
 					this.disconnect({ type: "connection_closed" });
@@ -242,7 +254,7 @@ export class Peer {
 						calc[0] === recvCs[0] && calc[1] === recvCs[1] && calc[2] === recvCs[2] && calc[3] === recvCs[3]
 					) {
 						const msg = makePeerMessage(command, payload.slice());
-						for (const l of this.#listeners) {
+						for (const l of this._listeners) {
 							try {
 								l(msg);
 							} catch { /* noop */ }
@@ -260,7 +272,7 @@ export class Peer {
 		} catch (e) {
 			this.disconnect({ type: "read_error", error: e });
 		} finally {
-			if (this.#connected) this.disconnect({ type: "connection_closed" });
+			if (this._connected) this.disconnect({ type: "connection_closed" });
 		}
 	}
 }
