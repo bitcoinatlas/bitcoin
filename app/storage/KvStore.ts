@@ -1,7 +1,7 @@
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { Codec, FixedCodec } from "@nomadshiba/codec";
 import { Batch, FlushFinalizer, StoreRocks } from "~/storage/Store.ts";
-import { Uint8ArrayMap } from "~/utils/Uint8ArrayMap.ts";
+import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 
 export type KvStoreOptions<K extends FixedCodec, V extends FixedCodec> = {
 	prefix: Uint8Array;

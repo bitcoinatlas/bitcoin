@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
-import { serve } from "~/api/serve.ts";
-import { ChainStore } from "~/chain/chain.ts";
-import { registerEndpoints } from "~/api/handlers/block.ts";
+import { serve } from "~/server/serve.ts";
+import { ChainStore } from "~/chain/ChainStore.ts";
+import { registerEndpoints } from "~/server/handlers/block.ts";
 
 const global = globalThis as never as { gc?(): void };
 

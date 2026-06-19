@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
-import { GENESIS_BLOCK_HEADER } from "~/chain/utils/genesis.ts";
-import { verifyProofOfWork, workFromHeader } from "~/chain/utils/pow.ts";
+import { GENESIS_BLOCK_HEADER } from "~/chain/genesis.ts";
+import { verifyProofOfWork, workFromHeader } from "~/chain/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
@@ -12,8 +12,8 @@ import { GetHeadersMessage } from "~/p2p/messages/GetHeaders.ts";
 import { HeadersMessage } from "~/p2p/messages/Headers.ts";
 import { Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { PeerChain } from "~/p2p/PeerChain.ts";
-import { FastUint8ArraySet } from "~/utils/FastUint8ArraySet.ts";
-import { Queue } from "~/utils/Queue.ts";
+import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
+import { Queue } from "~/libs/collections/Queue.ts";
 
 /*
 Protocol

@@ -1,4 +1,4 @@
-import { FastUint8ArrayMap } from "~/utils/FastUint8ArrayMap.ts"; // adjust path
+import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts"; // adjust path
 import type { PeerChainNode } from "~/p2p/PeerChainNode.ts";
 
 export class PeerChain implements Iterable<PeerChainNode> {

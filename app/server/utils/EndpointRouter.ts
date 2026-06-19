@@ -1,5 +1,5 @@
 import { Codec } from "@nomadshiba/codec";
-import { EndpointResponse, EndpointResponseOptions } from "~/api/utils/EndpointResponse.ts";
+import { EndpointResponse, EndpointResponseOptions } from "~/server/utils/EndpointResponse.ts";
 import { _, PromiseOrValue } from "~/types.ts";
 
 type SchemaKeyGeneric = `${string} /${string}`;

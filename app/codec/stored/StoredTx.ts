@@ -10,7 +10,7 @@ import { equals } from "@std/bytes";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
 import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
-import { ChainStore } from "~/chain/chain.ts";
+import { ChainStore } from "~/chain/ChainStore.ts";
 
 /**
  * StoredTx binary layout (optimized for disk storage)

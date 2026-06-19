@@ -5,7 +5,7 @@ import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { randomBytes } from "@noble/hashes/utils";
 import { Store, StoreRocks } from "~/storage/Store.ts";
-import { writeFile } from "~/utils/fs.ts";
+import { writeFile } from "~/libs/fs/mod.ts";
 
 const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
 

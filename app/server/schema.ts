@@ -1,5 +1,5 @@
 import { ArrayCodec, NullableCodec, StructCodec, U32, Void } from "@nomadshiba/codec";
-import type { EndpointSchema } from "~/api/utils/EndpointRouter.ts";
+import type { EndpointSchema } from "~/server/utils/EndpointRouter.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";

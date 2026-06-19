@@ -2,10 +2,9 @@ import { sha256 } from "@noble/hashes/sha2";
 import { concatBytes } from "@noble/hashes/utils";
 import { equals } from "@std/bytes";
 
-export function computeSatoshiMerkleRoot(txIds: Uint8Array[]): Uint8Array {
-	if (txIds.length === 0) return new Uint8Array(32);
-
-	let hashes = txIds.map((x) => x);
+export function computeSatoshiMerkleRoot(txIds: ArrayIterator<Uint8Array>): Uint8Array {
+	let hashes = txIds.toArray();
+	if (hashes.length === 0) return new Uint8Array(32);
 
 	while (hashes.length > 1) {
 		// detect mutation: identical siblings at the same level

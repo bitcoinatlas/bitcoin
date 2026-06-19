@@ -1,6 +1,6 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
-import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 
 export class CompactSizeCodec extends Codec<number> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };

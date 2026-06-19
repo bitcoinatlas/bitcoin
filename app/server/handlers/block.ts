@@ -1,6 +1,6 @@
 import { decodeHex } from "@std/encoding";
-import { endpointRouter } from "~/api/router.ts";
-import { ChainStore } from "~/chain/chain.ts";
+import { endpointRouter } from "~/server/router.ts";
+import { ChainStore } from "~/chain/ChainStore.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 
 const MAX_TAKE = 210;

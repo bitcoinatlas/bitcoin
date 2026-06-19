@@ -1,6 +1,6 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/p2p/Peer.ts";
-import { Uint8ArrayView } from "~/utils/Uint8ArrayView.ts";
+import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 
 class PingPongCodec extends Codec<bigint> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 8 };

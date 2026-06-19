@@ -1,8 +1,8 @@
-await import("~/api/handlers/block.ts");
+await import("~/server/handlers/block.ts");
 
-import { endpointRouter } from "~/api/router.ts";
-import appHtml from "~/api/frontend/app.html" with { type: "text" };
-import appJs from "~/api/frontend/dist/app.js" with { type: "text" };
+import { endpointRouter } from "~/server/router.ts";
+import appHtml from "~/server/frontend/app.html" with { type: "text" };
+import appJs from "~/server/frontend/dist/app.js" with { type: "text" };
 
 const app = appHtml.replace("<!-- inject js -->", () => `<script type="module">${appJs}</script>`);
 

@@ -4,7 +4,7 @@ import { join } from "@std/path";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { Batch, Store } from "~/storage/Store.ts";
 import { PromiseOrValue } from "~/types.ts";
-import { readFileInto, writeFile } from "~/utils/fs.ts";
+import { readFileInto, writeFile } from "~/libs/fs/mod.ts";
 
 type Region = {
 	size: number;
