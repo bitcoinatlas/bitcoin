@@ -5,7 +5,7 @@ const MAGIC_LEN = 4;
 const CMD_LEN = 12;
 const HDR_LEN = 24; // magic(4) + cmd(12) + len(4) + checksum(4)
 const READ_CHUNK = 32 * 1024;
-const DEFAULT_TIMEOUT_MS = 10_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 const ASCII = new TextDecoder("ascii");
 const ASCII_ENC = new TextEncoder();
