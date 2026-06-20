@@ -143,15 +143,23 @@ export class Peer {
 		frame[23] = cs[3]!;
 		frame.set(payload, HDR_LEN);
 
-		const abort = new AbortController();
-		const timer = setTimeout(() => abort.abort(), timeoutMs);
+		// Deno.Conn.write can't be aborted by a signal, so enforce the timeout by
+		// closing the connection — that rejects the pending write. Also loop, since
+		// write may report a partial count and the protocol needs the whole frame.
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			this.disconnect({ type: "write_timeout" });
+		}, timeoutMs);
 		try {
-			await connection.write(frame);
-		} catch (e) {
-			if (abort.signal.aborted) {
-				this.disconnect({ type: "write_timeout" });
-				throw new Error(`write timeout after ${timeoutMs}ms`);
+			let written = 0;
+			while (written < frame.length) {
+				const n = await connection.write(frame.subarray(written));
+				if (n <= 0) throw new Error("connection closed during write");
+				written += n;
 			}
+		} catch (e) {
+			if (timedOut) throw new Error(`write timeout after ${timeoutMs}ms`);
 			throw e;
 		} finally {
 			clearTimeout(timer);
@@ -171,10 +179,10 @@ export class Peer {
 
 			const unlisten = this.onMessage((message) => {
 				if (message.command !== type.command) return;
+				const [data] = type.codec.decode(message.payload);
+				if (filter && !filter(data, message.payload)) return; // not ours — keep waiting
 				clearTimeout(tid);
 				unlisten();
-				const [data] = type.codec.decode(message.payload);
-				if (filter && !filter(data, message.payload)) return;
 				resolve([data, message.payload]);
 			});
 		});

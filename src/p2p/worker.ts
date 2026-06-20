@@ -33,9 +33,9 @@ const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
 const CHUNK_BYTE_BUDGET = 20 * MAX_BLOCK_SIZE;
-const DOWNLOAD_AHEAD = 500; // blocks kept pooled-or-in-flight ahead of the pack cursor
+const DOWNLOAD_AHEAD = 500; // blocks kept pooled-or-in-flight ahead of the pack cursor (across all peers)
 const DOWNLOAD_BATCH = 16; // hashes per getdata
-const BLOCK_TIMEOUT_MS = 30_000; // drop an in-flight request after this so it retries
+const BLOCK_TIMEOUT_MS = 30_000; // reap a peer's in-flight requests only after it has gone silent this long
 const DOWNLOAD_IDLE_MS = 50; // pause when the next block isn't here yet
 
 const messageQueue = new Queue<{ name: string; data: any }>(1000);
@@ -57,6 +57,7 @@ const lastPeerSync = new WeakMap<Peer, number>();
 const blockPool = new Map<number, Uint8Array>(); // height -> raw BlockMessage payload
 const blockInFlight = new Map<number, { peer: Peer; at: number }>(); // height -> who + when
 const blockUnlisten = new Map<Peer, () => void>(); // attached block listeners
+const lastBlockAt = new Map<Peer, number>(); // peer -> last time it delivered a wanted block (liveness)
 
 let started = false;
 
@@ -282,15 +283,23 @@ async function syncBlocks(): Promise<void> {
 		}
 		for (const peer of live) ensureBlockListener(peer);
 
-		// keep the look-ahead window full, fanning batches across peers
-		const remaining = top - packHeight + 1;
+		// keep the look-ahead window full, fanning batches across peers.
+		// global room caps total in-flight; the per-peer cap (inside requestBlocks)
+		// caps any single peer's send-queue depth so its blocks drain before the timeout.
 		const room = DOWNLOAD_AHEAD - (blockPool.size + blockInFlight.size);
-		if (room >= DOWNLOAD_BATCH || (remaining < DOWNLOAD_BATCH && room > 0)) {
+		if (room > 0) {
 			rr = await requestBlocks(live, packHeight, top, room, rr);
 		}
 
 		const payload = blockPool.get(packHeight);
 		if (!payload) {
+			// Head-of-line recovery. We pack strictly in order, so packHeight blocks
+			// everything. It MUST always be in-flight with a fresh request — independent
+			// of window room or peer liveness. Otherwise a single dropped delivery wedges
+			// the whole download forever: the look-ahead pool fills, room hits 0 so the
+			// normal path re-requests nothing, and the liveness reaper won't touch it
+			// because the peer keeps delivering the *other* (higher) blocks.
+			ensureHeadRequested(live, packHeight, rr);
 			reapTimedOut();
 			await delay(DOWNLOAD_IDLE_MS);
 			continue;
@@ -325,15 +334,45 @@ async function syncBlocks(): Promise<void> {
 	cursor = packHeight - 1;
 }
 
+/** Count blocks currently reserved against a given peer. O(in-flight), which stays ≤ window size. */
+function peerInFlight(peer: Peer): number {
+	let n = 0;
+	for (const info of blockInFlight.values()) {
+		if (info.peer === peer) n++;
+	}
+	return n;
+}
+
 /**
  * Reserve and request the next blocks we don't already have/aren't fetching,
- * spreading DOWNLOAD_BATCH-sized batches across `live` peers round-robin. The
- * whole want-set is reserved in blockInFlight BEFORE any await so the listener
- * can't shrink the frontier mid-pass and collapse batches.
+ * spreading DOWNLOAD_BATCH-sized batches across `live` peers round-robin. Each
+ * peer's outstanding count is capped at its fair share of the window
+ * (DOWNLOAD_AHEAD / peers, floored at one batch) so no single peer can starve
+ * the others — but a single peer is still allowed the full window so it can
+ * saturate. The send-queue-depth-vs-timeout problem is handled separately by
+ * the liveness-based reaper, which only drops a peer's requests once that peer
+ * stops delivering. The whole want-set is reserved in blockInFlight BEFORE any
+ * await so the listener can't shrink the frontier mid-pass and collapse batches.
  */
-async function requestBlocks(live: Peer[], fromHeight: number, top: number, room: number, rr: number): Promise<number> {
+async function requestBlocks(live: Peer[], fromHeight: number, top: number, globalRoom: number, rr: number): Promise<number> {
+	// fair share of the window per peer; one peer gets the whole thing
+	const perPeerCap = Math.max(DOWNLOAD_BATCH, Math.ceil(DOWNLOAD_AHEAD / live.length));
+
+	// spare capacity per peer, bounded by the global window
+	const spare = new Map<Peer, number>();
+	let totalSpare = 0;
+	for (const peer of live) {
+		const s = perPeerCap - peerInFlight(peer);
+		if (s > 0) {
+			spare.set(peer, s);
+			totalSpare += s;
+		}
+	}
+	totalSpare = Math.min(totalSpare, globalRoom);
+	if (totalSpare <= 0) return rr;
+
 	const want: { height: number; hash: Uint8Array }[] = [];
-	for (let h = fromHeight; h <= top && want.length < room; h++) {
+	for (let h = fromHeight; h <= top && want.length < totalSpare; h++) {
 		if (blockPool.has(h) || blockInFlight.has(h)) continue;
 		const node = localChain.at(h);
 		if (!node) break;
@@ -342,10 +381,23 @@ async function requestBlocks(live: Peer[], fromHeight: number, top: number, room
 	if (want.length === 0) return rr;
 
 	const now = Date.now();
-	for (let i = 0; i < want.length; i += DOWNLOAD_BATCH) {
-		const peer = live[rr % live.length]!;
-		rr++;
-		const batch = want.slice(i, i + DOWNLOAD_BATCH);
+	let i = 0;
+	while (i < want.length) {
+		// pick the next round-robin peer that still has spare capacity
+		let peer: Peer | undefined;
+		for (let tries = 0; tries < live.length; tries++) {
+			const cand = live[rr++ % live.length]!;
+			if ((spare.get(cand) ?? 0) > 0) {
+				peer = cand;
+				break;
+			}
+		}
+		if (!peer) break; // every peer at its cap
+
+		const take = Math.min(DOWNLOAD_BATCH, spare.get(peer)!, want.length - i);
+		const batch = want.slice(i, i + take);
+		i += take;
+		spare.set(peer, spare.get(peer)! - take);
 		for (const w of batch) blockInFlight.set(w.height, { peer, at: now }); // reserve before await
 		try {
 			await peer.send(GetDataMessage, {
@@ -379,8 +431,23 @@ function ensureBlockListener(peer: Peer): void {
 		if (height <= cursor) return;
 		if (blockPool.has(height)) return;
 
+		// Encode BEFORE mutating any state. If the codec can't represent some tx in
+		// this block, don't delete the reservation or mark the peer alive — otherwise
+		// the block vanishes (not pooled, not in-flight) and, once the look-ahead pool
+		// fills behind it, the frontier wedges with no way to re-request. Leaving the
+		// reservation in place lets the head-of-line timeout re-request it, which will
+		// log here again every ~30s — loud and obvious instead of a silent stall.
+		let stored: Uint8Array;
+		try {
+			stored = StoredTxs.encode(block.txs.map((tx) => StoredTx.fromWire(tx)));
+		} catch (e) {
+			console.error(`[worker] store-encode failed at height=${height} txs=${block.txs.length}:`, e);
+			return;
+		}
+
 		blockInFlight.delete(height);
-		blockPool.set(height, StoredTxs.encode(block.txs.map((tx) => StoredTx.fromWire(tx))));
+		lastBlockAt.set(peer, Date.now()); // proof this peer is alive and draining its queue
+		blockPool.set(height, stored);
 	});
 	blockUnlisten.set(peer, off);
 }
@@ -392,23 +459,62 @@ function dropDisconnectedPeers(): void {
 		console.log("[worker] dropping disconnected peer listener");
 		off();
 		blockUnlisten.delete(peer);
+		lastBlockAt.delete(peer);
 	}
 	for (const [height, info] of blockInFlight) {
 		if (!info.peer.connected) blockInFlight.delete(height); // re-requested next pass
 	}
 }
 
-/** Release in-flight requests that timed out or whose peer dropped, so they retry. */
+/**
+ * Guarantee the block we're blocked on is (re)requested. Unlike the look-ahead
+ * window — which relies on per-peer liveness so deep, actively-draining queues
+ * don't snowball — the head-of-line block gets a hard per-request timeout and
+ * bypasses the window cap entirely. If it isn't in-flight, or its request is
+ * older than BLOCK_TIMEOUT_MS (i.e. it was dropped/lost), re-reserve it against
+ * the next live peer and fire a single-block getdata. Fire-and-forget so a
+ * stuck send can't freeze the pack loop.
+ */
+function ensureHeadRequested(live: Peer[], height: number, rr: number): void {
+	if (live.length === 0) return;
+	const inFlight = blockInFlight.get(height);
+	const now = Date.now();
+	if (inFlight && now - inFlight.at <= BLOCK_TIMEOUT_MS) return; // still pending, give it time
+
+	const node = localChain.at(height);
+	if (!node) return;
+	const peer = live[rr % live.length]!;
+	blockInFlight.set(height, { peer, at: now }); // reserve (or refresh) the head
+	peer
+		.send(GetDataMessage, { inventory: [{ type: MSG_WITNESS_BLOCK, hash: node.header.hash() }] })
+		.catch((e) => {
+			console.error("[worker] head-of-line getdata error:", e);
+			blockInFlight.delete(height); // let the next pass retry
+		});
+}
+
+/**
+ * Release in-flight requests belonging to peers that have gone silent (or
+ * dropped), so they retry elsewhere. Liveness is judged per *peer*, not per
+ * request: a peer steadily delivering blocks keeps all of its reservations no
+ * matter how deep its send queue is — which is exactly what lets one peer hold
+ * a large window without the old send-time clock reaping blocks it simply
+ * hasn't reached yet. A peer that never delivers falls back to its first
+ * request time, so a truly dead peer is still reaped after BLOCK_TIMEOUT_MS.
+ * Recovery of a single lost block at the pack frontier is NOT this function's
+ * job — that's ensureHeadRequested, which doesn't depend on peer silence.
+ */
 function reapTimedOut(): void {
-	const cutoff = Date.now() - BLOCK_TIMEOUT_MS;
+	const now = Date.now();
 	let reaped = 0;
 	for (const [height, info] of blockInFlight) {
-		if (info.at <= cutoff || !info.peer.connected) {
+		const lastSeen = lastBlockAt.get(info.peer) ?? info.at;
+		if (now - lastSeen > BLOCK_TIMEOUT_MS || !info.peer.connected) {
 			blockInFlight.delete(height);
 			reaped++;
 		}
 	}
-	if (reaped > 0) console.log(`[worker] reaped ${reaped} timed-out block requests`);
+	if (reaped > 0) console.log(`[worker] reaped ${reaped} requests from silent/dropped peers`);
 }
 
 function buildLocators(chain: PeerChain): Uint8Array[] {
