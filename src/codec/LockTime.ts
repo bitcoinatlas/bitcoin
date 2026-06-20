@@ -30,11 +30,15 @@ export class LockTimeCodec extends Codec<LockTime> {
 		return { kind: "time", timestamp: value };
 	}
 
-	encode(value: LockTime, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
-		return U32LE.encode(LockTimeCodec.toU32(value), target);
+	public encode(value: LockTime): Uint8Array<ArrayBuffer> {
+		return U32LE.encode(LockTimeCodec.toU32(value));
 	}
 
-	decode(data: Uint8Array): [LockTime, number] {
+	public override encodeInto(value: LockTime, target: Uint8Array, offset: number = 0): number {
+		return U32LE.encodeInto(LockTimeCodec.toU32(value), target, offset);
+	}
+
+	public decode(data: Uint8Array): [LockTime, number] {
 		const [locktime] = U32LE.decode(data);
 		const value = locktime >>> 0;
 		return [LockTimeCodec.fromU32(value), 4];

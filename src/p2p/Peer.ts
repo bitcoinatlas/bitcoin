@@ -54,10 +54,10 @@ export class Peer {
 	public readonly port: number;
 	public readonly magic: Uint8Array;
 
-	private _connected = false;
-	private _connection: Deno.Conn | null = null;
-	private _listeners = new Set<(msg: PeerMessageEvent) => void>();
-	private _disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
+	private isConnected = false;
+	private connection: Deno.Conn | null = null;
+	private listeners = new Set<(msg: PeerMessageEvent) => void>();
+	private disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
 
 	/** Remote peer's version payload, populated after handshake. */
 	remoteVersion: number = 0;
@@ -65,7 +65,7 @@ export class Peer {
 	remoteServices: bigint = 0n;
 
 	get connected(): boolean {
-		return this._connected;
+		return this.isConnected;
 	}
 
 	constructor(host: string, port: number, magic: Uint8Array) {
@@ -76,11 +76,11 @@ export class Peer {
 	}
 
 	async connect(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
-		if (this._connected) return;
+		if (this.isConnected) return;
 		const abort = new AbortController();
 		const timer = setTimeout(() => abort.abort(), timeoutMs);
 		try {
-			this._connection = await Deno.connect({
+			this.connection = await Deno.connect({
 				hostname: this.host,
 				port: this.port,
 				transport: "tcp",
@@ -89,18 +89,18 @@ export class Peer {
 		} finally {
 			clearTimeout(timer);
 		}
-		this._connected = true;
-		void this._readLoop(this._connection);
+		this.isConnected = true;
+		void this.readLoop(this.connection);
 	}
 
 	disconnect(reason: DisconnectReason = { type: "manual" }): void {
-		if (!this._connected) return;
-		this._connected = false;
+		if (!this.isConnected) return;
+		this.isConnected = false;
 		try {
-			this._connection?.close();
+			this.connection?.close();
 		} catch { /* noop */ }
-		this._connection = null;
-		for (const cb of this._disconnectCallbacks) {
+		this.connection = null;
+		for (const cb of this.disconnectCallbacks) {
 			try {
 				cb(reason);
 			} catch { /* noop */ }
@@ -108,18 +108,18 @@ export class Peer {
 	}
 
 	onDisconnect(cb: (reason: DisconnectReason) => void): () => void {
-		this._disconnectCallbacks.add(cb);
-		return () => this._disconnectCallbacks.delete(cb);
+		this.disconnectCallbacks.add(cb);
+		return () => this.disconnectCallbacks.delete(cb);
 	}
 
 	onMessage(listener: (msg: PeerMessageEvent) => void): () => void {
-		this._listeners.add(listener);
-		return () => this._listeners.delete(listener);
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
 
 	async send<T extends Codec>(type: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
-		const connection = this._connection;
-		if (!this._connected || !connection) throw new Error("not connected");
+		const connection = this.connection;
+		if (!this.isConnected || !connection) throw new Error("not connected");
 
 		const { command, codec } = type;
 		if (command.length < 1 || command.length > CMD_LEN) throw new Error("invalid command length");
@@ -197,7 +197,7 @@ export class Peer {
 		return promise;
 	}
 
-	private async _readLoop(conn: Deno.Conn): Promise<void> {
+	private async readLoop(conn: Deno.Conn): Promise<void> {
 		let buf = new Uint8Array(64 * 1024);
 		let len = 0;
 		const tmp = new Uint8Array(READ_CHUNK);
@@ -214,7 +214,7 @@ export class Peer {
 		};
 
 		try {
-			while (this._connected) {
+			while (this.isConnected) {
 				const n = await conn.read(tmp);
 				if (n === null) {
 					this.disconnect({ type: "connection_closed" });
@@ -265,7 +265,7 @@ export class Peer {
 						calc[0] === recvCs[0] && calc[1] === recvCs[1] && calc[2] === recvCs[2] && calc[3] === recvCs[3]
 					) {
 						const msg = makePeerMessage(command, payload.slice());
-						for (const l of this._listeners) {
+						for (const l of this.listeners) {
 							try {
 								l(msg);
 							} catch { /* noop */ }
@@ -283,7 +283,7 @@ export class Peer {
 		} catch (e) {
 			this.disconnect({ type: "read_error", error: e });
 		} finally {
-			if (this._connected) this.disconnect({ type: "connection_closed" });
+			if (this.isConnected) this.disconnect({ type: "connection_closed" });
 		}
 	}
 }

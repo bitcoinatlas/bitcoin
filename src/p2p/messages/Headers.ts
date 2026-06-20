@@ -12,21 +12,28 @@ const HEADER_STRIDE = WireBlockHeader.stride.size;
 class HeadersCodec extends Codec<HeadersPayload> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(data: HeadersPayload): Uint8Array<ArrayBuffer> {
+	public encode(data: HeadersPayload): Uint8Array<ArrayBuffer> {
 		const count = data.headers.length;
-		const countBytes = CompactSize.encode(count);
-		const out = new Uint8Array(countBytes.length + count * (HEADER_STRIDE + 1));
-		out.set(countBytes, 0);
-		let off = countBytes.length;
-		for (const header of data.headers) {
-			out.set(WireBlockHeader.encode(header), off);
-			off += HEADER_STRIDE;
-			out[off++] = 0x00; // tx count always 0 in headers msg
-		}
+		const out = new Uint8Array(CompactSize.encode(count).length + count * (HEADER_STRIDE + 1));
+		this.encodeInto(data, out);
 		return out;
 	}
 
-	decode(bytes: Uint8Array): [HeadersPayload, number] {
+	public override encodeInto(data: HeadersPayload, target: Uint8Array, offset: number = 0): number {
+		const start = offset;
+		offset += CompactSize.encodeInto(data.headers.length, target, offset);
+		for (const header of data.headers) {
+			offset += WireBlockHeader.encodeInto(header, target, offset);
+			target[offset++] = 0x00; // tx count always 0 in headers msg
+		}
+		return offset - start;
+	}
+
+	public override size(data: HeadersPayload): number {
+		return CompactSize.size(data.headers.length) + data.headers.length * (HEADER_STRIDE + 1);
+	}
+
+	public decode(bytes: Uint8Array): [HeadersPayload, number] {
 		const [count, csLen] = CompactSize.decode(bytes);
 		let off = csLen;
 		if (count > 2000) throw new Error("too many headers");

@@ -5,7 +5,7 @@ import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 export class CompactSizeCodec extends Codec<number> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(n: number): Uint8Array<ArrayBuffer> {
+	public encode(n: number): Uint8Array<ArrayBuffer> {
 		if (n < 0xfd) return Uint8Array.of(n);
 		if (n <= 0xffff) {
 			const buffer = new Uint8Array(3);
@@ -25,7 +25,35 @@ export class CompactSizeCodec extends Codec<number> {
 		return buffer;
 	}
 
-	decode(data: Uint8Array): [number, number] {
+	public override encodeInto(n: number, target: Uint8Array, offset: number = 0): number {
+		if (n < 0xfd) {
+			target[offset] = n;
+			return 1;
+		}
+		const view = new DataView(target.buffer, target.byteOffset + offset);
+		if (n <= 0xffff) {
+			target[offset] = 0xfd;
+			view.setUint16(1, n, true);
+			return 3;
+		}
+		if (n <= 0xffffffff) {
+			target[offset] = 0xfe;
+			view.setUint32(1, n, true);
+			return 5;
+		}
+		target[offset] = 0xff;
+		view.setBigUint64(1, BigInt(n), true);
+		return 9;
+	}
+
+	public override size(n: number): number {
+		if (n < 0xfd) return 1;
+		if (n <= 0xffff) return 3;
+		if (n <= 0xffffffff) return 5;
+		return 9;
+	}
+
+	public decode(data: Uint8Array): [number, number] {
 		const view = new Uint8ArrayView(data);
 		const first = view.getUint8(0);
 		if (first < 0xfd) return [first, 1];

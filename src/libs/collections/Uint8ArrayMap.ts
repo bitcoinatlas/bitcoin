@@ -3,17 +3,17 @@ import { equals } from "@std/bytes";
 type Bucket<V> = Array<[number, Uint8Array, V]>; // [hash, key, value]
 
 export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
-	private _buckets: Array<Bucket<V>>;
-	private _mask: number;
-	private _threshold: number;
-	private _size = 0;
+	private buckets: Array<Bucket<V>>;
+	private mask: number;
+	private threshold: number;
+	private size_ = 0;
 
 	constructor(capacity = 1) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(capacity)));
-		this._mask = pow2 - 1;
-		this._threshold = pow2 * 0.75;
-		this._buckets = new Array(pow2);
-		for (let i = 0; i < pow2; i++) this._buckets[i] = [];
+		this.mask = pow2 - 1;
+		this.threshold = pow2 * 0.75;
+		this.buckets = new Array(pow2);
+		for (let i = 0; i < pow2; i++) this.buckets[i] = [];
 	}
 
 	[Symbol.iterator](): Iterator<[Uint8Array, V]> {
@@ -21,7 +21,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	}
 
 	public size() {
-		return this._size;
+		return this.size_;
 	}
 
 	private hash(key: Uint8Array): number {
@@ -41,7 +41,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 
 	get(key: Uint8Array): V | undefined {
 		const hash = this.hash(key);
-		const bucket = this._buckets[hash & this._mask]!;
+		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
 			if (entry[0] === hash && equals(entry[1], key)) return entry[2];
@@ -51,7 +51,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 
 	set(key: Uint8Array, value: V): void {
 		const hash = this.hash(key);
-		const bucket = this._buckets[hash & this._mask]!;
+		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
 			if (entry[0] === hash && equals(entry[1], key)) {
@@ -60,8 +60,8 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 			}
 		}
 		bucket.push([hash, key.slice(), value]);
-		this._size++;
-		if (this._size > this._threshold) this.rehash(this._buckets.length * 2);
+		this.size_++;
+		if (this.size_ > this.threshold) this.rehash(this.buckets.length * 2);
 	}
 
 	// Like set, but stores `key` by reference with NO defensive copy. Only safe
@@ -70,7 +70,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	// insert — meaningful when indexing 800k+ hashes.
 	setOwned(key: Uint8Array, value: V): void {
 		const hash = this.hash(key);
-		const bucket = this._buckets[hash & this._mask]!;
+		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
 			if (entry[0] === hash && equals(entry[1], key)) {
@@ -79,15 +79,15 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 			}
 		}
 		bucket.push([hash, key, value]);
-		this._size++;
-		if (this._size > this._threshold) this.rehash(this._buckets.length * 2);
+		this.size_++;
+		if (this.size_ > this.threshold) this.rehash(this.buckets.length * 2);
 	}
 
 	private rehash(newCapacity: number): void {
 		const newBuckets: Array<Bucket<V>> = new Array(newCapacity);
 		for (let i = 0; i < newCapacity; i++) newBuckets[i] = [];
 		const newMask = newCapacity - 1;
-		const old = this._buckets;
+		const old = this.buckets;
 		for (let b = 0; b < old.length; b++) {
 			const bucket = old[b]!;
 			for (let i = 0; i < bucket.length; i++) {
@@ -95,21 +95,21 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 				newBuckets[entry[0] & newMask]!.push(entry); // reuse stored hash
 			}
 		}
-		this._buckets = newBuckets;
-		this._mask = newMask;
-		this._threshold = newCapacity * 0.75;
+		this.buckets = newBuckets;
+		this.mask = newMask;
+		this.threshold = newCapacity * 0.75;
 	}
 
 	delete(key: Uint8Array): boolean {
 		const hash = this.hash(key);
-		const bucket = this._buckets[hash & this._mask]!;
+		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
 			const entry = bucket[i]!;
 			if (entry[0] === hash && equals(entry[1], key)) {
 				const last = bucket.length - 1;
 				if (i !== last) bucket[i] = bucket[last]!; // swap-remove, O(1)
 				bucket.pop();
-				this._size--;
+				this.size_--;
 				return true;
 			}
 		}
@@ -121,12 +121,12 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	}
 
 	clear(): void {
-		for (let i = 0; i < this._buckets.length; i++) this._buckets[i] = [];
-		this._size = 0;
+		for (let i = 0; i < this.buckets.length; i++) this.buckets[i] = [];
+		this.size_ = 0;
 	}
 
 	*entries(): Generator<[Uint8Array, V]> {
-		const buckets = this._buckets;
+		const buckets = this.buckets;
 		for (let b = 0; b < buckets.length; b++) {
 			const bucket = buckets[b]!;
 			for (let i = 0; i < bucket.length; i++) {

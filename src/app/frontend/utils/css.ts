@@ -40,30 +40,30 @@ export class CssTemplate {
 		this.raw = raw;
 	}
 
-	#sheetCache: CSSStyleSheet | undefined;
+	private sheetCache: CSSStyleSheet | undefined;
 	public sheet(): CSSStyleSheet {
-		if (this.#sheetCache) {
-			return this.#sheetCache;
+		if (this.sheetCache) {
+			return this.sheetCache;
 		}
-		const sheet = (this.#sheetCache = new CSSStyleSheet());
+		const sheet = (this.sheetCache = new CSSStyleSheet());
 		sheet.replaceSync(this.raw);
 		return sheet;
 	}
 
-	#scopeId: string | undefined;
+	private scopeId: string | undefined;
 	public useScope(): Lifecycle.OnConnected {
-		if (!this.#scopeId) {
+		if (!this.scopeId) {
 			const scopeId = Math.random().toString(36).slice(2);
 			const scopeRaw = `@scope ([data-scope="${scopeId}"]) to ([data-scope]) {${this.raw}}`;
 			const scopeSheet = new CSSStyleSheet();
 			scopeSheet.replaceSync(scopeRaw);
 			document.adoptedStyleSheets.push(scopeSheet);
-			this.#scopeId = scopeId;
+			this.scopeId = scopeId;
 		}
 
 		return (element) => {
-			if (element.dataset.scope === this.#scopeId) return;
-			element.dataset.scope = this.#scopeId;
+			if (element.dataset.scope === this.scopeId) return;
+			element.dataset.scope = this.scopeId;
 		};
 	}
 }

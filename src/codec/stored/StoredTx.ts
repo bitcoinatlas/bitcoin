@@ -137,33 +137,42 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return tx;
 	}
 
-	public encode(value: StoredTx, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+	public encode(value: StoredTx): Uint8Array<ArrayBuffer> {
+		// Size-compute pass.
 		const txIdBytes = TXID.encode(value.txId);
-		const spenderBytes = SPENDER.encode(value.spender);
 		const packBytes = PACK.encode(value);
 		const voutBytes = OUTPUTS.encode(value.outputs);
 		const vinBytes = INPUTS.encode(value.inputs);
 
-		const totalSize = txIdBytes.length +
-			spenderBytes.length +
-			packBytes.length +
-			voutBytes.length +
-			vinBytes.length;
+		const totalSize = txIdBytes.length + SPENDER.stride.size +
+			packBytes.length + voutBytes.length + vinBytes.length;
 
-		const bytes = target ?? new Uint8Array(totalSize);
-
+		const bytes = new Uint8Array(totalSize);
 		let pos = 0;
 		bytes.set(txIdBytes, pos);
 		pos += txIdBytes.length;
-		bytes.set(spenderBytes, pos);
-		pos += spenderBytes.length;
+		pos += SPENDER.encodeInto(value.spender, bytes, pos);
 		bytes.set(packBytes, pos);
 		pos += packBytes.length;
 		bytes.set(voutBytes, pos);
 		pos += voutBytes.length;
 		bytes.set(vinBytes, pos);
-
 		return bytes;
+	}
+
+	public override encodeInto(value: StoredTx, target: Uint8Array, offset: number = 0): number {
+		const start = offset;
+		offset += TXID.encodeInto(value.txId, target, offset);
+		offset += SPENDER.encodeInto(value.spender, target, offset);
+		offset += PACK.encodeInto(value, target, offset);
+		offset += OUTPUTS.encodeInto(value.outputs, target, offset);
+		offset += INPUTS.encodeInto(value.inputs, target, offset);
+		return offset - start;
+	}
+
+	public override size(value: StoredTx): number {
+		return TXID.stride.size + SPENDER.stride.size + PACK.size(value) +
+			OUTPUTS.size(value.outputs) + INPUTS.size(value.inputs);
 	}
 
 	public decode(data: Uint8Array): [StoredTx, number] {
@@ -183,53 +192,35 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return [{ txId, spender, locktime, version, outputs: vout, inputs: vin }, pos];
 	}
 
-	public encodeWithOffsets(
-		value: StoredTx,
-		target?: Uint8Array<ArrayBuffer>,
-	): { bytes: Uint8Array<ArrayBuffer>; offsets: StoredTxOffsets } {
-		const txIdBytes = TXID.encode(value.txId);
-		const spenderBytes = SPENDER.encode(value.spender);
-		const packBytes = PACK.encode({ locktime: value.locktime, version: value.version });
-		const voutCountBytes = VarInt.encode(value.outputs.length);
-		const encodedVouts = value.outputs.map((output) => StoredTxOutput.encode(output));
-		const vinCountBytes = VarInt.encode(value.inputs.length);
-		const encodedVins = value.inputs.map((input) => StoredTxInput.encode(input));
+	/**
+	 * Writes the tx directly into `target` at `offset` (no intermediate
+	 * allocations) and returns each vout's and vin's tx-relative byte offset.
+	 * Add `txPointer` (the blob offset where the tx starts) to each returned
+	 * offset to get the absolute blob pointer for that output/input.
+	 *
+	 * Invariant: the number of bytes written equals `this.size(value)`.
+	 */
+	public encodeWithOffsets(value: StoredTx, target: Uint8Array, offset: number): StoredTxOffsets {
+		const start = offset;
+		offset += TXID.encodeInto(value.txId, target, offset);
+		offset += SPENDER.encodeInto(value.spender, target, offset);
+		offset += PACK.encodeInto(value, target, offset);
 
-		const totalSize = txIdBytes.length +
-			spenderBytes.length +
-			packBytes.length +
-			voutCountBytes.length +
-			encodedVouts.reduce((sum, v) => sum + v.length, 0) +
-			vinCountBytes.length +
-			encodedVins.reduce((sum, v) => sum + v.length, 0);
-
-		const bytes = target ?? new Uint8Array(totalSize);
 		const outputs: number[] = [];
+		offset += VarInt.encodeInto(value.outputs.length, target, offset);
+		for (const output of value.outputs) {
+			outputs.push(offset - start);
+			offset += StoredTxOutput.encodeInto(output, target, offset);
+		}
+
 		const inputs: number[] = [];
-
-		let pos = 0;
-		bytes.set(txIdBytes, pos);
-		pos += txIdBytes.length;
-		bytes.set(spenderBytes, pos);
-		pos += spenderBytes.length;
-		bytes.set(packBytes, pos);
-		pos += packBytes.length;
-		bytes.set(voutCountBytes, pos);
-		pos += voutCountBytes.length;
-		for (const encodedVout of encodedVouts) {
-			outputs.push(pos);
-			bytes.set(encodedVout, pos);
-			pos += encodedVout.length;
-		}
-		bytes.set(vinCountBytes, pos);
-		pos += vinCountBytes.length;
-		for (const encodedVin of encodedVins) {
-			inputs.push(pos);
-			bytes.set(encodedVin, pos);
-			pos += encodedVin.length;
+		offset += VarInt.encodeInto(value.inputs.length, target, offset);
+		for (const input of value.inputs) {
+			inputs.push(offset - start);
+			offset += StoredTxInput.encodeInto(input, target, offset);
 		}
 
-		return { bytes, offsets: { outputs: outputs, inputs: inputs } };
+		return { outputs, inputs };
 	}
 }
 

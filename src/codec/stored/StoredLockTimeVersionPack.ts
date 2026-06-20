@@ -29,24 +29,59 @@ const NONE: LockTime = { kind: "none" };
 export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(value: LockTimeVersionPack, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+	public encode(value: LockTimeVersionPack): Uint8Array<ArrayBuffer> {
 		const { version, locktime } = value;
 		const noLock = locktime.kind === "none";
-
-		// Common, zero-payload cases: a single tag byte.
-		if (noLock && version === 0x1) return writeTagOnly(TAG_V1_NONE, target);
-		if (noLock && version === 0x2) return writeTagOnly(TAG_V2_NONE, target);
-
-		// locktime-set with common version: tag + 4-byte LockTime.
-		if (!noLock && version === 0x1) return writeTagPlusLockTime(TAG_V1_SOME, locktime, target);
-		if (!noLock && version === 0x2) return writeTagPlusLockTime(TAG_V2_SOME, locktime, target);
-
-		// Anything else: explicit version + locktime.
-		const out = target ?? new Uint8Array(1 + 4 + 4);
+		if (noLock && version === 0x1) return Uint8Array.of(TAG_V1_NONE);
+		if (noLock && version === 0x2) return Uint8Array.of(TAG_V2_NONE);
+		if (!noLock && version === 0x1) {
+			const out = new Uint8Array(1 + 4);
+			out[0] = TAG_V1_SOME;
+			LockTime.encodeInto(locktime, out, 1);
+			return out;
+		}
+		if (!noLock && version === 0x2) {
+			const out = new Uint8Array(1 + 4);
+			out[0] = TAG_V2_SOME;
+			LockTime.encodeInto(locktime, out, 1);
+			return out;
+		}
+		const out = new Uint8Array(1 + 4 + 4);
 		out[0] = TAG_RAW;
-		out.set(U32LE.encode(version), 1);
-		out.set(LockTime.encode(locktime), 5);
+		U32LE.encodeInto(version, out, 1);
+		LockTime.encodeInto(locktime, out, 5);
 		return out;
+	}
+
+	public override encodeInto(value: LockTimeVersionPack, target: Uint8Array, offset: number = 0): number {
+		const { version, locktime } = value;
+		const noLock = locktime.kind === "none";
+		if (noLock && version === 0x1) {
+			target[offset] = TAG_V1_NONE;
+			return 1;
+		}
+		if (noLock && version === 0x2) {
+			target[offset] = TAG_V2_NONE;
+			return 1;
+		}
+		if (!noLock && (version === 0x1 || version === 0x2)) {
+			target[offset] = version === 0x1 ? TAG_V1_SOME : TAG_V2_SOME;
+			LockTime.encodeInto(locktime, target, offset + 1);
+			return 1 + 4;
+		}
+		target[offset] = TAG_RAW;
+		U32LE.encodeInto(version, target, offset + 1);
+		LockTime.encodeInto(locktime, target, offset + 5);
+		return 1 + 4 + 4;
+	}
+
+	public override size(value: LockTimeVersionPack): number {
+		const { version, locktime } = value;
+		const noLock = locktime.kind === "none";
+		if (noLock && version === 0x1) return 1;
+		if (noLock && version === 0x2) return 1;
+		if (!noLock && (version === 0x1 || version === 0x2)) return 1 + 4;
+		return 1 + 4 + 4;
 	}
 
 	public decode(data: Uint8Array): [LockTimeVersionPack, number] {
@@ -73,23 +108,6 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 				throw new Error(`Unknown LockTimeVersionPack tag: ${tag}`);
 		}
 	}
-}
-
-function writeTagOnly(tag: number, target?: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
-	const out = target ?? new Uint8Array(1);
-	out[0] = tag;
-	return out;
-}
-
-function writeTagPlusLockTime(
-	tag: number,
-	locktime: LockTime,
-	target?: Uint8Array<ArrayBuffer>,
-): Uint8Array<ArrayBuffer> {
-	const out = target ?? new Uint8Array(1 + 4);
-	out[0] = tag;
-	out.set(LockTime.encode(locktime), 1);
-	return out;
 }
 
 export const LockTimeVersionPack = new LockTimeVersionPackCodec();

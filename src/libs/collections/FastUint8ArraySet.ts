@@ -38,18 +38,18 @@ const LOAD = 0.7;
 // An empty slot is `keys[slot] === undefined`. That doubles as the occupancy
 // flag, so no separate bitset is needed.
 export class FastUint8ArraySet implements Iterable<Uint8Array> {
-	private _keys: Array<Uint8Array | undefined>;
-	private _hashes: Uint32Array;
-	private _mask: number;
-	private _threshold: number;
-	private _size = 0;
+	private keySlots: Array<Uint8Array | undefined>;
+	private hashes: Uint32Array;
+	private mask: number;
+	private threshold: number;
+	private size_ = 0;
 
 	constructor(capacity = 16) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(Math.max(1, capacity))));
-		this._keys = new Array(pow2);
-		this._hashes = new Uint32Array(pow2);
-		this._mask = pow2 - 1;
-		this._threshold = (pow2 * LOAD) | 0;
+		this.keySlots = new Array(pow2);
+		this.hashes = new Uint32Array(pow2);
+		this.mask = pow2 - 1;
+		this.threshold = (pow2 * LOAD) | 0;
 	}
 
 	[Symbol.iterator](): Iterator<Uint8Array> {
@@ -57,37 +57,37 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 	}
 
 	size() {
-		return this._size;
+		return this.size_;
 	}
 
 	// Insert a key, deduping by reference-independent value equality. Returns
 	// true if newly added, false if it was already present. No copy.
 	add(key: Uint8Array): boolean {
-		if (this._size >= this._threshold) this.grow();
+		if (this.size_ >= this.threshold) this.grow();
 		const hash = hashKeyU32(key);
-		const keys = this._keys;
-		const hashes = this._hashes;
-		const mask = this._mask;
+		const keySlots = this.keySlots;
+		const hashes = this.hashes;
+		const mask = this.mask;
 		let slot = hash & mask;
 		let k: Uint8Array | undefined;
-		while ((k = keys[slot]) !== undefined) {
+		while ((k = keySlots[slot]) !== undefined) {
 			if (hashes[slot] === hash && equals(k, key)) return false;
 			slot = (slot + 1) & mask;
 		}
-		keys[slot] = key;
+		keySlots[slot] = key;
 		hashes[slot] = hash;
-		this._size++;
+		this.size_++;
 		return true;
 	}
 
 	has(key: Uint8Array): boolean {
 		const hash = hashKeyU32(key);
-		const keys = this._keys;
-		const hashes = this._hashes;
-		const mask = this._mask;
+		const keySlots = this.keySlots;
+		const hashes = this.hashes;
+		const mask = this.mask;
 		let slot = hash & mask;
 		let k: Uint8Array | undefined;
-		while ((k = keys[slot]) !== undefined) {
+		while ((k = keySlots[slot]) !== undefined) {
 			if (hashes[slot] === hash && equals(k, key)) return true;
 			slot = (slot + 1) & mask;
 		}
@@ -95,39 +95,39 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 	}
 
 	private grow(): void {
-		const oldKeys = this._keys;
-		const oldHashes = this._hashes;
+		const oldKeys = this.keySlots;
+		const oldHashes = this.hashes;
 		const cap = oldKeys.length * 2;
 
-		this._keys = new Array(cap);
-		this._hashes = new Uint32Array(cap);
-		this._mask = cap - 1;
-		this._threshold = (cap * LOAD) | 0;
+		this.keySlots = new Array(cap);
+		this.hashes = new Uint32Array(cap);
+		this.mask = cap - 1;
+		this.threshold = (cap * LOAD) | 0;
 
-		const mask = this._mask;
+		const mask = this.mask;
 		for (let i = 0; i < oldKeys.length; i++) {
 			const k = oldKeys[i];
 			if (k === undefined) continue;
 			const hash = oldHashes[i]!;
 			let slot = hash & mask;
-			while (this._keys[slot] !== undefined) slot = (slot + 1) & mask;
-			this._keys[slot] = k;
-			this._hashes[slot] = hash;
+			while (this.keySlots[slot] !== undefined) slot = (slot + 1) & mask;
+			this.keySlots[slot] = k;
+			this.hashes[slot] = hash;
 		}
 	}
 
 	// Empty every slot. Keeps the grown capacity so a reorg reindex refills
 	// without immediately re-growing.
 	clear(): void {
-		this._keys.fill(undefined);
-		this._hashes.fill(0);
-		this._size = 0;
+		this.keySlots.fill(undefined);
+		this.hashes.fill(0);
+		this.size_ = 0;
 	}
 
 	*values(): Generator<Uint8Array> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
+		const keySlots = this.keySlots;
+		for (let i = 0; i < keySlots.length; i++) {
+			const k = keySlots[i];
 			if (k !== undefined) yield k;
 		}
 	}

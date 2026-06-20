@@ -95,24 +95,29 @@ export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
 	public readonly atomic = atomic;
 
-	private _p2pChannel: MessagePort;
-	private _p2pMessageQueue: Queue<{ name: string; data: any }>;
+	// Reused across every _appendTxs call/tx so encodeWithOffsets never
+	// allocates per-tx. Sized to the max a single serialized tx can be
+	// (bounded by block size/weight); append() copies the live prefix out.
+	private readonly txScratch = new Uint8Array(MAX_BLOCK_SIZE);
 
-	private constructor(p2pChannel: MessagePort, initialHeaders: WireBlockHeader[]) {
-		this._p2pChannel = p2pChannel;
-		this._p2pMessageQueue = new Queue(1000);
+	private p2pChannel: Worker | MessagePort;
+	private p2pMessageQueue: Queue<{ name: string; data: any }>;
+
+	private constructor(p2pChannel: Worker | MessagePort, initialHeaders: WireBlockHeader[]) {
+		this.p2pChannel = p2pChannel;
+		this.p2pMessageQueue = new Queue(1000);
 		this.blockHashToHeightMap = new Uint8ArrayMap<number>(Math.max(256, initialHeaders.length * 2));
 		for (let i = 0; i < initialHeaders.length; i++) {
 			this.blockHashToHeightMap.set(initialHeaders[i]!.hash(), i);
 		}
 	}
 
-	static async start(p2pChannel: MessagePort) {
+	static async start(p2pChannel: Worker | MessagePort) {
 		const headers = await atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
 
-		p2pChannel.onmessage = (event) => self._p2pMessageQueue.enqueue(event.data);
+		p2pChannel.onmessage = (event) => self.p2pMessageQueue.enqueue(event.data);
 		const startHeaders = await atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] handing ${startHeaders.length} headers to worker`);
 		const startData = WireBlockHeaders.encode(startHeaders);
@@ -123,17 +128,17 @@ export class ChainStore {
 		return self;
 	}
 
-	private _startTime: number | undefined;
-	private _totalSize: number = 0;
+	private startTime: number | undefined;
+	private totalSize: number = 0;
 	async tick(): Promise<void> {
-		const message = this._p2pMessageQueue.dequeue();
+		const message = this.p2pMessageQueue.dequeue();
 		if (!message) {
 			await delay(0);
 			return;
 		}
 		if (message.name === "blocks") {
 			if (atomic.stores.block.length()) {
-				this._startTime ??= performance.now();
+				this.startTime ??= performance.now();
 			}
 			const buffer = message.data as Uint8Array;
 			console.log(`[chain] new chunk to consume size=${buffer.length}`);
@@ -143,16 +148,16 @@ export class ChainStore {
 				const [txs, size] = StoredTxs.decode(buffer.subarray(offset));
 				offset += size;
 				blocks++;
-				await this._appendTxs(txs, atomic.stores.block.length());
+				await this.appendTxs(txs, atomic.stores.block.length());
 			}
-			this._requestFlush();
-			this._p2pChannel.postMessage({ name: "consume" });
+			this.requestFlush();
+			this.p2pChannel.postMessage({ name: "consume" });
 			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
 
-			if (this._startTime) {
-				this._totalSize += buffer.length;
-				const passed = (performance.now() - this._startTime) / 1000;
-				const speed = (this._totalSize / 1024 / 1024) / passed;
+			if (this.startTime) {
+				this.totalSize += buffer.length;
+				const passed = (performance.now() - this.startTime) / 1000;
+				const speed = (this.totalSize / 1024 / 1024) / passed;
 				console.log(`[chain] overall speed ${speed.toFixed(2)}MiB/s time=${passed.toFixed(0)}s`);
 			}
 			return;
@@ -160,9 +165,9 @@ export class ChainStore {
 
 		if (message.name === "headers") {
 			const headers = WireBlockHeaders.decodeValue(message.data);
-			const { height } = this._pushHeaders(headers);
+			const { height } = this.pushHeaders(headers);
 			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
-			this._requestFlush();
+			this.requestFlush();
 			return;
 		}
 
@@ -171,26 +176,26 @@ export class ChainStore {
 			// truncate() rejects staged/frozen data, so flush to disk first
 			while (atomic.busy) await delay(1);
 			await atomic.flush();
-			await this._reorg(message.data);
-			this._requestFlush();
+			await this.reorg(message.data);
+			this.requestFlush();
 			return;
 		}
 	}
 
-	private _needFlush = false;
-	private _requestFlush() {
+	private needFlush = false;
+	private requestFlush() {
 		if (atomic.busy) {
-			this._needFlush = true;
+			this.needFlush = true;
 			return;
 		}
 		atomic.flush().then(() => {
-			if (!this._needFlush) return;
-			this._needFlush = false;
-			this._requestFlush();
+			if (!this.needFlush) return;
+			this.needFlush = false;
+			this.requestFlush();
 		});
 	}
 
-	private _pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
+	private pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
 		const batch = batches ?? atomic.batch(["header"]);
 
 		const op = () => {
@@ -216,7 +221,7 @@ export class ChainStore {
 		}
 	}
 
-	private async _appendTxs(
+	private async appendTxs(
 		txs: StoredTx[],
 		height: number,
 		batches?: InferBatches<typeof atomic>,
@@ -302,7 +307,13 @@ export class ChainStore {
 					if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
 				}
 
-				const encoded = StoredTx.encodeWithOffsets(tx);
+			// size is computed AFTER resolution above — raw→pointer changes the byte length
+			const size = StoredTx.size(tx);
+			const offsets = StoredTx.encodeWithOffsets(tx, this.txScratch, 0);
+			const written = batch.tx.append(this.txScratch.subarray(0, size));
+				if (written !== txPointer) {
+					throw new Error(`[appendTxs] pointer drift: append=${written} txPointer=${txPointer}`);
+				}
 
 				// pubkey index writes: reuse the same hashes, dedup via local + prefetch
 				for (let i = 0; i < tx.outputs.length; i++) {
@@ -311,7 +322,7 @@ export class ChainStore {
 					if (output.scriptPubKey.kind === "pointer") continue;
 					const hash = hashes[i]!;
 					if (blockPubkeys.get(hash) === undefined && pubkeyPrefetch.get(hash) === undefined) {
-						const ptr = txPointer + encoded.offsets.outputs[i]!;
+						const ptr = txPointer + offsets.outputs[i]!;
 						batch.pubkey.set(hash, ptr);
 						blockPubkeys.set(hash, ptr); // so a later same-block output reuses it
 					}
@@ -331,8 +342,7 @@ export class ChainStore {
 					batch.spender.set(spenderIndex, txPointer);
 				}
 
-				batch.tx.append(encoded.bytes);
-				offset += encoded.bytes.length;
+				offset += size;
 			}
 
 			const currentLength = batch.block.length();
@@ -368,7 +378,7 @@ export class ChainStore {
 		}
 	}
 
-	private async _reorg(keepHeight: number): Promise<void> {
+	private async reorg(keepHeight: number): Promise<void> {
 		const blocksHeight = atomic.stores.block.length() - 1;
 		console.log(`[chain] reorg: keepHeight=${keepHeight} currentTip=${blocksHeight}`);
 		if (keepHeight >= blocksHeight) return; // nothing to undo

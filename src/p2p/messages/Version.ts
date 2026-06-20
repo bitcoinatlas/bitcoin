@@ -52,10 +52,16 @@ function decodeIP(bytes: Uint8Array): string {
 class VersionCodec extends Codec<VersionPayload> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(data: VersionPayload): Uint8Array<ArrayBuffer> {
+	public encode(data: VersionPayload): Uint8Array<ArrayBuffer> {
 		const ua = new TextEncoder().encode(data.userAgent);
 		const out = new Uint8Array(4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + ua.length + 4 + 1);
-		const view = new Uint8ArrayView(out);
+		this.encodeInto(data, out);
+		return out;
+	}
+
+	public override encodeInto(data: VersionPayload, target: Uint8Array, offset: number = 0): number {
+		const ua = new TextEncoder().encode(data.userAgent);
+		const view = new DataView(target.buffer, target.byteOffset + offset);
 		let off = 0;
 
 		view.setInt32(off, data.version, true);
@@ -66,29 +72,34 @@ class VersionCodec extends Codec<VersionPayload> {
 		off += 8;
 		view.setBigUint64(off, data.recvServices, true);
 		off += 8;
-		out.set(encodeIP(data.recvIP), off);
+		target.set(encodeIP(data.recvIP), offset + off);
 		off += 16;
 		view.setUint16(off, data.recvPort, false);
 		off += 2;
 		view.setBigUint64(off, data.transServices, true);
 		off += 8;
-		out.set(encodeIP(data.transIP), off);
+		target.set(encodeIP(data.transIP), offset + off);
 		off += 16;
 		view.setUint16(off, data.transPort, false);
 		off += 2;
 		view.setBigUint64(off, data.nonce, true);
 		off += 8;
-		out[off++] = ua.length;
-		out.set(ua, off);
+		target[offset + off++] = ua.length;
+		target.set(ua, offset + off);
 		off += ua.length;
 		view.setInt32(off, data.startHeight, true);
 		off += 4;
-		out[off++] = data.relay ? 1 : 0;
+		target[offset + off++] = data.relay ? 1 : 0;
 
-		return out;
+		return off;
 	}
 
-	decode(bytes: Uint8Array): [VersionPayload, number] {
+	public override size(data: VersionPayload): number {
+		const uaLen = new TextEncoder().encode(data.userAgent).length;
+		return 4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + uaLen + 4 + 1;
+	}
+
+	public decode(bytes: Uint8Array): [VersionPayload, number] {
 		const view = new Uint8ArrayView(bytes);
 		let off = 0;
 

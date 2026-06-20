@@ -104,63 +104,104 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(input: StoredTxInput): Uint8Array<ArrayBuffer> {
-		const data = input;
-
-		// Resolve sequence to its raw u32 and decide if it needs an explicit field
-		const seqU32 = SequenceLockCodec.toU32(data.sequence) >>> 0;
+		// Size-compute pass then single allocation.
+		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
 		const seqTag = sequenceTagForU32(seqU32);
 		const seqExplicit = seqTag === SEQ_EXPLICIT;
-		const seqBytes = seqExplicit ? 4 : 0;
+
+		const scriptSigEncoded = scriptSigCodec.encode(input.scriptSig);
+		const witnessEncoded = StoredWitness.encode(input.witness);
 
 		let prevOutKind: number;
-		let prevOutPayload: Uint8Array;
+		let prevOutSize: number;
 
-		if (data.prevOut.txId.kind === "pointer") {
+		if (input.prevOut.txId.kind === "pointer") {
 			prevOutKind = PREVOUT_RESOLVED;
-			const voutBytes = VarInt.encode(data.prevOut.vout);
-			prevOutPayload = new Uint8Array(6 + voutBytes.length);
-			prevOutPayload.set(StoredPointer.encode(data.prevOut.txId.value), 0);
-			prevOutPayload.set(voutBytes, 6);
-		} else if (data.prevOut.txId.kind === "raw") {
+			prevOutSize = 6 + VarInt.encode(input.prevOut.vout).length;
+		} else if (input.prevOut.txId.kind === "raw") {
 			prevOutKind = PREVOUT_RAW;
-			const voutBytes = VarInt.encode(data.prevOut.vout);
-			prevOutPayload = new Uint8Array(32 + voutBytes.length);
-			prevOutPayload.set(data.prevOut.txId.value, 0);
-			prevOutPayload.set(voutBytes, 32);
-		} else if (data.prevOut.txId.kind === "coinbase") {
-			prevOutKind = PREVOUT_COINBASE;
-			prevOutPayload = new Uint8Array(0);
+			prevOutSize = 32 + VarInt.encode(input.prevOut.vout).length;
 		} else {
-			throw new Error("unknown prevOut kind");
+			prevOutKind = PREVOUT_COINBASE;
+			prevOutSize = 0;
 		}
 
-		const tagByte = (prevOutKind & PREVOUT_MASK) | ((seqTag << SEQ_SHIFT) & SEQ_MASK);
-
-		const scriptSigEncoded = scriptSigCodec.encode(data.scriptSig);
-		const witnessEncoded = StoredWitness.encode(data.witness);
-
-		const totalLength = 1 + prevOutPayload.length + seqBytes +
+		const totalLength = 1 + prevOutSize + (seqExplicit ? 4 : 0) +
 			scriptSigEncoded.length + witnessEncoded.length;
 		const result = new Uint8Array(totalLength);
-		let offset = 0;
+		this.writeInto(input, result, 0, prevOutKind, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
+		return result;
+	}
 
-		result[offset] = tagByte;
-		offset += 1;
+	public override encodeInto(input: StoredTxInput, target: Uint8Array, offset: number = 0): number {
+		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
+		const seqTag = sequenceTagForU32(seqU32);
+		const seqExplicit = seqTag === SEQ_EXPLICIT;
 
-		result.set(prevOutPayload, offset);
-		offset += prevOutPayload.length;
+		const scriptSigEncoded = scriptSigCodec.encode(input.scriptSig);
+		const witnessEncoded = StoredWitness.encode(input.witness);
+
+		let prevOutKind: number;
+		if (input.prevOut.txId.kind === "pointer") prevOutKind = PREVOUT_RESOLVED;
+		else if (input.prevOut.txId.kind === "raw") prevOutKind = PREVOUT_RAW;
+		else prevOutKind = PREVOUT_COINBASE;
+
+		return this.writeInto(input, target, offset, prevOutKind, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
+	}
+
+	private writeInto(
+		input: StoredTxInput,
+		target: Uint8Array,
+		offset: number,
+		prevOutKind: number,
+		seqU32: number,
+		seqTag: number,
+		seqExplicit: boolean,
+		scriptSigEncoded: Uint8Array,
+		witnessEncoded: Uint8Array,
+	): number {
+		const start = offset;
+		const tagByte = (prevOutKind & PREVOUT_MASK) | ((seqTag << SEQ_SHIFT) & SEQ_MASK);
+		target[offset++] = tagByte;
+
+		if (input.prevOut.txId.kind === "pointer") {
+			offset += StoredPointer.encodeInto(input.prevOut.txId.value, target, offset);
+			offset += VarInt.encodeInto(input.prevOut.vout, target, offset);
+		} else if (input.prevOut.txId.kind === "raw") {
+			target.set(input.prevOut.txId.value, offset);
+			offset += 32;
+			offset += VarInt.encodeInto(input.prevOut.vout, target, offset);
+		}
+		// coinbase: no payload
 
 		if (seqExplicit) {
-			result.set(U32LE.encode(seqU32), offset);
-			offset += 4;
+			offset += U32LE.encodeInto(seqU32, target, offset);
 		}
 
-		result.set(scriptSigEncoded, offset);
+		target.set(scriptSigEncoded, offset);
 		offset += scriptSigEncoded.length;
 
-		result.set(witnessEncoded, offset);
+		target.set(witnessEncoded, offset);
+		offset += witnessEncoded.length;
 
-		return result;
+		return offset - start;
+	}
+
+	override size(input: StoredTxInput): number {
+		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
+		const seqExplicit = sequenceTagForU32(seqU32) === SEQ_EXPLICIT;
+
+		let prevOutSize: number;
+		if (input.prevOut.txId.kind === "pointer") {
+			prevOutSize = StoredPointer.stride.size + VarInt.size(input.prevOut.vout);
+		} else if (input.prevOut.txId.kind === "raw") {
+			prevOutSize = 32 + VarInt.size(input.prevOut.vout);
+		} else {
+			prevOutSize = 0;
+		}
+
+		return 1 + prevOutSize + (seqExplicit ? 4 : 0) +
+			scriptSigCodec.size(input.scriptSig) + StoredWitness.size(input.witness);
 	}
 
 	decode(data: Uint8Array): [StoredTxInput, number] {

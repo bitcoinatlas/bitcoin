@@ -18,13 +18,13 @@ export type ArrayStoreOptions<T extends FixedCodec<any>> = {
 export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch<Codec.InferOutput<T>>> implements Disposable {
 	public readonly path: string;
 
-	private readonly _blob: BlobStore;
-	private readonly _codec: T;
+	private readonly blob: BlobStore;
+	private readonly codec: T;
 
 	private constructor(blob: BlobStore, options: ArrayStoreOptions<T>) {
 		super();
-		this._blob = blob;
-		this._codec = options.codec;
+		this.blob = blob;
+		this.codec = options.codec;
 		this.path = options.path;
 	}
 
@@ -38,12 +38,12 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		return self;
 	}
 
-	private get _stride(): number {
-		return this._codec.stride.size;
+	private get stride(): number {
+		return this.codec.stride.size;
 	}
 
 	length(): number {
-		return this._blob.size() / this._stride;
+		return this.blob.size() / this.stride;
 	}
 
 	async get(index: number): Promise<Codec.InferOutput<T> | undefined> {
@@ -52,7 +52,7 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		return this._blob.get(index * this._stride, this._codec);
+		return this.blob.get(index * this.stride, this.codec);
 	}
 
 	async slice(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
@@ -64,13 +64,13 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		// start/end are item indices, so the blob pointer must be a byte offset.
 		// Previously `start` was passed straight through as a byte pointer, reading
 		// from byte `start` instead of `start * stride` for any start > 0.
-		return this._blob.get(start * this._stride, new ArrayCodec(this._codec, { size: end - start }));
+		return this.blob.get(start * this.stride, new ArrayCodec(this.codec, { size: end - start }));
 	}
 
 	batch(): ArrayStoreBatch<Codec.InferOutput<T>> {
-		const blob: BlobStoreBatch = this._blob.batch();
-		const stride = this._stride;
-		const codec = this._codec;
+		const blob: BlobStoreBatch = this.blob.batch();
+		const stride = this.stride;
+		const codec = this.codec;
 
 		const length: ArrayStoreBatch<Codec.InferOutput<T>>["length"] = () => {
 			return blob.size() / stride;
@@ -92,31 +92,31 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 	}
 
 	freeze(): void {
-		this._blob.freeze();
+		this.blob.freeze();
 	}
 
 	async pin(): Promise<void> {
-		return this._blob.pin();
+		return this.blob.pin();
 	}
 
 	async flush(): Promise<void> {
-		return this._blob.flush();
+		return this.blob.flush();
 	}
 
 	async rollback(): Promise<void> {
-		return this._blob.rollback();
+		return this.blob.rollback();
 	}
 
 	async finalize(): Promise<void> {
-		return this._blob.finalize();
+		return this.blob.finalize();
 	}
 
 	async truncate(length: number): Promise<void> {
-		return this._blob.truncate(length * this._stride);
+		return this.blob.truncate(length * this.stride);
 	}
 
 	close(): void {
-		this._blob.close();
+		this.blob.close();
 	}
 
 	[Symbol.dispose](): void {

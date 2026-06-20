@@ -6,7 +6,7 @@
     "jsr:@noble/curves@1.9.0": "1.9.0",
     "jsr:@noble/hashes@1.8.0": "1.8.0",
     "jsr:@noble/secp256k1@2.3.0": "2.3.0",
-    "jsr:@nomadshiba/codec@~0.4.5": "0.4.5",
+    "jsr:@nomadshiba/codec@0.5.0-preview.4": "0.5.0-preview.4",
     "jsr:@purifyjs/core@0.4": "0.4.0",
     "jsr:@std/assert@*": "1.0.18",
     "jsr:@std/assert@^1.0.17": "1.0.19",
@@ -82,8 +82,11 @@
     "@noble/secp256k1@2.3.0": {
       "integrity": "63eb4479a7c548e0ddea1cb5ea9bf7efacafe495e7f1c07bce1b4108df95967f"
     },
-    "@nomadshiba/codec@0.4.5": {
-      "integrity": "3cd7edbbc4756f778d682dbedd13b996b0b6a2161e68a30273a59fc600d6af5d"
+    "@nomadshiba/codec@0.5.0-preview.4": {
+      "integrity": "d89a2a34938ebc6fbead624141b52edb7b5d74052e3dc7a9078b66f97df32647",
+      "dependencies": [
+        "jsr:@std/bytes@^1.0.6"
+      ]
     },
     "@purifyjs/core@0.4.0": {
       "integrity": "b5495df887c85e0f7c17ebf37e021c79972ace33f8bd6f30cb76a88324814847"
@@ -421,7 +424,7 @@
       "jsr:@noble/curves@1.9.0",
       "jsr:@noble/hashes@1.8.0",
       "jsr:@noble/secp256k1@2.3.0",
-      "jsr:@nomadshiba/codec@~0.4.5",
+      "jsr:@nomadshiba/codec@0.5.0-preview.4",
       "jsr:@purifyjs/core@0.4",
       "jsr:@std/assert@^1.0.19",
       "jsr:@std/async@^1.3.0",

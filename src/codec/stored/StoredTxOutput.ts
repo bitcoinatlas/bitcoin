@@ -111,6 +111,18 @@ function decodeScriptPubKey(kind: StoredScriptPubKey["kind"], payload: Uint8Arra
 	return [{ kind, value: payload.subarray(0, expectedLen) }, expectedLen];
 }
 
+function scriptPayloadSize(data: StoredScriptPubKey): number {
+	if (data.kind === "pointer") {
+		return StoredPointer.stride.size;
+	}
+	const normalized = normalizeScriptPubKey(data);
+	if (normalized.kind === "raw" || normalized.kind === "opreturn") {
+		const script = rawScriptPubKey(normalized);
+		return VarInt.size(script.length) + script.length;
+	}
+	return normalized.value.length;
+}
+
 export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
@@ -124,22 +136,38 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
 
 		const flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
-
 		const valueEncoded = VarInt.encode(Number(value));
-
 		const total = 1 + valueEncoded.length + payload.length;
 
 		const out = new Uint8Array(total);
-		let offset = 0;
-
-		out[offset] = flag;
-		offset += 1;
-
-		out.set(valueEncoded, offset);
-		offset += valueEncoded.length;
-
-		out.set(payload, offset);
+		out[0] = flag;
+		out.set(valueEncoded, 1);
+		out.set(payload, 1 + valueEncoded.length);
 		return out;
+	}
+
+	public override encodeInto(output: StoredTxOutput, target: Uint8Array, offset: number = 0): number {
+		const { value, scriptPubKey } = output;
+
+		if (value < 0n || value >= (1n << 51n)) {
+			throw new Error("Value out of range for 51-bit integer");
+		}
+
+		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
+
+		const flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
+		target[offset] = flag;
+		const valueSize = VarInt.encodeInto(Number(value), target, offset + 1);
+		target.set(payload, offset + 1 + valueSize);
+		return 1 + valueSize + payload.length;
+	}
+
+	override size(output: StoredTxOutput): number {
+		const { value, scriptPubKey } = output;
+		if (value < 0n || value >= (1n << 51n)) {
+			throw new Error("Value out of range for 51-bit integer");
+		}
+		return 1 + VarInt.size(Number(value)) + scriptPayloadSize(scriptPubKey as StoredScriptPubKey);
 	}
 
 	decode(bytes: Uint8Array): [StoredTxOutput, number] {

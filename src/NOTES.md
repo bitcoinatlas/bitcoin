@@ -17,13 +17,18 @@
   reader of a chunk is being used. or something like that probably. or maybe something else smarter? idk.
 
 - ok so we made p2p and block download into its own worker, it works fine, but it now produces blocks faster we can consume them.
-- so first thing is it seems we spend a lot of CPU time for the codecs, so we are gonna make some changes and updates to
+
+* so first thing is it seems we spend a lot of CPU time for the codecs, so we are gonna make some changes and updates to
   `@nomadshiba/codec`, and also custom codecs in this codebase
   - first of all, yes we accept `target` during encoding but we didnt have `offset` because we thought `.subarray()` would be enough. but it
     seems it still allocated a new `Uint8Array`, and V8 doesnt optimize it away. so we need to add offset argument to the codecs.
   - another thing is, yes we have `target` but we never use it in built it composite impls
   - also it seems even in this codebase we are not using target, we keep calling `encode()` alone. so handle that.
   - we can get a lot time back just by doing these. probably will make it fast enough.
+
+- OK i have done the things above, and we got a bit faster, 200k in 14m40s. satoshi client took 11m40s, so that close i think, but i think
+  we can get even closer. lets see
+
 - another target is basically rocksdb binding we use doesnt have blooms filters. this might make use gain some time as well
 
 - also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time

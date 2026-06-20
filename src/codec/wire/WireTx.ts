@@ -1,5 +1,4 @@
 import { ArrayCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
-import { concat } from "@std/bytes";
 import { CompactSize } from "~/codec/primitives/CompactSize.ts";
 import { LockTime } from "~/codec/LockTime.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
@@ -35,33 +34,47 @@ type T = {
 class WireTxCodec extends Codec<T> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(tx: T): Uint8Array<ArrayBuffer> {
+	public encode(tx: T): Uint8Array<ArrayBuffer> {
 		const hasWitness = tx.witness.length > 0;
 
-		// Encode pre-witness data
-		const preWitness = WireTxPreWitness.encode({
-			version: tx.version,
-			hasWitness,
-			inputs: tx.inputs,
-			outputs: tx.outputs,
-		});
+		const preWitnessBytes = WireTxPreWitness.encode({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs });
+		const witnessBytes = hasWitness ? encodeWitness(tx.witness) : null;
+		const postWitnessBytes = WireTxPostWitness.encode({ locktime: tx.locktime });
 
-		const chunks: Uint8Array[] = [preWitness];
+		const total = preWitnessBytes.length +
+			(witnessBytes ? witnessBytes.length : 0) +
+			postWitnessBytes.length;
 
-		// Witness (if present)
-		if (hasWitness) {
-			chunks.push(encodeWitness(tx.witness));
+		const result = new Uint8Array(total);
+		let pos = 0;
+		result.set(preWitnessBytes, pos);
+		pos += preWitnessBytes.length;
+		if (witnessBytes) {
+			result.set(witnessBytes, pos);
+			pos += witnessBytes.length;
 		}
-
-		// Locktime
-		chunks.push(WireTxPostWitness.encode({
-			locktime: tx.locktime,
-		}));
-
-		return concat(chunks);
+		result.set(postWitnessBytes, pos);
+		return result;
 	}
 
-	decode(bytes: Uint8Array): [T, number] {
+	public override encodeInto(tx: T, target: Uint8Array, offset: number = 0): number {
+		const start = offset;
+		const hasWitness = tx.witness.length > 0;
+		offset += WireTxPreWitness.encodeInto({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs }, target, offset);
+		if (hasWitness) offset += encodeWitnessInto(tx.witness, target, offset);
+		offset += WireTxPostWitness.encodeInto({ locktime: tx.locktime }, target, offset);
+		return offset - start;
+	}
+
+	public override size(tx: T): number {
+		const hasWitness = tx.witness.length > 0;
+		let total = WireTxPreWitness.size({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs });
+		if (hasWitness) total += witnessSize(tx.witness);
+		total += WireTxPostWitness.size({ locktime: tx.locktime });
+		return total;
+	}
+
+	public decode(bytes: Uint8Array): [T, number] {
 		// Decode pre-witness data
 		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes);
 		let offset = preWitnessBytes;
@@ -93,15 +106,41 @@ class WireTxCodec extends Codec<T> {
 
 // Encode witness: array of witness per input
 function encodeWitness(witness: Uint8Array[][]): Uint8Array {
-	const chunks: Uint8Array[] = [];
+	let total = 0;
 	for (const inputWitness of witness) {
-		chunks.push(CompactSize.encode(inputWitness.length));
+		total += CompactSize.encode(inputWitness.length).length;
 		for (const item of inputWitness) {
-			chunks.push(CompactSize.encode(item.length));
-			chunks.push(item);
+			total += CompactSize.encode(item.length).length + item.length;
 		}
 	}
-	return concat(chunks);
+	const result = new Uint8Array(total);
+	encodeWitnessInto(witness, result, 0);
+	return result;
+}
+
+function encodeWitnessInto(witness: Uint8Array[][], target: Uint8Array, offset: number): number {
+	const start = offset;
+	for (const inputWitness of witness) {
+		offset += CompactSize.encodeInto(inputWitness.length, target, offset);
+		for (const item of inputWitness) {
+			offset += CompactSize.encodeInto(item.length, target, offset);
+			target.set(item, offset);
+			offset += item.length;
+		}
+	}
+	return offset - start;
+}
+
+// Byte length of the witness section without allocating (mirror of encodeWitness).
+function witnessSize(witness: Uint8Array[][]): number {
+	let total = 0;
+	for (const inputWitness of witness) {
+		total += CompactSize.size(inputWitness.length);
+		for (const item of inputWitness) {
+			total += CompactSize.size(item.length) + item.length;
+		}
+	}
+	return total;
 }
 
 // Decode witness: array of witness per input

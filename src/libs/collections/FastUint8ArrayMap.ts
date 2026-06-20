@@ -37,20 +37,20 @@ const LOAD = 0.7;
 // An empty slot is `keys[slot] === undefined`. That doubles as the occupancy
 // flag, so no separate bitset is needed.
 export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
-	private _keys: Array<Uint8Array | undefined>;
-	private _hashes: Uint32Array;
-	private _vals: Array<V | undefined>;
-	private _mask: number;
-	private _threshold: number;
-	private _size = 0;
+	private keySlots: Array<Uint8Array | undefined>;
+	private hashes: Uint32Array;
+	private vals: Array<V | undefined>;
+	private mask: number;
+	private threshold: number;
+	private size_ = 0;
 
 	constructor(capacity = 16) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(Math.max(1, capacity))));
-		this._keys = new Array(pow2);
-		this._hashes = new Uint32Array(pow2);
-		this._vals = new Array(pow2);
-		this._mask = pow2 - 1;
-		this._threshold = (pow2 * LOAD) | 0;
+		this.keySlots = new Array(pow2);
+		this.hashes = new Uint32Array(pow2);
+		this.vals = new Array(pow2);
+		this.mask = pow2 - 1;
+		this.threshold = (pow2 * LOAD) | 0;
 	}
 
 	[Symbol.iterator](): Iterator<[Uint8Array, V]> {
@@ -58,30 +58,60 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	}
 
 	size() {
-		return this._size;
+		return this.size_;
 	}
 
 	// Append a unique key/value. No existence check, no copy.
 	set(key: Uint8Array, value: V): void {
-		if (this._size >= this._threshold) this.grow();
+		if (this.size_ >= this.threshold) this.grow();
 		const hash = hashKeyU32(key);
-		let slot = hash & this._mask;
-		while (this._keys[slot] !== undefined) slot = (slot + 1) & this._mask;
-		this._keys[slot] = key;
-		this._hashes[slot] = hash;
-		this._vals[slot] = value;
-		this._size++;
+		let slot = hash & this.mask;
+		while (this.keySlots[slot] !== undefined) slot = (slot + 1) & this.mask;
+		this.keySlots[slot] = key;
+		this.hashes[slot] = hash;
+		this.vals[slot] = value;
+		this.size_++;
+	}
+
+	// Like set, but overwrites any existing value for the same key. Falls back
+	// to append-only set if the key is not already present, so callers don't have
+	// to know whether a key exists yet.
+	setOwned(key: Uint8Array, value: V): void {
+		const hash = hashKeyU32(key);
+		const keySlots = this.keySlots;
+		const hashes = this.hashes;
+		const vals = this.vals;
+		const mask = this.mask;
+		let slot = hash & mask;
+		let k: Uint8Array | undefined;
+		while ((k = keySlots[slot]) !== undefined) {
+			if (hashes[slot] === hash && equals(k, key)) {
+				vals[slot] = value;
+				return;
+			}
+			slot = (slot + 1) & mask;
+		}
+		// Not present: append-only insert (unique, no dedup scan).
+		if (this.size_ >= this.threshold) {
+			this.grow();
+			this.set(key, value);
+			return;
+		}
+		keySlots[slot] = key;
+		hashes[slot] = hash;
+		vals[slot] = value;
+		this.size_++;
 	}
 
 	get(key: Uint8Array): V | undefined {
 		const hash = hashKeyU32(key);
-		const keys = this._keys;
-		const hashes = this._hashes;
-		const mask = this._mask;
+		const keySlots = this.keySlots;
+		const hashes = this.hashes;
+		const mask = this.mask;
 		let slot = hash & mask;
 		let k: Uint8Array | undefined;
-		while ((k = keys[slot]) !== undefined) {
-			if (hashes[slot] === hash && equals(k, key)) return this._vals[slot];
+		while ((k = keySlots[slot]) !== undefined) {
+			if (hashes[slot] === hash && equals(k, key)) return this.vals[slot];
 			slot = (slot + 1) & mask;
 		}
 		return undefined;
@@ -92,60 +122,60 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	}
 
 	private grow(): void {
-		const oldKeys = this._keys;
-		const oldHashes = this._hashes;
-		const oldVals = this._vals;
+		const oldKeys = this.keySlots;
+		const oldHashes = this.hashes;
+		const oldVals = this.vals;
 		const cap = oldKeys.length * 2;
 
-		this._keys = new Array(cap);
-		this._hashes = new Uint32Array(cap);
-		this._vals = new Array(cap);
-		this._mask = cap - 1;
-		this._threshold = (cap * LOAD) | 0;
+		this.keySlots = new Array(cap);
+		this.hashes = new Uint32Array(cap);
+		this.vals = new Array(cap);
+		this.mask = cap - 1;
+		this.threshold = (cap * LOAD) | 0;
 
-		const mask = this._mask;
+		const mask = this.mask;
 		for (let i = 0; i < oldKeys.length; i++) {
 			const k = oldKeys[i];
 			if (k === undefined) continue;
 			const hash = oldHashes[i]!;
 			let slot = hash & mask;
-			while (this._keys[slot] !== undefined) slot = (slot + 1) & mask;
-			this._keys[slot] = k;
-			this._hashes[slot] = hash;
-			this._vals[slot] = oldVals[i];
+			while (this.keySlots[slot] !== undefined) slot = (slot + 1) & mask;
+			this.keySlots[slot] = k;
+			this.hashes[slot] = hash;
+			this.vals[slot] = oldVals[i];
 		}
 	}
 
 	// Empty every slot. Keeps the grown capacity so a reorg reindex refills
 	// without immediately re-growing.
 	clear(): void {
-		this._keys.fill(undefined);
-		this._vals.fill(undefined);
-		this._hashes.fill(0);
-		this._size = 0;
+		this.keySlots.fill(undefined);
+		this.vals.fill(undefined);
+		this.hashes.fill(0);
+		this.size_ = 0;
 	}
 
 	*entries(): Generator<[Uint8Array, V]> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
-			if (k !== undefined) yield [k, this._vals[i]!];
+		const keySlots = this.keySlots;
+		for (let i = 0; i < keySlots.length; i++) {
+			const k = keySlots[i];
+			if (k !== undefined) yield [k, this.vals[i]!];
 		}
 	}
 
 	*keys(): Generator<Uint8Array> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
+		const keySlots = this.keySlots;
+		for (let i = 0; i < keySlots.length; i++) {
+			const k = keySlots[i];
 			if (k !== undefined) yield k;
 		}
 	}
 
 	*values(): Generator<V> {
-		const keys = this._keys;
-		for (let i = 0; i < keys.length; i++) {
-			const k = keys[i];
-			if (k !== undefined) yield this._vals[i]!;
+		const keySlots = this.keySlots;
+		for (let i = 0; i < keySlots.length; i++) {
+			const k = keySlots[i];
+			if (k !== undefined) yield this.vals[i]!;
 		}
 	}
 }

@@ -5,11 +5,22 @@ import { Codec, Stride } from "@nomadshiba/codec";
 export class WireSegwitMarkerCodec extends Codec<boolean> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(hasWitness: boolean): Uint8Array<ArrayBuffer> {
+	public encode(hasWitness: boolean): Uint8Array<ArrayBuffer> {
 		return hasWitness ? Uint8Array.of(0x00, 0x01) : new Uint8Array(0);
 	}
 
-	decode(data: Uint8Array): [boolean, number] {
+	public override encodeInto(hasWitness: boolean, target: Uint8Array, offset: number = 0): number {
+		if (!hasWitness) return 0;
+		target[offset] = 0x00;
+		target[offset + 1] = 0x01;
+		return 2;
+	}
+
+	public override size(hasWitness: boolean): number {
+		return hasWitness ? 2 : 0;
+	}
+
+	public decode(data: Uint8Array): [boolean, number] {
 		if (data.length >= 2 && data[0] === 0x00 && data[1] === 0x01) {
 			return [true, 2];
 		}
