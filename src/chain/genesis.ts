@@ -1,5 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+import { workFromHeader } from "~/chain/pow.ts";
 
 export const GENESIS_BLOCK_HEIGHT = 0;
 export const GENESIS_BLOCK = new Uint8Array(285);
@@ -81,3 +82,4 @@ export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 	WireBlockHeader.inner.shape.version.stride.size + WireBlockHeader.inner.shape.prevHash.stride.size,
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
+export const GENESIS_WORK = workFromHeader(WireBlockHeader.decodeValue(GENESIS_BLOCK_HEADER));

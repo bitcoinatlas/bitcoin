@@ -18,7 +18,8 @@
 		"vscode": {
 			"extensions": [
 				"justjavac.vscode-deno-extensionpack",
-				"pushqrdx.inline-html"
+				"pushqrdx.inline-html",
+				"ms-vscode.vscode-js-profile-flame"
 			]
 		}
 	}

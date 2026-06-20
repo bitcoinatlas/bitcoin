@@ -1,7 +1,7 @@
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { Codec, FixedCodec } from "@nomadshiba/codec";
+import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Batch, FlushFinalizer, StoreRocks } from "~/storage/Store.ts";
-import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 
 export type KvStoreOptions<K extends FixedCodec, V extends FixedCodec> = {
 	prefix: Uint8Array;
@@ -13,6 +13,7 @@ export type KvStoreOptions<K extends FixedCodec, V extends FixedCodec> = {
 export interface KvStoreBatch<K extends FixedCodec, V extends FixedCodec> extends Batch {
 	get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined>;
 	set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void;
+	delete(key: Codec.InferInput<K>): void;
 }
 
 export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRocks<KvStoreBatch<K, V>> {
@@ -21,13 +22,13 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	public readonly value: V;
 	public readonly prefix: Uint8Array;
 
-	private _staged: Uint8ArrayMap<Uint8Array>;
+	private _staged: FastUint8ArrayMap<Uint8Array | null>;
 	// The snapshot being flushed. Reads must consult it (it's the most recent
 	// committed-to-this-flush data) and flush() drains it; the finalizer clears
 	// it. Concurrent applies during a flush go to _staged, never here, so they
 	// survive — unlike before, where the finalizer replaced the live _staged and
 	// silently dropped anything applied mid-flush.
-	private _frozen: Uint8ArrayMap<Uint8Array> | null = null;
+	private _frozen: FastUint8ArrayMap<Uint8Array | null> | null = null;
 
 	// Reusable buffer for encoding prefixed keys. get(), flush(), and
 	// batch.get() are never concurrent, so a single shared buffer is safe.
@@ -41,7 +42,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		this.value = options.value;
 		this.prefix = options.prefix;
 
-		this._staged = new Uint8ArrayMap();
+		this._staged = new FastUint8ArrayMap();
 
 		this._keyBuf = new Uint8Array(this.key.stride.size + this.prefix.length);
 		this._keyBuf.set(this.prefix);
@@ -57,7 +58,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	freeze(): void {
 		if (this._frozen) return;
 		this._frozen = this._staged;
-		this._staged = new Uint8ArrayMap();
+		this._staged = new FastUint8ArrayMap();
 	}
 
 	async get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined> {
@@ -70,10 +71,14 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 	}
 
 	batch(): KvStoreBatch<K, V> {
-		const batch = new Uint8ArrayMap<Uint8Array>();
+		const batch = new FastUint8ArrayMap<Uint8Array | null>();
 
 		const set: KvStoreBatch<K, V>["set"] = (key, value) => {
 			batch.set(this.key.encode(key), this.value.encode(value));
+		};
+
+		const del: KvStoreBatch<K, V>["delete"] = (key) => {
+			batch.set(this.key.encode(key), null);
 		};
 
 		const get: KvStoreBatch<K, V>["get"] = async (key) => {
@@ -95,7 +100,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 			batch.clear();
 		};
 
-		return { set, get, apply, discard };
+		return { set, delete: del, get, apply, discard };
 	}
 
 	async flush(trx: Transaction): Promise<FlushFinalizer> {
@@ -107,7 +112,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		await Promise.all(
 			frozen.entries().map(async ([encodedKey, bytes]) => {
 				this._keyBuf.set(encodedKey, this.prefix.length);
-				await trx.put(this._keyBuf, bytes);
+				if (!bytes) await trx.remove(this._keyBuf);
+				else await trx.put(this._keyBuf, bytes);
 			}),
 		);
 		// Draining from _frozen (not clearing until the finalizer) also makes a

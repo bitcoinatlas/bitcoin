@@ -7,7 +7,7 @@ const app = appHtml.replace("<!-- inject js -->", () => `<script type="module">$
 endpointRouter.registerHandler("GET /exit", () => Deno.exit(0));
 
 export function serve(port: number) {
-	Deno.serve({ port }, async (request, _info) => {
+	return Deno.serve({ port }, async (request, _info) => {
 		const url = new URL(request.url);
 		const { pathname } = url;
 
