@@ -21,7 +21,7 @@
 		"~/": "./src/"
 	},
 	"tasks": {
-		"dev": "deno task bundle && (deno run -A --watch src/main.ts & deno task dev:build)",
+		"dev": "deno task bundle && (deno run -A --watch src/main.ts --background & deno task dev:build)",
 		"dev:bundle": "deno bundle --output=src/server/frontend/dist/app.js src/server/frontend/app.ts --watch",
 		"test": "deno test -A",
 		"check": "deno check && deno lint && deno task test",
