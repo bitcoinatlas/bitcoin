@@ -25,3 +25,5 @@
   - also it seems even in this codebase we are not using target, we keep calling `encode()` alone. so handle that.
   - we can get a lot time back just by doing these. probably will make it fast enough.
 - another target is basically rocksdb binding we use doesnt have blooms filters. this might make use gain some time as well
+
+- also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time
