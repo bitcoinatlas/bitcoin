@@ -32,3 +32,8 @@
 - another target is basically rocksdb binding we use doesnt have blooms filters. this might make use gain some time as well
 
 - also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time
+
+- another thing is we might move the storage layer ChainStore to its own Worker entriely. so we can use sync version of the functions
+  instead of async, and also it doesnt keep the main thread busym and main thread has time for api endpoints and the frontend. tho storage
+  layer needs some async still in order to see and respond to messages. but later we might look at the disk directly readonly. so there
+  would be no communication at all. storage worker would directly talk with p2p worker alone using MessageChannel
