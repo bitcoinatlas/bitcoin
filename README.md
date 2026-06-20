@@ -60,21 +60,6 @@ and easy to use for everyone.
 If my bitcoin node takes more than a few AAA games, then it's not good enough. I want it to be something that anyone can run on their
 personal devices without needing to worry about storage space.
 
-## Current Status
-
-Right now, we can sync from genesis to tip probably, i went as high is ~420k so far, but it kinda slowed down as expected. Right now many
-things are kinda messy. So my next goal is doing some refactoring, and some reworking of the core sync logic, to make it more robust and
-efficient.
-
-As soon as I'm able to sync to the tip, I'm gonna work on more optimization methods and indexing strategies, to further reduce storage size.
-After that, I'll start working on the web interface. And Tauri desktop app + deno backend bundled together. So we actually have a usable
-product at the end, not just a node implementation.
-
-Then many things to come like actually doing P2P networking, and implementing the Satoshi RPC and Electrum protocols on top of it, etc and
-more...
-
-Progress is good right now considering the little free time I have to work on this, but there's still a long way to go.
-
 ## Notes
 
 ### Technical Notes and Terminology
