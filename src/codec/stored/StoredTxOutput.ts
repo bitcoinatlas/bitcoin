@@ -73,25 +73,6 @@ const SCRIPT_ID_TO_KIND: Record<number, StoredScriptPubKey["kind"]> = {
 // bits 0-2: scriptTypeId (0..7), bits 3-7: spare.
 const SCRIPT_TYPE_MASK = 0x07;
 
-function encodeScriptPubKey(data: StoredScriptPubKey): { kind: StoredScriptPubKey["kind"]; payload: Uint8Array } {
-	if (data.kind === "pointer") {
-		return { kind: "pointer", payload: StoredPointer.encode(data.value) };
-	}
-
-	const normalized = normalizeScriptPubKey(data);
-
-	if (normalized.kind === "raw" || normalized.kind === "opreturn") {
-		const script = rawScriptPubKey(normalized);
-		const len = VarInt.encode(script.length);
-		const payload = new Uint8Array(len.length + script.length);
-		payload.set(len, 0);
-		payload.set(script, len.length);
-		return { kind: normalized.kind, payload };
-	}
-
-	return { kind: normalized.kind, payload: normalized.value };
-}
-
 function decodeScriptPubKey(kind: StoredScriptPubKey["kind"], payload: Uint8Array): [StoredScriptPubKey, number] {
 	if (kind === "pointer") {
 		const [pointer, size] = StoredPointer.decode(payload);
@@ -127,22 +108,12 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	encode(output: StoredTxOutput): Uint8Array<ArrayBuffer> {
-		const { value, scriptPubKey } = output;
-
-		if (value < 0n || value >= (1n << 51n)) {
-			throw new Error("Value out of range for 51-bit integer");
-		}
-
-		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
-
-		const flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
-		const valueEncoded = VarInt.encode(Number(value));
-		const total = 1 + valueEncoded.length + payload.length;
-
-		const out = new Uint8Array(total);
-		out[0] = flag;
-		out.set(valueEncoded, 1);
-		out.set(payload, 1 + valueEncoded.length);
+		// Single encode path: size the buffer, then fill it via encodeInto.
+		// `size()` and `encodeInto()` both normalize, so the standalone encode
+		// path normalizes twice — fine here since the hot path uses encodeInto
+		// directly (e.g. StoredTx.encodeWithOffsets) and never allocates.
+		const out = new Uint8Array(this.size(output));
+		this.encodeInto(output, out, 0);
 		return out;
 	}
 
@@ -153,13 +124,36 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 			throw new Error("Value out of range for 51-bit integer");
 		}
 
-		const { kind, payload } = encodeScriptPubKey(scriptPubKey as StoredScriptPubKey);
+		const data = scriptPubKey;
+		let cursor = offset;
 
-		const flag = SCRIPT_KIND_TO_ID[kind] & SCRIPT_TYPE_MASK;
-		target[offset] = flag;
-		const valueSize = VarInt.encodeInto(Number(value), target, offset + 1);
-		target.set(payload, offset + 1 + valueSize);
-		return 1 + valueSize + payload.length;
+		// pointer is resolved without normalizing (matches the original early
+		// return) and written straight in — no intermediate StoredPointer.encode.
+		if (data.kind === "pointer") {
+			target[cursor++] = SCRIPT_KIND_TO_ID.pointer & SCRIPT_TYPE_MASK;
+			cursor += VarInt.encodeInto(Number(value), target, cursor);
+			cursor += StoredPointer.encodeInto(data.value, target, cursor);
+			return cursor - offset;
+		}
+
+		const normalized = normalizeScriptPubKey(data);
+		target[cursor++] = SCRIPT_KIND_TO_ID[normalized.kind] & SCRIPT_TYPE_MASK;
+		cursor += VarInt.encodeInto(Number(value), target, cursor);
+
+		if (normalized.kind === "raw" || normalized.kind === "opreturn") {
+			// Length prefix + script bytes, both written in place. The only copy
+			// left is the script payload itself (its bytes already exist).
+			const script = rawScriptPubKey(normalized);
+			cursor += VarInt.encodeInto(script.length, target, cursor);
+			target.set(script, cursor);
+			cursor += script.length;
+		} else {
+			// known hash type: fixed-length bytes, copied straight in.
+			target.set(normalized.value, cursor);
+			cursor += normalized.value.length;
+		}
+
+		return cursor - offset;
 	}
 
 	override size(output: StoredTxOutput): number {
@@ -167,7 +161,7 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 		if (value < 0n || value >= (1n << 51n)) {
 			throw new Error("Value out of range for 51-bit integer");
 		}
-		return 1 + VarInt.size(Number(value)) + scriptPayloadSize(scriptPubKey as StoredScriptPubKey);
+		return 1 + VarInt.size(Number(value)) + scriptPayloadSize(scriptPubKey);
 	}
 
 	decode(bytes: Uint8Array): [StoredTxOutput, number] {
