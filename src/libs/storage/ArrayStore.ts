@@ -1,5 +1,5 @@
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
-import { Batch, Store } from "~/storage/Store.ts";
+import { Batch, Store } from "~/libs/storage/Store.ts";
 import { BlobStore, type BlobStoreBatch } from "./BlobStore.ts";
 
 export interface ArrayStoreBatch<T> extends Batch {

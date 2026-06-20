@@ -4,7 +4,7 @@ import { equals } from "@std/bytes";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { randomBytes } from "@noble/hashes/utils";
-import { Store, StoreRocks } from "~/storage/Store.ts";
+import { Store, StoreRocks } from "~/libs/storage/Store.ts";
 import { writeFile } from "~/libs/fs/mod.ts";
 
 const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
@@ -172,22 +172,22 @@ export class Atomic<T extends AtomicStores> {
 			this.busy = true;
 			if (this.isConsistent()) return;
 			console.log("atomic state is not consistent, recovering...");
-		if (this.start && this.rocksdb) {
-			const id = await this.rocksdb.get("atomic.id");
-			if (id && equals(id, this.start)) {
-				// The rocks transaction committed (it carries atomic.id), and blob
-				// stores were flushed before it — so everything is durable. Just mark
-				// the end to close the window.
-				await this.setEnd(id);
-				return;
+			if (this.start && this.rocksdb) {
+				const id = await this.rocksdb.get("atomic.id");
+				if (id && equals(id, this.start)) {
+					// The rocks transaction committed (it carries atomic.id), and blob
+					// stores were flushed before it — so everything is durable. Just mark
+					// the end to close the window.
+					await this.setEnd(id);
+					return;
+				}
 			}
-		}
-		await Promise.all(this.storeMap.values().map((store) => store.rollback()));
-		// Re-establish consistency. The interrupted flush wrote start.id but never
-		// reached end.id, and we've just undone its on-disk effects; realign the
-		// markers. Without this, isConsistent() stays false forever and every
-		// subsequent flush() throws "Previous flush state is inconsistent".
-		await this.setEnd(this.start ?? this.end!);
+			await Promise.all(this.storeMap.values().map((store) => store.rollback()));
+			// Re-establish consistency. The interrupted flush wrote start.id but never
+			// reached end.id, and we've just undone its on-disk effects; realign the
+			// markers. Without this, isConsistent() stays false forever and every
+			// subsequent flush() throws "Previous flush state is inconsistent".
+			await this.setEnd(this.start ?? this.end!);
 			console.log("recovered atomic state");
 		} catch (reason) {
 			console.error(`Atomic recover failed:`, reason);

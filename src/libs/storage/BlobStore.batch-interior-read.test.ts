@@ -11,7 +11,7 @@
 import { assertEquals } from "@std/assert";
 import { U32 } from "@nomadshiba/codec";
 import { U40 } from "~/codec/primitives/U40.ts";
-import { BlobStore } from "~/storage/BlobStore.ts";
+import { BlobStore } from "~/libs/storage/BlobStore.ts";
 
 async function withStore(
 	opts: { maxDiskChunkSize?: number; maxMemoryChunkSize?: number },

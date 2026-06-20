@@ -19,11 +19,11 @@ import { BASE_DATA_DIR } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
-import { ArrayStore } from "~/storage/ArrayStore.ts";
-import { Atomic, InferBatches, InferStores } from "~/storage/Atomic.ts";
-import { BlobStore } from "~/storage/BlobStore.ts";
-import { IndexStore } from "~/storage/IndexStore.ts";
-import { KvStore } from "~/storage/KvStore.ts";
+import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
+import { Atomic, InferBatches, InferStores } from "~/libs/storage/Atomic.ts";
+import { BlobStore } from "~/libs/storage/BlobStore.ts";
+import { IndexStore } from "~/libs/storage/IndexStore.ts";
+import { KvStore } from "~/libs/storage/KvStore.ts";
 
 RocksDatabase.config({
 	blockCacheSize: 4 * 1024 * 1024 * 1024,
@@ -307,10 +307,10 @@ export class ChainStore {
 					if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
 				}
 
-			// size is computed AFTER resolution above — raw→pointer changes the byte length
-			const size = StoredTx.size(tx);
-			const offsets = StoredTx.encodeWithOffsets(tx, this.txScratch, 0);
-			const written = batch.tx.append(this.txScratch.subarray(0, size));
+				// size is computed AFTER resolution above — raw→pointer changes the byte length
+				const size = StoredTx.size(tx);
+				const offsets = StoredTx.encodeWithOffsets(tx, this.txScratch, 0);
+				const written = batch.tx.append(this.txScratch.subarray(0, size));
 				if (written !== txPointer) {
 					throw new Error(`[appendTxs] pointer drift: append=${written} txPointer=${txPointer}`);
 				}

@@ -10,7 +10,7 @@ import { assertEquals } from "@std/assert";
 import { U40 } from "~/codec/primitives/U40.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { BlobStore } from "~/storage/BlobStore.ts";
+import { BlobStore } from "~/libs/storage/BlobStore.ts";
 
 function makeTx(spender: number): StoredTx {
 	return {

@@ -2,7 +2,7 @@ import { Codec, U64 } from "@nomadshiba/codec";
 import { exists } from "@std/fs";
 import { join } from "@std/path";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
-import { Batch, Store } from "~/storage/Store.ts";
+import { Batch, Store } from "~/libs/storage/Store.ts";
 import { PromiseOrValue } from "~/types.ts";
 import { readFileInto, writeFile } from "~/libs/fs/mod.ts";
 
@@ -246,7 +246,6 @@ class DiskRegion implements Region, Disposable {
 		this.close();
 	}
 }
-
 
 export interface BlobStoreBatch extends Batch {
 	append(data: Uint8Array): number;

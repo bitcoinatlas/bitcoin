@@ -1,7 +1,7 @@
 import { Codec, type FixedCodec } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
-import { Batch, Store } from "~/storage/Store.ts";
+import { Batch, Store } from "~/libs/storage/Store.ts";
 import { readFileInto, writeFile } from "~/libs/fs/mod.ts";
 import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 
