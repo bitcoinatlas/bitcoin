@@ -1,6 +1,22 @@
+# immediate goal (current)
+
+- [ ] sync to the tip, see if it can reach to the tip. then make the ui, check the timechain see if anything is off.
+
+- [ ] then focus on more speed + storage optimizations.
+
+- [ ] more stable peer communication interface.
+
+- [ ] clean up the codebase.
+
+- [ ] impl on-demand block downloads.
+
+- [ ] make it look cool. configs and stuff.
+
+- [ ] then do relay p2p stuff
+
 # notes
 
-- [ ] rocksdb bindings we use dont support bloom filters yet, so just wait for an update for it. or you might change bindings as well.
+- [x] rocksdb bindings we use dont support bloom filters yet, so just wait for an update for it. or you might change bindings as well.
 - [x] clean up chain.ts instead turn it into a one nice class you can use.
 - [ ] turn it into a real app with real ui. so things start to fall into their place. instead of looking like a one big sync script.
       (makkeei titncoool sas s fuckck llsks)
@@ -26,8 +42,8 @@
   - [x] also it seems even in this codebase we are not using target, we keep calling `encode()` alone. so handle that.
   - [x] we can get a lot time back just by doing these. probably will make it fast enough.
 
-- [ ] OK i have done the things above, and we got a bit faster, 200k in 14m40s. satoshi client took 11m40s, so that close i think, but i
-      think we can get even closer. lets see
+- [x] OK i have done the things above, and we got a bit faster, 200k in 14m40s. satoshi client took 11m40s, so that close i think, but i
+      think we can get even closer. lets see. (UPDATE 200k in 12m30s)
 
 - [x] another target is basically rocksdb binding we use doesnt have blooms filters. this might make use gain some time as well
 
