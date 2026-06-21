@@ -24,19 +24,45 @@ import { Atomic, InferBatches, InferStores } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { IndexStore } from "~/libs/storage/IndexStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
+import { CONFIG } from "~/config.ts";
+
+const GiB = 1024 ** 3;
+const totalRam = Deno.systemMemoryInfo().total;
+
+// Reserve for OS + page cache + V8 + other processes. Scale the reserve with
+// total RAM (a 64 GiB box can spare proportionally more than an 8 GiB one).
+const osReserve = Math.max(2 * GiB, totalRam * 0.25);
+
+const writeBufferSize = 2 * GiB; // additive (costToCache:false)
+
+// Block cache gets a slice of what remains, clamped to a sane band.
+const available = totalRam - osReserve - writeBufferSize;
+const blockCacheSize = Math.max(
+	1 * GiB, // floor — below this rocksdb thrashes
+	Math.min(available * 0.6, 32 * GiB), // 60% of remainder, hard ceiling
+);
 
 RocksDatabase.config({
-	blockCacheSize: 4 * 1024 * 1024 * 1024,
-	writeBufferManagerSize: 2 * 1024 * 1024 * 1024, // was 512MB
-	writeBufferManagerCostToCache: false, // was true — stop cache thrash
-	writeBufferManagerAllowStall: false, // keep memtables soft, no hard write wall
+	blockCacheSize,
+	writeBufferManagerSize: writeBufferSize,
+	writeBufferManagerCostToCache: false,
+	writeBufferManagerAllowStall: false,
 });
+
+console.log(
+	`[rocksdb] ram=${(totalRam / GiB).toFixed(1)}GiB`,
+	`blockCache=${(blockCacheSize / GiB).toFixed(1)}GiB`,
+	`writeBuffer=${(writeBufferSize / GiB).toFixed(1)}GiB`,
+);
 
 const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	disableWAL: true,
 	pessimistic: true,
+	enableStats: CONFIG.rocksdbStats,
 	parallelismThreads: Math.min(10, navigator.hardwareConcurrency),
 	transactionLogRetention: 0,
+	bloomBitsPerKey: 10,
+	ribbonFilter: true,
 	transactionLogMaxSize: 0,
 	keyEncoder: {
 		readKey(source: any, start: number, end?: number) {
@@ -48,6 +74,44 @@ const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 		},
 	},
 });
+
+if (CONFIG.rocksdbStats) {
+	globalThis.addEventListener("unload", () => {
+		try {
+			logRocksStats(rocksdb);
+		} catch (e) {
+			console.error("[rocksdb stats] failed:", e);
+		}
+	});
+
+	function logRocksStats(db: RocksDatabase): void {
+		const num = (name: string) => {
+			const v = db.getStat(name);
+			return typeof v === "number" ? v : 0;
+		};
+
+		const cHit = num("rocksdb.block.cache.hit");
+		const cMiss = num("rocksdb.block.cache.miss");
+		const hitRate = cHit + cMiss ? (100 * cHit) / (cHit + cMiss) : 0;
+
+		const bloomUseful = num("rocksdb.bloom.filter.useful");
+		const bloomFullPos = num("rocksdb.bloom.filter.full.positive");
+
+		const get = db.getStat("rocksdb.db.get.micros"); // histogram
+
+		console.log("[rocksdb stats] -----------------------------");
+		console.log(`  block cache  hit=${cHit} miss=${cMiss} hitRate=${hitRate.toFixed(2)}%`);
+		console.log(`  memtable     hit=${num("rocksdb.memtable.hit")} miss=${num("rocksdb.memtable.miss")}`);
+		console.log(`  sst bloom    useful=${bloomUseful} fullPositive=${bloomFullPos}`);
+		if (get && typeof get === "object") {
+			console.log(
+				`  get.micros   p50=${get.median.toFixed(1)} p95=${get.percentile95.toFixed(1)} ` +
+					`p99=${get.percentile99.toFixed(1)} max=${get.max.toFixed(0)} count=${get.count}`,
+			);
+		}
+		console.log(db.getStats()); // full curated dump for everything else
+	}
+}
 
 const atomic = await Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
@@ -130,6 +194,7 @@ export class ChainStore {
 
 	private startTime: number | undefined;
 	private totalTxs: number = 0;
+	private totalSize: number = 0;
 	async tick(): Promise<void> {
 		const message = this.p2pMessageQueue.dequeue();
 		if (!message) {
@@ -151,6 +216,7 @@ export class ChainStore {
 				await this.appendTxs(txs, atomic.stores.block.length());
 				if (this.startTime) {
 					this.totalTxs += txs.length;
+					this.totalSize += size;
 				}
 			}
 			this.requestFlush();
@@ -159,8 +225,11 @@ export class ChainStore {
 
 			if (this.startTime) {
 				const passedSeconds = (performance.now() - this.startTime) / 1000;
-				const speed = this.totalTxs / passedSeconds;
-				console.log(`[chain] overall speed ${speed.toFixed(0)}txs/s time=${passedSeconds.toFixed(0)}s`);
+				const speedTxs = this.totalTxs / passedSeconds;
+				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
+				console.log(
+					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${passedSeconds.toFixed(0)}s`,
+				);
 			}
 			return;
 		}
@@ -261,14 +330,14 @@ export class ChainStore {
 				outputHashes.push(hashes);
 			}
 
-			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(64);
-			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(64);
+			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(txidKeys.size());
+			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(pubkeyKeys.size());
 			await Promise.all([
-				...[...txidKeys.keys()].map(async (id) => {
+				...txidKeys.keys().map(async (id) => {
 					const p = await batch.txid.get(id);
 					if (p !== undefined) txidPrefetch.set(id, p);
 				}),
-				...[...pubkeyKeys.keys()].map(async (h) => {
+				...pubkeyKeys.keys().map(async (h) => {
 					const p = await batch.pubkey.get(h);
 					if (p !== undefined) pubkeyPrefetch.set(h, p);
 				}),
