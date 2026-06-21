@@ -15,7 +15,7 @@ if (import.meta.main) {
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
 	const chainStore = await ChainStore.start(p2pWorker);
 	registerEndpoints(chainStore);
-	serve(50021);
+	serve(58333);
 
 	if (!args.background) {
 		const guiWorker = new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "gui" });

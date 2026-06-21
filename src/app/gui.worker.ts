@@ -10,7 +10,7 @@ import { DEV } from "~/env.ts";
 const webview = new Webview(DEV);
 webview.title = "BitcoinAtlas";
 
-webview.navigate(`http://localhost:50021`);
+webview.navigate(`http://localhost:58333`);
 webview.run();
 // For now just exit deno, later we might make it like background running thing etc.
 Deno.exit(0);
