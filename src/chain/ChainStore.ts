@@ -25,6 +25,7 @@ import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { IndexStore } from "~/libs/storage/IndexStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
 import { CONFIG } from "~/config.ts";
+import { formatDuration } from "~/libs/formatting/mod.ts";
 
 const GiB = 1024 ** 3;
 const totalRam = Deno.systemMemoryInfo().total;
@@ -224,11 +225,12 @@ export class ChainStore {
 			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
 
 			if (this.startTime) {
-				const passedSeconds = (performance.now() - this.startTime) / 1000;
+				const passed = performance.now() - this.startTime;
+				const passedSeconds = passed / 1000;
 				const speedTxs = this.totalTxs / passedSeconds;
 				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
 				console.log(
-					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${passedSeconds.toFixed(0)}s`,
+					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${formatDuration(passed)}`,
 				);
 			}
 			return;
