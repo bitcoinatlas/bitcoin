@@ -33,10 +33,30 @@ const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
 const CHUNK_BYTE_BUDGET = 20 * MAX_BLOCK_SIZE;
-const DOWNLOAD_AHEAD = 500; // blocks kept pooled-or-in-flight ahead of the pack cursor (across all peers)
-const DOWNLOAD_BATCH = 16; // hashes per getdata
+
+// Bitcoin Core block-download conventions (net_processing.cpp):
+//   MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16  — hard cap on outstanding getdata per peer,
+//     regardless of how many peers or how big the global window is. This is the key
+//     limit: it bounds a single connection's send-queue depth so bodies drain before
+//     any reasonable timeout and the head-of-line block can't sit behind hundreds of
+//     others. A local/whitelisted node tolerates more, but 16 keeps latency tight for
+//     free and removes the self-inflicted backpressure.
+//   BLOCK_DOWNLOAD_WINDOW = 1024  — global span of heights allowed in flight ahead of
+//     the pack cursor, across ALL peers. With one peer the per-peer cap (16) binds; with
+//     many peers this caps the total.
+const MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 * 16; // More for now because we have one peer in dev env.
+const BLOCK_DOWNLOAD_WINDOW = 1024;
+const DOWNLOAD_BATCH = 16; // hashes per getdata (== per-peer cap, so one full batch per peer)
 const BLOCK_TIMEOUT_MS = 30_000; // reap a peer's in-flight requests only after it has gone silent this long
 const DOWNLOAD_IDLE_MS = 50; // pause when the next block isn't here yet
+
+// Peers we should keep a connection to. Reconnected automatically with backoff
+// when they drop, so a single transient disconnect never permanently stalls sync.
+const PEER_ADDRESSES: { host: string; port: number }[] = [
+	{ host: "192.168.8.10", port: P2P_PORT },
+];
+const RECONNECT_BASE_MS = 1_000; // first retry delay
+const RECONNECT_MAX_MS = 30_000; // cap on exponential backoff
 
 const messageQueue = new Queue<{ name: string; data: any }>(1000);
 const blacklist = new FastUint8ArraySet(); // block hashes the main told us to reject
@@ -60,6 +80,7 @@ const blockUnlisten = new Map<Peer, () => void>(); // attached block listeners
 const lastBlockAt = new Map<Peer, number>(); // peer -> last time it delivered a wanted block (liveness)
 
 let started = false;
+let lastSyncBlocksDiag = 0; // throttle gate for syncBlocks state diag
 
 self.addEventListener("message", (event: MessageEvent) => messageQueue.enqueue(event.data));
 
@@ -110,14 +131,80 @@ async function start(headers: WireBlockHeader[]) {
 		self.postMessage({ name: "reorg", data: keepHeight });
 	}
 
-	const devPeer = new Peer(`192.168.8.10`, P2P_PORT, MAGIC);
-	await devPeer.connect();
-	await handshake(devPeer);
-	peers.add(devPeer);
+	// Connect to every configured peer, each with its own self-healing reconnect
+	// loop. Wait for at least one to come up before starting the sync loops so the
+	// first header pass has something to talk to.
+	const firstConnects = PEER_ADDRESSES.map((addr) => connectAndMaintain(addr));
+	await Promise.race(firstConnects).catch(() => {});
 
 	startSyncHeaders();
 	startSyncBlocks();
 	started = true;
+}
+
+/**
+ * Maintain a live connection to one peer address forever. On every disconnect
+ * (or failed connect) it removes the dead Peer from the working set, waits with
+ * exponential backoff, and dials again — so losing a peer is a transient blip,
+ * not a permanent stall. Resolves the FIRST time the peer is connected+handshaked
+ * (so start() can proceed); the maintenance loop keeps running after that.
+ */
+async function connectAndMaintain(addr: { host: string; port: number }): Promise<void> {
+	let backoff = RECONNECT_BASE_MS;
+	let signalledUp = false;
+	let resolveUp!: () => void;
+	const up = new Promise<void>((r) => (resolveUp = r));
+
+	(async () => {
+		while (true) {
+			const peer = new Peer(addr.host, addr.port, MAGIC);
+			try {
+				await peer.connect();
+				await handshake(peer);
+				peers.add(peer);
+				backoff = RECONNECT_BASE_MS; // reset on a good connection
+				console.log(`[worker] connected ${addr.host}:${addr.port}`);
+				if (!signalledUp) {
+					signalledUp = true;
+					resolveUp();
+				}
+
+				// Block until this peer drops, then fall through to reconnect.
+				await new Promise<void>((resolve) => {
+					const off = peer.onDisconnect(() => {
+						off();
+						resolve();
+					});
+					// Guard against a race where it disconnected before the listener attached.
+					if (!peer.connected) {
+						off();
+						resolve();
+					}
+				});
+
+				console.log(`[worker] peer ${addr.host}:${addr.port} dropped, reconnecting`);
+			} catch (err) {
+				console.error(`[worker] connect ${addr.host}:${addr.port} failed:`, err);
+			} finally {
+				// Clean up dead peer + its download reservations regardless of how it died.
+				peers.delete(peer);
+				const off = blockUnlisten.get(peer);
+				if (off) {
+					off();
+					blockUnlisten.delete(peer);
+				}
+				lastBlockAt.delete(peer);
+				for (const [height, info] of blockInFlight) {
+					if (info.peer === peer) blockInFlight.delete(height);
+				}
+			}
+
+			await delay(backoff);
+			backoff = Math.min(backoff * 2, RECONNECT_MAX_MS);
+		}
+	})();
+
+	return up;
 }
 
 async function startSyncHeaders(): Promise<void> {
@@ -135,8 +222,8 @@ async function startSyncHeaders(): Promise<void> {
 
 async function syncHeaders(peer: Peer) {
 	if (!peer.connected) {
-		console.log("[worker] peer disconnected, removing");
-		peers.delete(peer);
+		// The reconnect manager (connectAndMaintain) owns removal + cleanup now;
+		// just skip a dead peer here so we don't double-handle it.
 		return;
 	}
 	const lastSync = lastPeerSync.get(peer) ?? 0;
@@ -284,11 +371,20 @@ async function syncBlocks(): Promise<void> {
 		for (const peer of live) ensureBlockListener(peer);
 
 		// keep the look-ahead window full, fanning batches across peers.
-		// global room caps total in-flight; the per-peer cap (inside requestBlocks)
-		// caps any single peer's send-queue depth so its blocks drain before the timeout.
-		const room = DOWNLOAD_AHEAD - (blockPool.size + blockInFlight.size);
+		// global room caps total in-flight (BLOCK_DOWNLOAD_WINDOW); the per-peer cap
+		// (MAX_BLOCKS_IN_TRANSIT_PER_PEER, inside requestBlocks) caps any single peer's
+		// send-queue depth so its blocks drain before the timeout.
+		const room = BLOCK_DOWNLOAD_WINDOW - (blockPool.size + blockInFlight.size);
 		if (room > 0) {
 			rr = await requestBlocks(live, packHeight, top, room, rr);
+		}
+
+		const now0 = Date.now();
+		if (now0 - lastSyncBlocksDiag > 10_000) {
+			lastSyncBlocksDiag = now0;
+			console.log(
+				`[worker] syncBlocks live=${live.length} packHeight=${packHeight} top=${top} inFlight=${blockInFlight.size} pool=${blockPool.size} room=${room}`,
+			);
 		}
 
 		const payload = blockPool.get(packHeight);
@@ -346,17 +442,17 @@ function peerInFlight(peer: Peer): number {
 /**
  * Reserve and request the next blocks we don't already have/aren't fetching,
  * spreading DOWNLOAD_BATCH-sized batches across `live` peers round-robin. Each
- * peer's outstanding count is capped at its fair share of the window
- * (DOWNLOAD_AHEAD / peers, floored at one batch) so no single peer can starve
- * the others — but a single peer is still allowed the full window so it can
- * saturate. The send-queue-depth-vs-timeout problem is handled separately by
- * the liveness-based reaper, which only drops a peer's requests once that peer
- * stops delivering. The whole want-set is reserved in blockInFlight BEFORE any
- * await so the listener can't shrink the frontier mid-pass and collapse batches.
+ * peer's outstanding count is hard-capped at MAX_BLOCKS_IN_TRANSIT_PER_PEER (16,
+ * Core's value) regardless of peer count or window size, so no single connection's
+ * send queue grows deep enough to outrun the timeout. The global BLOCK_DOWNLOAD_WINDOW
+ * caps total in-flight across all peers. The whole want-set is reserved in blockInFlight
+ * BEFORE any await so the listener can't shrink the frontier mid-pass and collapse batches.
  */
 async function requestBlocks(live: Peer[], fromHeight: number, top: number, globalRoom: number, rr: number): Promise<number> {
-	// fair share of the window per peer; one peer gets the whole thing
-	const perPeerCap = Math.max(DOWNLOAD_BATCH, Math.ceil(DOWNLOAD_AHEAD / live.length));
+	// Core's rule: a hard cap of MAX_BLOCKS_IN_TRANSIT_PER_PEER outstanding per peer,
+	// independent of peer count or window size. This is what keeps any one connection's
+	// send queue shallow enough to drain before the timeout — the whole point of the fix.
+	const perPeerCap = MAX_BLOCKS_IN_TRANSIT_PER_PEER;
 
 	// spare capacity per peer, bounded by the global window
 	const spare = new Map<Peer, number>();
@@ -508,8 +604,20 @@ function reapTimedOut(): void {
 	const now = Date.now();
 	let reaped = 0;
 	for (const [height, info] of blockInFlight) {
-		const lastSeen = lastBlockAt.get(info.peer) ?? info.at;
-		if (now - lastSeen > BLOCK_TIMEOUT_MS || !info.peer.connected) {
+		// HARD GRACE: never reap a reservation younger than BLOCK_TIMEOUT_MS, no matter
+		// what. A request made seconds ago is never legitimately "dead" — the block may
+		// still be in flight, and a peer-object swap (reconnect) must not nuke fresh
+		// reservations. Without this, a reconnect cycle reaps the whole just-issued window
+		// and the pack loop wedges: re-request → reaped → re-request, head never lands.
+		if (now - info.at < BLOCK_TIMEOUT_MS) continue;
+
+		// Past the grace window: reap if the peer is gone, or it delivered before and then
+		// went silent. (everDelivered guards the startup case where a warming-up peer that
+		// hasn't delivered yet shouldn't have its window swept.)
+		const dead = !info.peer.connected || !peers.has(info.peer);
+		const everDelivered = lastBlockAt.has(info.peer);
+		const silent = everDelivered && now - lastBlockAt.get(info.peer)! > BLOCK_TIMEOUT_MS;
+		if (dead || silent) {
 			blockInFlight.delete(height);
 			reaped++;
 		}

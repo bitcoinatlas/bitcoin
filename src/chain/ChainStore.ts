@@ -189,7 +189,7 @@ export class ChainStore {
 		p2pChannel.postMessage({ name: "seek", data: atomic.stores.block.length() - 1 });
 		p2pChannel.postMessage({ name: "start", data: startData }, [startData.buffer]);
 		await new Promise((resolve) => p2pChannel.addEventListener("message", resolve, { once: true }));
-
+		self.startTime ??= performance.now();
 		return self;
 	}
 
@@ -203,9 +203,6 @@ export class ChainStore {
 			return;
 		}
 		if (message.name === "blocks") {
-			if (atomic.stores.block.length()) {
-				this.startTime ??= performance.now();
-			}
 			const buffer = message.data as Uint8Array;
 			console.log(`[chain] new chunk to consume size=${buffer.length}`);
 			let offset = 0;
