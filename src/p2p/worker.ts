@@ -32,7 +32,7 @@ const P2P_PORT = 8333;
 const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
-const CHUNK_BYTE_BUDGET = 20 * MAX_BLOCK_SIZE;
+const CHUNK_BYTE_BUDGET = 64 * MAX_BLOCK_SIZE;
 
 // Bitcoin Core block-download conventions (net_processing.cpp):
 //   MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16  — hard cap on outstanding getdata per peer,
