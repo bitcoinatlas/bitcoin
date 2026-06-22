@@ -32,13 +32,13 @@
 
 - [ ] also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time
 
-- [ ] ok now we put the chain logic on its own worker, and made storage stuff, sync. so now we need to redesign a few things for a sync code
-      instead of concurrent async code. which will make us gavin a bit more speed. satoshi client(knots/core) sync time with the same local
-      network peer takes 11m40s, rn for use it takes 11m12s, so same finally. but we can make it a bit better.
-
 - [ ] keep spender index on the `txid -> txPointer` kv, so something like `txid -> [txPointer, spenderIndex]`, this is both require less
       reads, and also during spent check we dont have to go look at to the txs blobstore. so current path is
       `txid -> txPointer -> tx(offset to spenderIndex) -> spender` instead it would be like `txid -> [txPointer, spenderIndex]`, we can even
       store the spent status on the kv, but we dont wanna hit on rocks for everything. but we are hitting it already, we might just do it
       tho. might make more sense. anyway once we decouplbe spending stuff from txs in a good way, we can also compress those files. with
       zstd
+
+- [ ] ok now we put the chain logic on its own worker, and made storage stuff, sync. so now we need to redesign a few things for a sync code
+      instead of concurrent async code. which will make us gavin a bit more speed. satoshi client(knots/core) sync time with the same local
+      network peer takes 11m40s, rn for us it takes 9m31s, so same finally. but we can make it a bit better.
