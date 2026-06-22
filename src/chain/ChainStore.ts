@@ -164,10 +164,10 @@ export class ChainStore {
 	// (bounded by block size/weight); append() copies the live prefix out.
 	private readonly txScratch = new Uint8Array(MAX_BLOCK_SIZE);
 
-	private p2pChannel: Worker | MessagePort;
-	private p2pMessageQueue: Queue<{ name: string; data: any }>;
+	private p2pChannel: MessagePort;
+	private p2pMessageQueue: Queue<{ type: string; data: any }>;
 
-	private constructor(p2pChannel: Worker | MessagePort, initialHeaders: WireBlockHeader[]) {
+	private constructor(p2pChannel: MessagePort, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
 		this.p2pMessageQueue = new Queue(1000);
 		this.blockHashToHeightMap = new Uint8ArrayMap<number>(Math.max(256, initialHeaders.length * 2));
@@ -176,17 +176,17 @@ export class ChainStore {
 		}
 	}
 
-	static async start(p2pChannel: Worker | MessagePort) {
+	static async start(p2pChannel: MessagePort) {
 		const headers = await atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
 
-		p2pChannel.onmessage = (event) => self.p2pMessageQueue.enqueue(event.data);
+		p2pChannel.addEventListener("message", (event) => self.p2pMessageQueue.enqueue(event.data));
 		const startHeaders = await atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] handing ${startHeaders.length} headers to worker`);
 		const startData = WireBlockHeaders.encode(startHeaders);
-		p2pChannel.postMessage({ name: "seek", data: atomic.stores.block.length() - 1 });
-		p2pChannel.postMessage({ name: "start", data: startData }, [startData.buffer]);
+		p2pChannel.postMessage({ type: "seek", data: atomic.stores.block.length() - 1 });
+		p2pChannel.postMessage({ type: "start", data: startData }, [startData.buffer]);
 		return self;
 	}
 
@@ -200,7 +200,7 @@ export class ChainStore {
 			await delay(0);
 			return;
 		}
-		if (message.name === "blocks") {
+		if (message.type === "blocks") {
 			if (this.startTime) {
 				const passed = performance.now() - this.startTime;
 				const passedSeconds = passed / 1000;
@@ -232,13 +232,13 @@ export class ChainStore {
 				}
 			}
 			this.requestFlush();
-			this.p2pChannel.postMessage({ name: "consume" });
+			this.p2pChannel.postMessage({ type: "consume" });
 			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
 
 			return;
 		}
 
-		if (message.name === "headers") {
+		if (message.type === "headers") {
 			const headers = WireBlockHeaders.decodeValue(message.data);
 			const { height } = this.pushHeaders(headers);
 			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
@@ -246,7 +246,7 @@ export class ChainStore {
 			return;
 		}
 
-		if (message.name === "reorg") {
+		if (message.type === "reorg") {
 			console.log(`[chain] tick reorg keepHeight=${message.data}`);
 			// truncate() rejects staged/frozen data, so flush to disk first
 			while (atomic.busy) await delay(1);

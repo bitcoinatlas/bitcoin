@@ -58,7 +58,7 @@ const PEER_ADDRESSES: { host: string; port: number }[] = [
 const RECONNECT_BASE_MS = 1_000; // first retry delay
 const RECONNECT_MAX_MS = 30_000; // cap on exponential backoff
 
-const messageQueue = new Queue<{ name: string; data: any }>(1000);
+const messageQueue = new Queue<{ type: string; data: any }>(1000);
 const blacklist = new FastUint8ArraySet(); // block hashes the main told us to reject
 const peers = new Set<Peer>();
 
@@ -82,28 +82,34 @@ const lastBlockAt = new Map<Peer, number>(); // peer -> last time it delivered a
 let started = false;
 let lastSyncBlocksDiag = 0; // throttle gate for syncBlocks state diag
 
-self.addEventListener("message", (event: MessageEvent) => messageQueue.enqueue(event.data));
+let port!: MessagePort;
+self.addEventListener("message", (event) => {
+	port = event.ports[0]!;
+	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
+	port.start();
+}, { once: true });
+self.postMessage(null);
 
 async function drainMessages(): Promise<void> {
 	let message;
 	while ((message = messageQueue.dequeue())) {
-		if (!started && message.name === "start") {
+		if (!started && message.type === "start") {
 			await start(WireBlockHeaders.decodeValue(message.data));
 			continue;
 		}
 
-		if (message.name === "blacklist") {
+		if (message.type === "blacklist") {
 			blacklist.add(Bytes32.decodeValue(message.data));
 			continue;
 		}
 
-		if (message.name === "consume") {
+		if (message.type === "consume") {
 			consumedChunks++;
-			console.log(`[worker] consumed=${consumedChunks} waiting=${postedChunks - consumedChunks}`);
+			console.log(`[p2p] consumed=${consumedChunks} waiting=${postedChunks - consumedChunks}`);
 			continue;
 		}
 
-		if (message.name === "seek") {
+		if (message.type === "seek") {
 			cursor = message.data;
 			continue;
 		}
@@ -111,9 +117,9 @@ async function drainMessages(): Promise<void> {
 }
 
 async function start(headers: WireBlockHeader[]) {
-	console.log(`[worker] start: ${headers.length} headers from main`);
+	console.log(`[p2p] start: ${headers.length} headers from main`);
 	if (!headers.length) {
-		self.postMessage({ name: "headers", data: WireBlockHeaders.encode([GENESIS_NODE.header]) });
+		port.postMessage({ type: "headers", data: WireBlockHeaders.encode([GENESIS_NODE.header]) });
 	} else {
 		headers.shift();
 	}
@@ -121,14 +127,14 @@ async function start(headers: WireBlockHeader[]) {
 	const { pushed } = verifyAndPushHeaders(localChain, headers);
 	if (pushed !== headers.length) {
 		console.error([
-			`[worker] was only able to verify loaded headers fully length=${headers.length} verified=${pushed}.`,
-			`[worker] this requires a reorg, but this happed while loading the data from disk, which is weird.`,
+			`[p2p] was only able to verify loaded headers fully length=${headers.length} verified=${pushed}.`,
+			`[p2p] this requires a reorg, but this happed while loading the data from disk, which is weird.`,
 		].join("\n"));
 		const keepHeight = Math.max(0, pushed - 1);
 		if (localChain.height() !== keepHeight) {
 			localChain.reorg(keepHeight);
 		}
-		self.postMessage({ name: "reorg", data: keepHeight });
+		port.postMessage({ type: "reorg", data: keepHeight });
 	}
 
 	// Connect to every configured peer, each with its own self-healing reconnect
@@ -163,7 +169,7 @@ async function connectAndMaintain(addr: { host: string; port: number }): Promise
 				await handshake(peer);
 				peers.add(peer);
 				backoff = RECONNECT_BASE_MS; // reset on a good connection
-				console.log(`[worker] connected ${addr.host}:${addr.port}`);
+				console.log(`[p2p] connected ${addr.host}:${addr.port}`);
 				if (!signalledUp) {
 					signalledUp = true;
 					resolveUp();
@@ -182,9 +188,9 @@ async function connectAndMaintain(addr: { host: string; port: number }): Promise
 					}
 				});
 
-				console.log(`[worker] peer ${addr.host}:${addr.port} dropped, reconnecting`);
+				console.log(`[p2p] peer ${addr.host}:${addr.port} dropped, reconnecting`);
 			} catch (err) {
-				console.error(`[worker] connect ${addr.host}:${addr.port} failed:`, err);
+				console.error(`[p2p] connect ${addr.host}:${addr.port} failed:`, err);
 			} finally {
 				// Clean up dead peer + its download reservations regardless of how it died.
 				peers.delete(peer);
@@ -228,7 +234,7 @@ async function syncHeaders(peer: Peer) {
 	}
 	const lastSync = lastPeerSync.get(peer) ?? 0;
 	if (Date.now() - lastSync < PEER_SYNC_COOLDOWN) return;
-	console.log("[worker] syncing headers with peer");
+	console.log("[p2p] syncing headers with peer");
 	lastPeerSync.set(peer, Date.now());
 
 	const peerChain = new PeerChain(localChain.values());
@@ -255,19 +261,19 @@ async function syncHeaders(peer: Peer) {
 	}
 
 	if (peerChain.cumulativeWork() > localChain.cumulativeWork()) {
-		console.log(`[worker] updating chain: height ${localChain.height()} -> ${peerChain.length() - 1}`);
+		console.log(`[p2p] updating chain: height ${localChain.height()} -> ${peerChain.length() - 1}`);
 		if (reorgHeight != null) {
-			self.postMessage({ name: "reorg", data: reorgHeight });
-			console.log(`[worker] posted reorg keepHeight=${reorgHeight}`);
+			port.postMessage({ type: "reorg", data: reorgHeight });
+			console.log(`[p2p] posted reorg keepHeight=${reorgHeight}`);
 			const reorgLength = reorgHeight + 1;
 			// TODO: you might probably just slice the message buffer instead
 			const newHeaders = WireBlockHeaders.encode(peerChain.values().drop(reorgLength).map((node) => node.header).toArray());
-			self.postMessage({ name: "headers", data: newHeaders }, [newHeaders.buffer]);
-			console.log(`[worker] posted ${peerChain.length() - reorgLength} headers after reorg`);
+			port.postMessage({ type: "headers", data: newHeaders }, [newHeaders.buffer]);
+			console.log(`[p2p] posted ${peerChain.length() - reorgLength} headers after reorg`);
 		} else {
 			const newHeaders = WireBlockHeaders.encode(peerChain.values().drop(localChain.length()).map((node) => node.header).toArray());
-			self.postMessage({ name: "headers", data: newHeaders }, [newHeaders.buffer]);
-			console.log(`[worker] posted ${peerChain.length() - localChain.length()} headers`);
+			port.postMessage({ type: "headers", data: newHeaders }, [newHeaders.buffer]);
+			console.log(`[p2p] posted ${peerChain.length() - localChain.length()} headers`);
 		}
 
 		localChain = peerChain;
@@ -277,11 +283,11 @@ async function syncHeaders(peer: Peer) {
 			cursor = 0;
 			blockPool.clear();
 			blockInFlight.clear();
-			console.log("[worker] cleared download state after reorg");
+			console.log("[p2p] cleared download state after reorg");
 		}
-		console.log(`[worker] chain updated. height=${localChain.height()} work=${localChain.cumulativeWork()}`);
+		console.log(`[p2p] chain updated. height=${localChain.height()} work=${localChain.cumulativeWork()}`);
 	} else {
-		console.log(`[worker] kept existing chain. height=${localChain.height()} work=${localChain.cumulativeWork()}`);
+		console.log(`[p2p] kept existing chain. height=${localChain.height()} work=${localChain.cumulativeWork()}`);
 	}
 }
 
@@ -296,7 +302,7 @@ function verifyAndPushHeaders(chain: PeerChain, headers: WireBlockHeader[]): { r
 		reorgHeight = chain.heightOf(head.prevHash) ?? 0;
 		chain.reorg(reorgHeight);
 		tip = chain.tip()!;
-		console.log(`[worker] reorging chain to height ${reorgHeight}`);
+		console.log(`[p2p] reorging chain to height ${reorgHeight}`);
 	}
 
 	let pushed = 0;
@@ -305,15 +311,15 @@ function verifyAndPushHeaders(chain: PeerChain, headers: WireBlockHeader[]): { r
 
 	for (const header of headers) {
 		if (blacklist.has(header.hash())) {
-			console.log("[worker] header in blacklist, stopping");
+			console.log("[p2p] header in blacklist, stopping");
 			break;
 		}
 		if (!equals(header.prevHash, prevHash)) {
-			console.log("[worker] header prevHash mismatch, stopping");
+			console.log("[p2p] header prevHash mismatch, stopping");
 			break;
 		}
 		if (!verifyProofOfWork(header)) {
-			console.log("[worker] PoW verification failed, stopping");
+			console.log("[p2p] PoW verification failed, stopping");
 			break;
 		}
 
@@ -328,7 +334,7 @@ function verifyAndPushHeaders(chain: PeerChain, headers: WireBlockHeader[]): { r
 }
 
 async function startSyncBlocks(): Promise<void> {
-	console.log("[worker] block sync loop starting");
+	console.log("[p2p] block sync loop starting");
 	while (true) {
 		try {
 			if (!keepDownloading()) {
@@ -337,7 +343,7 @@ async function startSyncBlocks(): Promise<void> {
 			}
 			await syncBlocks();
 		} catch (reason) {
-			console.error("[worker] block sync pass failed:", reason);
+			console.error("[p2p] block sync pass failed:", reason);
 		} finally {
 			await delay(SYNC_POLL_INTERVAL);
 		}
@@ -365,7 +371,7 @@ async function syncBlocks(): Promise<void> {
 
 		const live = peers.values().filter((p) => p.connected).toArray();
 		if (live.length === 0) {
-			console.log("[worker] syncBlocks no live peers");
+			console.log("[p2p] syncBlocks no live peers");
 			break; // no peers
 		}
 		for (const peer of live) ensureBlockListener(peer);
@@ -383,7 +389,7 @@ async function syncBlocks(): Promise<void> {
 		if (now0 - lastSyncBlocksDiag > 10_000) {
 			lastSyncBlocksDiag = now0;
 			console.log(
-				`[worker] syncBlocks live=${live.length} packHeight=${packHeight} top=${top} inFlight=${blockInFlight.size} pool=${blockPool.size} room=${room}`,
+				`[p2p] syncBlocks live=${live.length} packHeight=${packHeight} top=${top} inFlight=${blockInFlight.size} pool=${blockPool.size} room=${room}`,
 			);
 		}
 
@@ -404,14 +410,14 @@ async function syncBlocks(): Promise<void> {
 		// chunk full: ship it and return — driver re-enters for the next chunk.
 		// (the current block stays pooled; next pass starts on it.)
 		if (chunkLen > 0 && chunkLen + payload.length > CHUNK_BYTE_BUDGET) {
-			console.log(`[worker] chunk full at packHeight=${packHeight} len=${chunkLen}`);
+			console.log(`[p2p] chunk full at packHeight=${packHeight} len=${chunkLen}`);
 			break;
 		}
 
 		if (payload.length > chunk.length) {
 			// single block bigger than the whole budget: ship it raw on its own
-			console.log(`[worker] oversized block at height=${packHeight} size=${payload.length}`);
-			self.postMessage({ name: "blocks", data: payload }, [payload.buffer]);
+			console.log(`[p2p] oversized block at height=${packHeight} size=${payload.length}`);
+			port.postMessage({ type: "blocks", data: payload }, [payload.buffer]);
 			postedChunks++;
 			cursor = packHeight;
 		} else {
@@ -424,8 +430,8 @@ async function syncBlocks(): Promise<void> {
 
 	if (chunkLen === 0) return;
 	const packed = chunk.subarray(0, chunkLen);
-	console.log(`[worker] post upTo=${packHeight - 1} size=${chunkLen}`);
-	self.postMessage({ name: "blocks", data: packed }, [packed.buffer]);
+	console.log(`[p2p] post upTo=${packHeight - 1} size=${chunkLen}`);
+	port.postMessage({ type: "blocks", data: packed }, [packed.buffer]);
 	postedChunks++;
 	cursor = packHeight - 1;
 }
@@ -500,7 +506,7 @@ async function requestBlocks(live: Peer[], fromHeight: number, top: number, glob
 				inventory: batch.map((w) => ({ type: MSG_WITNESS_BLOCK, hash: w.hash })),
 			});
 		} catch (e) {
-			console.error("[worker] getdata error:", e);
+			console.error("[p2p] getdata error:", e);
 			for (const w of batch) blockInFlight.delete(w.height); // unsend so they retry elsewhere
 		}
 	}
@@ -517,7 +523,7 @@ function ensureBlockListener(peer: Peer): void {
 		try {
 			[block] = WireBlock.decode(msg.payload);
 		} catch (e) {
-			console.error("[worker] block decode error:", e);
+			console.error("[p2p] block decode error:", e);
 			return;
 		}
 
@@ -537,7 +543,7 @@ function ensureBlockListener(peer: Peer): void {
 		try {
 			stored = StoredTxs.encode(block.txs.map((tx) => StoredTx.fromWire(tx)));
 		} catch (e) {
-			console.error(`[worker] store-encode failed at height=${height} txs=${block.txs.length}:`, e);
+			console.error(`[p2p] store-encode failed at height=${height} txs=${block.txs.length}:`, e);
 			return;
 		}
 
@@ -552,7 +558,7 @@ function ensureBlockListener(peer: Peer): void {
 function dropDisconnectedPeers(): void {
 	for (const [peer, off] of blockUnlisten) {
 		if (peer.connected) continue;
-		console.log("[worker] dropping disconnected peer listener");
+		console.log("[p2p] dropping disconnected peer listener");
 		off();
 		blockUnlisten.delete(peer);
 		lastBlockAt.delete(peer);
@@ -584,7 +590,7 @@ function ensureHeadRequested(live: Peer[], height: number, rr: number): void {
 	peer
 		.send(GetDataMessage, { inventory: [{ type: MSG_WITNESS_BLOCK, hash: node.header.hash() }] })
 		.catch((e) => {
-			console.error("[worker] head-of-line getdata error:", e);
+			console.error("[p2p] head-of-line getdata error:", e);
 			blockInFlight.delete(height); // let the next pass retry
 		});
 }
@@ -622,7 +628,7 @@ function reapTimedOut(): void {
 			reaped++;
 		}
 	}
-	if (reaped > 0) console.log(`[worker] reaped ${reaped} requests from silent/dropped peers`);
+	if (reaped > 0) console.log(`[p2p] reaped ${reaped} requests from silent/dropped peers`);
 }
 
 function buildLocators(chain: PeerChain): Uint8Array[] {
