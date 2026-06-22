@@ -3,6 +3,8 @@ import { serve } from "~/app/serve.ts";
 import { ChainStore } from "~/chain/ChainStore.ts";
 import { ARGS } from "~/env.ts";
 
+const global = globalThis as typeof globalThis & { gc?(): void };
+
 if (import.meta.main) {
 	Deno.addSignalListener("SIGINT", () => Deno.exit(0));
 
@@ -25,5 +27,6 @@ if (import.meta.main) {
 
 	async function tick() {
 		await chainStore.tick();
+		// global.gc?.();
 	}
 }

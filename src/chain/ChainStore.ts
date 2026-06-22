@@ -15,7 +15,7 @@ import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
-import { BASE_DATA_DIR } from "~/env.ts";
+import { ARGS, BASE_DATA_DIR } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
@@ -24,7 +24,6 @@ import { Atomic, InferBatches, InferStores } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { IndexStore } from "~/libs/storage/IndexStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
-import { CONFIG } from "~/config.ts";
 import { formatDuration } from "~/libs/formatting/mod.ts";
 
 const GiB = 1024 ** 3;
@@ -43,6 +42,12 @@ const blockCacheSize = Math.max(
 	Math.min(available * 0.6, 32 * GiB), // 60% of remainder, hard ceiling
 );
 
+console.log(
+	`[rocksdb] ram=${(totalRam / GiB).toFixed(1)}GiB`,
+	`blockCache=${(blockCacheSize / GiB).toFixed(1)}GiB`,
+	`writeBuffer=${(writeBufferSize / GiB).toFixed(1)}GiB`,
+);
+
 RocksDatabase.config({
 	blockCacheSize,
 	writeBufferManagerSize: writeBufferSize,
@@ -50,16 +55,10 @@ RocksDatabase.config({
 	writeBufferManagerAllowStall: false,
 });
 
-console.log(
-	`[rocksdb] ram=${(totalRam / GiB).toFixed(1)}GiB`,
-	`blockCache=${(blockCacheSize / GiB).toFixed(1)}GiB`,
-	`writeBuffer=${(writeBufferSize / GiB).toFixed(1)}GiB`,
-);
-
 const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	disableWAL: true,
 	pessimistic: true,
-	enableStats: CONFIG.rocksdbStats,
+	enableStats: ARGS["rocksdb-stats"],
 	parallelismThreads: Math.min(10, navigator.hardwareConcurrency),
 	transactionLogRetention: 0,
 	bloomBitsPerKey: 10,
@@ -76,7 +75,7 @@ const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
 	},
 });
 
-if (CONFIG.rocksdbStats) {
+if (ARGS["rocksdb-stats"]) {
 	globalThis.addEventListener("unload", () => {
 		try {
 			logRocksStats(rocksdb);
@@ -188,8 +187,6 @@ export class ChainStore {
 		const startData = WireBlockHeaders.encode(startHeaders);
 		p2pChannel.postMessage({ name: "seek", data: atomic.stores.block.length() - 1 });
 		p2pChannel.postMessage({ name: "start", data: startData }, [startData.buffer]);
-		await new Promise((resolve) => p2pChannel.addEventListener("message", resolve, { once: true }));
-		self.startTime ??= performance.now();
 		return self;
 	}
 
@@ -203,6 +200,16 @@ export class ChainStore {
 			return;
 		}
 		if (message.name === "blocks") {
+			if (this.startTime) {
+				const passed = performance.now() - this.startTime;
+				const passedSeconds = passed / 1000;
+				const speedTxs = this.totalTxs / passedSeconds;
+				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
+				console.log(
+					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${formatDuration(passed)}`,
+				);
+			}
+			this.startTime ??= performance.now();
 			const buffer = message.data as Uint8Array;
 			console.log(`[chain] new chunk to consume size=${buffer.length}`);
 			let offset = 0;
@@ -221,15 +228,6 @@ export class ChainStore {
 			this.p2pChannel.postMessage({ name: "consume" });
 			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
 
-			if (this.startTime) {
-				const passed = performance.now() - this.startTime;
-				const passedSeconds = passed / 1000;
-				const speedTxs = this.totalTxs / passedSeconds;
-				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
-				console.log(
-					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${formatDuration(passed)}`,
-				);
-			}
 			return;
 		}
 
