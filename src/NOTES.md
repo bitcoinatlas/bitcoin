@@ -53,3 +53,10 @@
       instead of async, and also it doesnt keep the main thread busym and main thread has time for api endpoints and the frontend. tho
       storage layer needs some async still in order to see and respond to messages. but later we might look at the disk directly readonly.
       so there would be no communication at all. storage worker would directly talk with p2p worker alone using MessageChannel
+
+- [ ] keep spender index on the `txid -> txPointer` kv, so something like `txid -> [txPointer, spenderIndex]`, this is both require less
+      reads, and also during spent check we dont have to go look at to the txs blobstore. so current path is
+      `txid -> txPointer -> tx(offset to spenderIndex) -> spender` instead it would be like `txid -> [txPointer, spenderIndex]`, we can even
+      store the spent status on the kv, but we dont wanna hit on rocks for everything. but we are hitting it already, we might just do it
+      tho. might make more sense. anyway once we decouplbe spending stuff from txs in a good way, we can also compress those files. with
+      zstd

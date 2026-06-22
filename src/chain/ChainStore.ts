@@ -192,6 +192,7 @@ export class ChainStore {
 
 	private startTime: number | undefined;
 	private totalTxs: number = 0;
+	private totalBlocks: number = 0;
 	private totalSize: number = 0;
 	async tick(): Promise<void> {
 		const message = this.p2pMessageQueue.dequeue();
@@ -205,8 +206,13 @@ export class ChainStore {
 				const passedSeconds = passed / 1000;
 				const speedTxs = this.totalTxs / passedSeconds;
 				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
+				const speedBlocks = this.totalBlocks / passedSeconds;
 				console.log(
-					`[chain] overall speed ${speedTxs.toFixed(0)}txs/s ${speedSize.toFixed(2)}MiB/s time=${formatDuration(passed)}`,
+					`[chain] overall speed`,
+					`${speedBlocks.toFixed(1)}blocks/s`,
+					`${speedTxs.toFixed(0)}txs/s`,
+					`${speedSize.toFixed(2)}MiB/s`,
+					`time=${formatDuration(passed)}`,
 				);
 			}
 			this.startTime ??= performance.now();
@@ -222,6 +228,7 @@ export class ChainStore {
 				if (this.startTime) {
 					this.totalTxs += txs.length;
 					this.totalSize += size;
+					this.totalBlocks++;
 				}
 			}
 			this.requestFlush();
