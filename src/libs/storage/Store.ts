@@ -31,9 +31,9 @@ export abstract class Store<T extends Batch = Batch> {
 	 * the frozen layer), so a standalone flush()/pin() may call it lazily.
 	 */
 	abstract freeze(): void;
-	abstract pin(): Promise<void>;
-	abstract flush(): Promise<void>;
-	abstract rollback(): Promise<void>;
+	abstract pin(): void;
+	abstract flush(): void;
+	abstract rollback(): void;
 	/**
 	 * Delete any rollback/WAL files written by {@link pin}.
 	 *
@@ -42,7 +42,7 @@ export abstract class Store<T extends Batch = Batch> {
 	 * before writing end.id. Until that point the files must stay intact so
 	 * that {@link rollback} can undo a partial flush on recovery.
 	 */
-	abstract finalize(): Promise<void>;
+	abstract finalize(): void;
 }
 
 export type FlushFinalizer = () => void;
@@ -52,5 +52,5 @@ export abstract class StoreRocks<T extends Batch = Batch> {
 	abstract batch(): T;
 	/** See {@link Store.freeze}. Same contract, for rocks-backed stores. */
 	abstract freeze(): void;
-	abstract flush(trx: Transaction): Promise<FlushFinalizer>;
+	abstract flush(trx: Transaction): FlushFinalizer;
 }

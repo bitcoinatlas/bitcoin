@@ -1,9 +1,9 @@
 import { Codec, type FixedCodec } from "@nomadshiba/codec";
 import { concat } from "@std/bytes";
 import { join } from "@std/path";
-import { Batch, Store } from "~/libs/storage/Store.ts";
-import { readFileInto, writeFile } from "~/libs/fs/mod.ts";
 import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
+import { readFileIntoSync, writeFileSync } from "~/libs/fs/mod.ts";
+import { Batch, Store } from "~/libs/storage/Store.ts";
 
 /**
  * Chunked, fixed-stride disk storage with in-place writes.
@@ -34,14 +34,14 @@ class DiskRegion implements Disposable {
 		this.size = 0;
 	}
 
-	static async open(options: { path: string; maxChunkSize: number }): Promise<DiskRegion> {
+	static open(options: { path: string; maxChunkSize: number }): DiskRegion {
 		const self = new DiskRegion(options);
-		await Deno.mkdir(self.path, { recursive: true });
-		const files = Deno.readDir(self.path);
+		Deno.mkdirSync(self.path, { recursive: true });
+		const files = Deno.readDirSync(self.path);
 
 		let tailIndex = 0;
 		const indexSet = new Set<number>([0]);
-		for await (const file of files) {
+		for (const file of files) {
 			if (!file.isFile) continue;
 			if (!file.name.startsWith("chunk_")) continue;
 			const index = Number(file.name.slice("chunk_".length));
@@ -54,7 +54,7 @@ class DiskRegion implements Disposable {
 			if (!indexSet.has(index)) {
 				throw new Error("bro your chunks are fucked, has some    gaps   and stuff");
 			}
-			const chunkStat = await Deno.stat(self.chunkPath(index));
+			const chunkStat = Deno.statSync(self.chunkPath(index));
 			if (chunkStat.size !== self.maxChunkSize) {
 				throw new Error(`chunk ${index} has a weird size size=${chunkStat.size}`);
 			}
@@ -62,7 +62,7 @@ class DiskRegion implements Disposable {
 
 		let tailChunkSize = 0;
 		try {
-			const tailChunkStat = await Deno.stat(self.chunkPath(tailIndex));
+			const tailChunkStat = Deno.statSync(self.chunkPath(tailIndex));
 			if (tailChunkStat.size > self.maxChunkSize) {
 				throw new Error(`your tail chunk is fat... size=${tailChunkStat.size}`);
 			}
@@ -73,7 +73,7 @@ class DiskRegion implements Disposable {
 
 		self.appender = {
 			index: tailIndex,
-			file: await Deno.open(self.chunkPath(tailIndex), { create: true, append: true }),
+			file: Deno.openSync(self.chunkPath(tailIndex), { create: true, append: true }),
 		};
 		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 
@@ -82,7 +82,7 @@ class DiskRegion implements Disposable {
 
 	private appender!: { file: Deno.FsFile; index: number };
 	private appending = false;
-	async append(bytes: Uint8Array): Promise<void> {
+	append(bytes: Uint8Array): void {
 		if (this.appending) throw new Error("you are trying to append back to back, check your logic");
 		if (this.truncating) throw new Error("you are trying to append while truncating, check your logic");
 		this.appending = true;
@@ -97,14 +97,14 @@ class DiskRegion implements Disposable {
 				const append = Math.min(want, available);
 
 				if (this.appender.index !== index) {
-					const file = await Deno.open(this.chunkPath(index), { create: true, append: true });
+					const file = Deno.openSync(this.chunkPath(index), { create: true, append: true });
 					this.appender.file.close();
 					this.appender.file = file;
 					this.appender.index = index;
 				}
 
-				await writeFile(this.appender.file, bytes.subarray(appended, appended + append));
-				await this.appender.file.sync();
+				writeFileSync(this.appender.file, bytes.subarray(appended, appended + append));
+				this.appender.file.syncSync();
 				appended += append;
 				size += append;
 			}
@@ -114,7 +114,7 @@ class DiskRegion implements Disposable {
 		}
 	}
 
-	async readInto(offset: number, length: number, target: Uint8Array): Promise<void> {
+	readInto(offset: number, length: number, target: Uint8Array): void {
 		if (offset + length > this.size) {
 			throw new Error(`read out of bounds offset=${offset} length=${length} size=${this.size}`);
 		}
@@ -127,9 +127,9 @@ class DiskRegion implements Disposable {
 			const available = this.maxChunkSize - start;
 			const read = Math.min(want, available);
 
-			using reader = await Deno.open(this.chunkPath(index), { read: true });
-			await reader.seek(start, Deno.SeekMode.Start);
-			await readFileInto(reader, target.subarray(copied, copied + read));
+			using reader = Deno.openSync(this.chunkPath(index), { read: true });
+			reader.seekSync(start, Deno.SeekMode.Start);
+			readFileIntoSync(reader, target.subarray(copied, copied + read));
 
 			copied += read;
 			offset += read;
@@ -137,7 +137,7 @@ class DiskRegion implements Disposable {
 	}
 
 	/** In-place positioned write. Caller guarantees `offset + bytes.length <= size`. */
-	async writeInto(offset: number, bytes: Uint8Array): Promise<void> {
+	writeInto(offset: number, bytes: Uint8Array): void {
 		if (this.truncating) throw new Error("you cant writeInto while truncating");
 		if (offset + bytes.length > this.size) {
 			throw new Error(`write out of bounds offset=${offset} length=${bytes.length} size=${this.size}`);
@@ -151,10 +151,10 @@ class DiskRegion implements Disposable {
 			const available = this.maxChunkSize - start;
 			const write = Math.min(want, available);
 
-			using writer = await Deno.open(this.chunkPath(index), { read: true, write: true });
-			await writer.seek(start, Deno.SeekMode.Start);
-			await writeFile(writer, bytes.subarray(written, written + write));
-			await writer.sync();
+			using writer = Deno.openSync(this.chunkPath(index), { read: true, write: true });
+			writer.seekSync(start, Deno.SeekMode.Start);
+			writeFileSync(writer, bytes.subarray(written, written + write));
+			writer.syncSync();
 
 			written += write;
 			offset += write;
@@ -175,7 +175,7 @@ class DiskRegion implements Disposable {
 	 * of seconds, all idle-waiting). Reading back the untouched bytes in the span
 	 * and rewriting them is far cheaper than paying a syscall round-trip per slot.
 	 */
-	async writeManyInto(writes: Array<{ offset: number; bytes: Uint8Array }>): Promise<void> {
+	writeManyInto(writes: Array<{ offset: number; bytes: Uint8Array }>): void {
 		if (this.truncating) throw new Error("you cant writeInto while truncating");
 		if (writes.length === 0) return;
 		writes.sort((a, b) => a.offset - b.offset);
@@ -200,16 +200,16 @@ class DiskRegion implements Disposable {
 			const span = new Uint8Array(maxEnd - minOffset);
 			const chunkStart = minOffset % this.maxChunkSize;
 
-			using file = await Deno.open(this.chunkPath(chunkIndex), { read: true, write: true });
+			using file = Deno.openSync(this.chunkPath(chunkIndex), { read: true, write: true });
 			// Read the current span so untouched bytes are preserved on write-back.
-			await file.seek(chunkStart, Deno.SeekMode.Start);
-			await readFileInto(file, span);
+			file.seekSync(chunkStart, Deno.SeekMode.Start);
+			readFileIntoSync(file, span);
 			// Patch every target in memory.
 			for (let k = i; k < j; k++) span.set(writes[k]!.bytes, writes[k]!.offset - minOffset);
 			// One write + one fsync for the whole span.
-			await file.seek(chunkStart, Deno.SeekMode.Start);
-			await writeFile(file, span);
-			await file.sync();
+			file.seekSync(chunkStart, Deno.SeekMode.Start);
+			writeFileSync(file, span);
+			file.syncSync();
 
 			i = j;
 		}
@@ -220,7 +220,7 @@ class DiskRegion implements Disposable {
 	 * touched chunk, then memcpy each requested slice into its `into` buffer. One
 	 * disk read per chunk instead of one per item.
 	 */
-	async readManyInto(reads: Array<{ offset: number; into: Uint8Array }>): Promise<void> {
+	readManyInto(reads: Array<{ offset: number; into: Uint8Array }>): void {
 		if (reads.length === 0) return;
 		reads.sort((a, b) => a.offset - b.offset);
 
@@ -241,9 +241,9 @@ class DiskRegion implements Disposable {
 			}
 
 			const span = new Uint8Array(maxEnd - minOffset);
-			using file = await Deno.open(this.chunkPath(chunkIndex), { read: true });
-			await file.seek(minOffset % this.maxChunkSize, Deno.SeekMode.Start);
-			await readFileInto(file, span);
+			using file = Deno.openSync(this.chunkPath(chunkIndex), { read: true });
+			file.seekSync(minOffset % this.maxChunkSize, Deno.SeekMode.Start);
+			readFileIntoSync(file, span);
 			for (let k = i; k < j; k++) {
 				const at = reads[k]!.offset - minOffset;
 				reads[k]!.into.set(span.subarray(at, at + reads[k]!.into.length));
@@ -254,7 +254,7 @@ class DiskRegion implements Disposable {
 	}
 
 	private truncating = false;
-	async truncate(size: number) {
+	truncate(size: number) {
 		if (this.appending) throw new Error("you cant truncate while appending");
 		if (this.truncating) throw new Error("you are trying to truncate back to back, check your logic");
 		this.truncating = true;
@@ -266,13 +266,13 @@ class DiskRegion implements Disposable {
 		this.appender.index = -1;
 
 		for (let index = newTail + 1; index <= oldTail; index++) {
-			await Deno.remove(this.chunkPath(index));
+			Deno.removeSync(this.chunkPath(index));
 		}
 
 		const tailEnd = size % this.maxChunkSize;
-		await Deno.truncate(this.chunkPath(newTail), tailEnd);
+		Deno.truncateSync(this.chunkPath(newTail), tailEnd);
 
-		this.appender.file = await Deno.open(this.chunkPath(newTail), { create: true, append: true });
+		this.appender.file = Deno.openSync(this.chunkPath(newTail), { create: true, append: true });
 		this.appender.index = newTail;
 
 		this.size = size;
@@ -306,7 +306,7 @@ type Overlay = {
 export interface IndexStoreBatch<T> extends Batch {
 	set(index: number, item: T): void;
 	push(item: T): number;
-	get(index: number): Promise<T | undefined>;
+	get(index: number): T | undefined;
 	length(): number;
 }
 
@@ -361,13 +361,13 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		this.walPath = join(this.path, "rollback.wal");
 	}
 
-	static async open<T extends FixedCodec<any>>(options: IndexStoreOptions<T>): Promise<IndexStore<T>> {
+	static open<T extends FixedCodec<any>>(options: IndexStoreOptions<T>): IndexStore<T> {
 		const self = new IndexStore(options);
 		const maxChunkSize = self.stride * options.itemsPerChunk;
 		if (maxChunkSize % self.stride !== 0) {
 			throw new Error("chunk size must be a multiple of the item stride");
 		}
-		self.disk = await DiskRegion.open({ path: options.path, maxChunkSize });
+		self.disk = DiskRegion.open({ path: options.path, maxChunkSize });
 		self.staged = { entries: new Map(), length: self.disk.size / self.stride };
 		return self;
 	}
@@ -377,7 +377,7 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		return this.staged.length;
 	}
 
-	private async read(index: number, extra?: Map<number, Uint8Array>): Promise<Codec.InferOutput<T> | undefined> {
+	private read(index: number, extra?: Map<number, Uint8Array>): Codec.InferOutput<T> | undefined {
 		// Freshness order: batch overlay > staged > frozen > disk.
 		// Any slot being written by an in-progress flush lives in `frozen`, so a
 		// read for it routes to the overlay and never sees a half-written disk slot.
@@ -396,12 +396,12 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 		}
 
 		const buffer = new Uint8Array(this.stride);
-		await this.disk.readInto(offset, this.stride, buffer);
+		this.disk.readInto(offset, this.stride, buffer);
 		const [decoded] = this.codec.decode(buffer);
 		return decoded;
 	}
 
-	get(index: number): Promise<Codec.InferOutput<T> | undefined> {
+	get(index: number): Codec.InferOutput<T> | undefined {
 		return this.read(index);
 	}
 
@@ -462,7 +462,7 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 	 * mutation. The snapshot itself is taken by {@link freeze} (Atomic freezes all
 	 * stores first); a standalone caller freezes lazily here. Must run before flush.
 	 */
-	async pin(): Promise<void> {
+	pin(): void {
 		if (this.pinning) throw new Error("already pinning");
 		if (this.flushing) throw new Error("can't pin while a flush is in progress");
 		if (this.truncating) throw new Error("can't pin while truncating");
@@ -507,20 +507,20 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 				reads.push({ offset: index * stride, into: wal.subarray(cursor, cursor + stride) });
 				cursor += stride;
 			}
-			await this.disk.readManyInto(reads);
+			this.disk.readManyInto(reads);
 
 			// Durable BEFORE any mutation. truncate:true so a stale longer WAL can't
 			// leave trailing garbage; a fresh write every round makes stale logs moot.
-			using walFile = await Deno.open(this.walPath, { create: true, write: true, truncate: true });
-			await writeFile(walFile, wal);
-			await walFile.sync();
+			using walFile = Deno.openSync(this.walPath, { create: true, write: true, truncate: true });
+			writeFileSync(walFile, wal);
+			walFile.syncSync();
 		} finally {
 			this.pinning = false;
 		}
 	}
 
 	/** Apply the frozen snapshot to disk. Requires a prior {@link pin}. */
-	async flush(): Promise<void> {
+	flush(): void {
 		if (this.flushing) throw new Error("wtf are you doin man, you are already flushing");
 		if (this.pinning) throw new Error("can't flush while pinning");
 		if (this.truncating) throw new Error("can't flush while truncating");
@@ -547,10 +547,10 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 			// was the entire flush cost.) The merged buffer is tiny (items * stride).
 			if (appends.length > 0) {
 				const buffer = concat(appends.map((index) => frozen.entries.get(index)!));
-				await this.disk.append(buffer);
+				this.disk.append(buffer);
 			}
 			if (sets.length > 0) {
-				await this.disk.writeManyInto(
+				this.disk.writeManyInto(
 					sets.map((index) => ({ offset: index * stride, bytes: frozen.entries.get(index)! })),
 				);
 			}
@@ -567,16 +567,20 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 	 * flushes and the RocksDB commit are done, just before writing end.id.
 	 * Until then the WAL must stay so {@link rollback} can undo a partial flush.
 	 */
-	async finalize(): Promise<void> {
-		await Deno.remove(this.walPath).catch(() => {});
+	finalize(): void {
+		try {
+			Deno.removeSync(this.walPath);
+		} catch {
+			/*  */
+		}
 	}
 
-	async rollback(): Promise<void> {
+	rollback(): void {
 		const stride = this.stride;
 
 		let wal: Uint8Array;
 		try {
-			wal = await Deno.readFile(this.walPath);
+			wal = Deno.readFileSync(this.walPath);
 		} catch (e) {
 			if (e instanceof Deno.errors.NotFound) return; // nothing was ever flushed
 			throw e;
@@ -598,17 +602,21 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 			cursor += stride;
 			writes.push({ offset: index * stride, bytes: oldValue });
 		}
-		await this.disk.writeManyInto(writes);
-		await this.disk.truncate(oldLength * stride);
+		this.disk.writeManyInto(writes);
+		this.disk.truncate(oldLength * stride);
 
 		this.pendingBatch = null;
 		this.frozen = null;
 		this.staged = { entries: new Map(), length: this.disk.size / stride };
 
-		await Deno.remove(this.walPath).catch(() => {});
+		try {
+			Deno.removeSync(this.walPath);
+		} catch {
+			/*  */
+		}
 	}
 
-	async truncate(length: number): Promise<void> {
+	truncate(length: number): void {
 		if (this.truncating) throw new Error("A truncate is already in progress");
 		if (this.pendingBatch) throw new Error("Can't truncate while a batch is open");
 		if (this.frozen) throw new Error("Can't truncate while a flush is pending/in progress");
@@ -616,7 +624,7 @@ export class IndexStore<T extends FixedCodec<any>> extends Store<IndexStoreBatch
 
 		this.truncating = true;
 		try {
-			await this.disk.truncate(length * this.stride);
+			this.disk.truncate(length * this.stride);
 			this.staged.length = length;
 		} finally {
 			this.truncating = false;

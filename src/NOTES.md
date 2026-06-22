@@ -43,13 +43,13 @@
   - [x] we can get a lot time back just by doing these. probably will make it fast enough.
 
 - [x] OK i have done the things above, and we got a bit faster, 200k in 14m40s. satoshi client took 11m40s, so that close i think, but i
-      think we can get even closer. lets see. (UPDATE 200k in 12m30s)
+      think we can get even closer. lets see. (UPDATE 200k in 12m30s) (UPDATED 200k in 11m12s)
 
 - [x] another target is basically rocksdb binding we use doesnt have blooms filters. this might make use gain some time as well
 
 - [ ] also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time
 
-- [ ] another thing is we might move the storage layer ChainStore to its own Worker entriely. so we can use sync version of the functions
+- [x] another thing is we might move the storage layer ChainStore to its own Worker entriely. so we can use sync version of the functions
       instead of async, and also it doesnt keep the main thread busym and main thread has time for api endpoints and the frontend. tho
       storage layer needs some async still in order to see and respond to messages. but later we might look at the disk directly readonly.
       so there would be no communication at all. storage worker would directly talk with p2p worker alone using MessageChannel

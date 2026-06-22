@@ -11,7 +11,7 @@ export type KvStoreOptions<K extends FixedCodec, V extends FixedCodec> = {
 };
 
 export interface KvStoreBatch<K extends FixedCodec, V extends FixedCodec> extends Batch {
-	get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined>;
+	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined;
 	set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void;
 	delete(key: Codec.InferInput<K>): void;
 }
@@ -49,7 +49,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		this.encodedKeyView = this.keyBuf.subarray(this.prefix.length);
 	}
 
-	static async open<K extends FixedCodec, V extends FixedCodec>(options: KvStoreOptions<K, V>): Promise<KvStore<K, V>> {
+	static open<K extends FixedCodec, V extends FixedCodec>(options: KvStoreOptions<K, V>): KvStore<K, V> {
 		const self = new KvStore(options);
 		return self;
 	}
@@ -60,7 +60,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		this.staged = new FastUint8ArrayMap();
 	}
 
-	async get(key: Codec.InferInput<K>): Promise<Codec.InferOutput<V> | undefined> {
+	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined {
 		this.key.encodeInto(key, this.encodedKeyView);
 
 		// Freshness: staged > frozen (being flushed) > rocksdb. We resolve layer by
@@ -69,7 +69,7 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		// and leaked stale values through a pending delete.
 		let bytes: Uint8Array | null | undefined = this.staged.get(this.encodedKeyView);
 		if (bytes === undefined && this.frozen) bytes = this.frozen.get(this.encodedKeyView);
-		if (bytes === undefined) bytes = await this.rocksdb.get(this.keyBuf);
+		if (bytes === undefined) bytes = this.rocksdb.get(this.keyBuf);
 
 		if (!bytes) return undefined; // tombstone (null) or rocksdb miss
 		return this.value.decodeValue(bytes);
@@ -86,14 +86,14 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 			batch.set(this.key.encode(key), null);
 		};
 
-		const get: KvStoreBatch<K, V>["get"] = async (key) => {
+		const get: KvStoreBatch<K, V>["get"] = (key) => {
 			this.key.encodeInto(key, this.encodedKeyView);
 			// Freshness: batch > staged > frozen > rocksdb. Layer-by-layer for the
 			// same tombstone-correctness reason as KvStore.get above.
 			let bytes: Uint8Array | null | undefined = batch.get(this.encodedKeyView);
 			if (bytes === undefined) bytes = this.staged.get(this.encodedKeyView);
 			if (bytes === undefined && this.frozen) bytes = this.frozen.get(this.encodedKeyView);
-			if (bytes === undefined) bytes = await this.rocksdb.get(this.keyBuf);
+			if (bytes === undefined) bytes = this.rocksdb.getSync(this.keyBuf);
 
 			if (!bytes) return undefined;
 			return this.value.decodeValue(bytes);
@@ -112,24 +112,23 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		return { set, delete: del, get, apply, discard };
 	}
 
-	async flush(trx: Transaction): Promise<FlushFinalizer> {
+	flush(trx: Transaction): FlushFinalizer {
 		// Standalone callers (and the test suite) flush without a separate freeze;
 		// Atomic freezes everything up front, so here frozen is already set and
 		// this is a no-op. Either way we drain a stable snapshot, never live staged.
 		if (!this.frozen) this.freeze();
 		const frozen = this.frozen!;
-		await Promise.all(
-			frozen.entries().map(async ([encodedKey, bytes]) => {
-				this.keyBuf.set(encodedKey, this.prefix.length);
-				if (!bytes) {
-					await trx.remove(this.keyBuf);
-					// Note: we can't unset the bloom bit for a deleted key. It stays a
-					// (harmless) false positive until the next open() rebuild.
-				} else {
-					await trx.put(this.keyBuf, bytes);
-				}
-			}),
-		);
+		for (const [encodedKey, bytes] of frozen.entries()) {
+			this.keyBuf.set(encodedKey, this.prefix.length);
+			if (!bytes) {
+				trx.removeSync(this.keyBuf);
+				// Note: we can't unset the bloom bit for a deleted key. It stays a
+				// (harmless) false positive until the next open() rebuild.
+			} else {
+				trx.putSync(this.keyBuf, bytes);
+			}
+		}
+
 		// Draining from frozen (not clearing until the finalizer) also makes a
 		// transaction-callback replay safe: a retry just re-puts the same snapshot.
 		return () => {
@@ -137,8 +136,8 @@ export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRo
 		};
 	}
 
-	async clear(): Promise<void> {
-		await this.rocksdb.clear();
+	clear(): void {
+		this.rocksdb.clearSync();
 		this.staged.clear();
 		this.frozen = null;
 	}

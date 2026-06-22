@@ -113,39 +113,39 @@ if (ARGS["rocksdb-stats"]) {
 	}
 }
 
-const atomic = await Atomic.open({
+const atomic = Atomic.open({
 	path: join(BASE_DATA_DIR, "atomic"),
 	stores: {
-		header: await ArrayStore.open({
+		header: ArrayStore.open({
 			path: join(BASE_DATA_DIR, "header"),
 			codec: StoredBlockHeader,
 			diskItemsPerChunk: 1_000_000,
 			memoryItemsPerChunk: 1_000_000,
 		}),
-		block: await ArrayStore.open({
+		block: ArrayStore.open({
 			path: join(BASE_DATA_DIR, "block"),
 			codec: StoredPointer,
 			diskItemsPerChunk: 1_000_000,
 			memoryItemsPerChunk: 1_000_000,
 		}),
-		tx: await BlobStore.open({
+		tx: BlobStore.open({
 			path: join(BASE_DATA_DIR, "tx"),
 			maxDiskChunkSize: 1 * 1000 * 1000 * 1000,
 			maxMemoryChunkSize: MAX_BLOCK_SIZE,
 		}),
-		txid: await KvStore.open({
+		txid: KvStore.open({
 			rocksdb,
 			prefix: new Uint8Array([0]),
 			key: Bytes32,
 			value: StoredPointer,
 		}),
-		pubkey: await KvStore.open({
+		pubkey: KvStore.open({
 			rocksdb,
 			prefix: new Uint8Array([1]),
 			key: Bytes32,
 			value: StoredPointer,
 		}),
-		spender: await IndexStore.open({
+		spender: IndexStore.open({
 			path: join(BASE_DATA_DIR, "spender"),
 			codec: StoredPointer,
 			itemsPerChunk: 1_000_000,
@@ -153,7 +153,7 @@ const atomic = await Atomic.open({
 	},
 });
 
-await atomic.recover();
+atomic.recover();
 
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
@@ -176,13 +176,13 @@ export class ChainStore {
 		}
 	}
 
-	static async start(p2pChannel: MessagePort) {
-		const headers = await atomic.stores.header.slice(0, atomic.stores.header.length());
+	static start(p2pChannel: MessagePort): ChainStore {
+		const headers = atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
 
 		p2pChannel.addEventListener("message", (event) => self.p2pMessageQueue.enqueue(event.data));
-		const startHeaders = await atomic.stores.header.slice(0, atomic.stores.header.length());
+		const startHeaders = atomic.stores.header.slice(0, atomic.stores.header.length());
 		console.log(`[chain] handing ${startHeaders.length} headers to worker`);
 		const startData = WireBlockHeaders.encode(startHeaders);
 		p2pChannel.postMessage({ type: "seek", data: atomic.stores.block.length() - 1 });
@@ -224,7 +224,7 @@ export class ChainStore {
 				const [txs, size] = StoredTxs.decode(buffer.subarray(offset));
 				offset += size;
 				blocks++;
-				await this.appendTxs(txs, atomic.stores.block.length());
+				this.appendTxs(txs, atomic.stores.block.length());
 				if (this.startTime) {
 					this.totalTxs += txs.length;
 					this.totalSize += size;
@@ -250,8 +250,8 @@ export class ChainStore {
 			console.log(`[chain] tick reorg keepHeight=${message.data}`);
 			// truncate() rejects staged/frozen data, so flush to disk first
 			while (atomic.busy) await delay(1);
-			await atomic.flush();
-			await this.reorg(message.data);
+			atomic.flush();
+			this.reorg(message.data);
 			this.requestFlush();
 			return;
 		}
@@ -263,11 +263,11 @@ export class ChainStore {
 			this.needFlush = true;
 			return;
 		}
-		atomic.flush().then(() => {
+		atomic.flush(); /* .then(() => {
 			if (!this.needFlush) return;
 			this.needFlush = false;
 			this.requestFlush();
-		});
+		}); */
 	}
 
 	private pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
@@ -296,14 +296,14 @@ export class ChainStore {
 		}
 	}
 
-	private async appendTxs(
+	private appendTxs(
 		txs: StoredTx[],
 		height: number,
 		batches?: InferBatches<typeof atomic>,
-	): Promise<{ pointer: StoredPointer }> {
+	): { pointer: StoredPointer } {
 		const batch = batches ?? atomic.batch();
 
-		const op = async () => {
+		const op = () => {
 			const txCountBytes = StoredTxs.counter.encode(txs.length);
 			const blockPointer = batch.tx.append(txCountBytes);
 
@@ -336,18 +336,16 @@ export class ChainStore {
 
 			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(txidKeys.size());
 			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(pubkeyKeys.size());
-			await Promise.all([
-				...txidKeys.keys().map(async (id) => {
-					const p = await batch.txid.get(id);
-					if (p !== undefined) txidPrefetch.set(id, p);
-				}),
-				...pubkeyKeys.keys().map(async (h) => {
-					const p = await batch.pubkey.get(h);
-					if (p !== undefined) pubkeyPrefetch.set(h, p);
-				}),
-			]);
+			for (const id of txidKeys.keys()) {
+				const p = batch.txid.get(id);
+				if (p !== undefined) txidPrefetch.set(id, p);
+			}
+			for (const h of pubkeyKeys.keys()) {
+				const p = batch.pubkey.get(h);
+				if (p !== undefined) pubkeyPrefetch.set(h, p);
+			}
 
-			// --- PHASE 2: sequential, no RocksDB awaits ---
+			// --- PHASE 2: sequential, no RocksDB ---
 			const blockTxIds = new FastUint8ArrayMap<number>(txs.length * 2); // same-block txid -> pointer
 			const blockPubkeys = new FastUint8ArrayMap<StoredPointer>(64); // same-block hash -> pointer
 
@@ -403,15 +401,14 @@ export class ChainStore {
 					}
 				}
 
-				// spender index: still awaits — these reads depend on same-block writes (see note)
 				for (let i = 0; i < tx.inputs.length; i++) {
 					const input = tx.inputs[i]!;
 					if (input.prevOut.txId.kind !== "pointer") continue;
-					const txSpenderOffset = await batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
+					const txSpenderOffset = batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
 					const spenderIndex = txSpenderOffset + input.prevOut.vout;
-					const spender = await batch.spender.get(spenderIndex);
+					const spender = batch.spender.get(spenderIndex);
 					if (spender && spender > 0) {
-						const txid = await batch.tx.get(input.prevOut.txId.value, Bytes32);
+						const txid = batch.tx.get(input.prevOut.txId.value, Bytes32);
 						throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
 					}
 					batch.spender.set(spenderIndex, txPointer);
@@ -427,12 +424,12 @@ export class ChainStore {
 		};
 
 		if (batches) {
-			const blockPointer = await op();
+			const blockPointer = op();
 			return { pointer: blockPointer };
 		}
 
 		try {
-			const blockPointer = await op();
+			const blockPointer = op();
 			batch.header.apply();
 			batch.block.apply();
 			batch.spender.apply();
@@ -453,17 +450,17 @@ export class ChainStore {
 		}
 	}
 
-	private async reorg(keepHeight: number): Promise<void> {
+	private reorg(keepHeight: number): void {
 		const blocksHeight = atomic.stores.block.length() - 1;
 		console.log(`[chain] reorg: keepHeight=${keepHeight} currentTip=${blocksHeight}`);
 		if (keepHeight >= blocksHeight) return; // nothing to undo
 
 		// byte offset in the tx blob where the orphaned suffix begins
-		const cutOffset = await atomic.stores.block.get(keepHeight + 1);
+		const cutOffset = atomic.stores.block.get(keepHeight + 1);
 		if (cutOffset === undefined) throw new Error(`reorg: no block pointer at ${keepHeight + 1}`);
 
 		// spender array cut = the spender base of the first tx of the first orphaned block
-		const firstOrphanTxs = await this.getTxsByBlockHeight(keepHeight + 1);
+		const firstOrphanTxs = this.getTxsByBlockHeight(keepHeight + 1);
 		if (!firstOrphanTxs?.length) throw new Error(`reorg: no txs at ${keepHeight + 1}`);
 		const spenderCut = firstOrphanTxs[0]!.spender;
 		console.log(`[chain] reorg: cutOffset=${cutOffset} spenderCut=${spenderCut}`);
@@ -472,23 +469,23 @@ export class ChainStore {
 
 		// tombstone orphaned txid / pubkey entries (pointer >= cutOffset only)
 		for (let h = keepHeight + 1; h <= blocksHeight; h++) {
-			const txs = await this.getTxsByBlockHeight(h);
+			const txs = this.getTxsByBlockHeight(h);
 			if (!txs) continue;
 			for (const tx of txs) {
-				const existingTxid = await batch.txid.get(tx.txId);
+				const existingTxid = batch.txid.get(tx.txId);
 				if (existingTxid !== undefined && existingTxid >= cutOffset) {
 					batch.txid.delete(tx.txId); // assumed KvStore.delete
 				}
 				for (const output of tx.outputs) {
 					if (output.scriptPubKey.kind === "pointer") continue;
 					const hash = sha256(rawScriptPubKey(output.scriptPubKey));
-					const existingPub = await batch.pubkey.get(hash);
+					const existingPub = batch.pubkey.get(hash);
 					if (existingPub !== undefined && existingPub >= cutOffset) {
 						batch.pubkey.delete(hash); // assumed KvStore.delete
 					}
 				}
 			}
-			const header = await atomic.stores.header.get(h);
+			const header = atomic.stores.header.get(h);
 			if (header) this.blockHashToHeightMap.delete(header.hash());
 		}
 
@@ -496,103 +493,102 @@ export class ChainStore {
 		batch.pubkey.apply();
 
 		// truncate the array/blob stores down to the surviving prefix
-		await atomic.stores.header.truncate(keepHeight + 1);
-		await atomic.stores.block.truncate(keepHeight + 1);
-		await atomic.stores.spender.truncate(spenderCut);
-		await atomic.stores.tx.truncate(cutOffset);
+		atomic.stores.header.truncate(keepHeight + 1);
+		atomic.stores.block.truncate(keepHeight + 1);
+		atomic.stores.spender.truncate(spenderCut);
+		atomic.stores.tx.truncate(cutOffset);
 		console.log(`[chain] reorg complete: stores truncated to height=${keepHeight}`);
 	}
 
-	async getHeaderByHeight(height: number): Promise<StoredBlockHeader | undefined> {
-		const header = await atomic.stores.header.get(height);
+	getHeaderByHeight(height: number): StoredBlockHeader | undefined {
+		const header = atomic.stores.header.get(height);
 		if (!header) return undefined;
 		return header;
 	}
 
-	async getHeaderByRange(
+	getHeaderByRange(
 		from: number,
 		to: number,
-	): Promise<Array<{ height: number; header: WireBlockHeader }>> {
-		const headers = await atomic.stores.header.slice(from, to + 1);
+	): Array<{ height: number; header: WireBlockHeader }> {
+		const headers = atomic.stores.header.slice(from, to + 1);
 		return headers.map((header, i) => ({ height: from + i, header: header }));
 	}
 
-	async getHeaderByHash(hash: Uint8Array): Promise<StoredBlockHeader | undefined> {
+	getHeaderByHash(hash: Uint8Array): StoredBlockHeader | undefined {
 		const height = this.blockHashToHeightMap.get(hash);
 		if (height === undefined) return undefined;
-		return await this.getHeaderByHeight(height);
+		return this.getHeaderByHeight(height);
 	}
 
-	async getTxByPointer(pointer: StoredPointer): Promise<StoredTx> {
-		const storedTx = await atomic.stores.tx.get(pointer, StoredTx, { readAheadSize: 400_000 });
+	getTxByPointer(pointer: StoredPointer): StoredTx {
+		const storedTx = atomic.stores.tx.get(pointer, StoredTx, { readAheadSize: 400_000 });
 		return storedTx;
 	}
 
-	async getTxById(txId: Uint8Array): Promise<StoredTx | undefined> {
-		const pointer = await atomic.stores.txid.get(txId);
+	getTxById(txId: Uint8Array): StoredTx | undefined {
+		const pointer = atomic.stores.txid.get(txId);
 		if (pointer === undefined) return undefined;
-		return await this.getTxByPointer(pointer);
+		return this.getTxByPointer(pointer);
 	}
 
-	async getTxsByBlockPointer(pointer: StoredPointer): Promise<StoredTx[] | undefined> {
-		const storedTxs = await atomic.stores.tx.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
-		if (!storedTxs) return undefined;
-		return await Promise.all(storedTxs);
+	getTxsByBlockPointer(pointer: StoredPointer): StoredTx[] | undefined {
+		const storedTxs = atomic.stores.tx.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
+		return storedTxs;
 	}
 
-	async getTxsByBlockHeight(height: number): Promise<StoredTx[] | undefined> {
-		const pointer = height === 0 ? 0 : await atomic.stores.block.get(height);
+	getTxsByBlockHeight(height: number): StoredTx[] | undefined {
+		const pointer = height === 0 ? 0 : atomic.stores.block.get(height);
 		if (pointer === undefined) return undefined;
-		return await this.getTxsByBlockPointer(pointer);
+		return this.getTxsByBlockPointer(pointer);
 	}
 
-	async getTxsByBlockHash(hash: Uint8Array): Promise<StoredTx[] | undefined> {
+	getTxsByBlockHash(hash: Uint8Array): StoredTx[] | undefined {
 		const height = this.blockHashToHeightMap.get(hash);
 		if (height === undefined) return undefined;
-		return await this.getTxsByBlockHeight(height);
+		return this.getTxsByBlockHeight(height);
 	}
 
-	async getHeightByHash(hash: Uint8Array): Promise<number | undefined> {
+	getHeightByHash(hash: Uint8Array): number | undefined {
 		return this.blockHashToHeightMap.get(hash);
 	}
 
-	async getHashByHeight(height: number): Promise<Uint8Array | undefined> {
-		const header = await this.getHeaderByHeight(height);
+	getHashByHeight(height: number): Uint8Array | undefined {
+		const header = this.getHeaderByHeight(height);
 		if (!header) return undefined;
 		return header.hash();
 	}
 
-	async getBlockPointerByHeight(height: number): Promise<StoredPointer | undefined> {
-		return await atomic.stores.block.get(height);
+	getBlockPointerByHeight(height: number): StoredPointer | undefined {
+		return atomic.stores.block.get(height);
 	}
 
-	async getBlockPointerByHash(hash: Uint8Array): Promise<StoredPointer | undefined> {
+	getBlockPointerByHash(hash: Uint8Array): StoredPointer | undefined {
 		const height = this.blockHashToHeightMap.get(hash);
 		if (height === undefined) return undefined;
-		return await this.getBlockPointerByHeight(height);
+		return this.getBlockPointerByHeight(height);
 	}
 
-	async getChainTip(): Promise<{ height: number; header: StoredBlockHeader } | undefined> {
+	getChainTip(): { height: number; header: StoredBlockHeader } | undefined {
 		const height = atomic.stores.header.length() - 1;
 		if (height < 0) return undefined;
-		const header = await this.getHeaderByHeight(height);
+		const header = this.getHeaderByHeight(height);
 		if (!header) return undefined;
 		return { height, header };
 	}
 
-	async getTxOutputByPointer(
+	getTxOutputByPointer(
 		pointer: number,
 		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): Promise<StoredTxOutput> {
-		return await (batches ?? atomic.stores).tx.get(pointer, StoredTxOutput);
+	): StoredTxOutput {
+		return (batches ?? atomic.stores).tx.get(pointer, StoredTxOutput);
 	}
 
-	async getScriptPubKey(
+	getScriptPubKey(
 		output: StoredTxOutput,
 		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): Promise<ScriptPubKey> {
+	): ScriptPubKey {
 		if (output.scriptPubKey.kind === "pointer") {
-			const resolved = await this.getTxOutputByPointer(output.scriptPubKey.value, batches);
+			const resolved = this.getTxOutputByPointer(output.scriptPubKey.value, batches);
 			if (resolved.scriptPubKey.kind === "pointer") {
 				throw new Error([
 					`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
@@ -605,7 +601,7 @@ export class ChainStore {
 		}
 	}
 
-	async getPrevOutTxId(input: StoredTxInput): Promise<Uint8Array> {
+	getPrevOutTxId(input: StoredTxInput): Uint8Array {
 		const txId = input.prevOut.txId;
 		const { kind, value } = txId;
 		if (kind === "raw") {
@@ -613,7 +609,7 @@ export class ChainStore {
 		}
 
 		if (kind === "pointer") {
-			return await this.getTxByPointer(value).then((tx) => tx.txId);
+			return this.getTxByPointer(value).txId;
 		}
 
 		if (kind === "coinbase") {

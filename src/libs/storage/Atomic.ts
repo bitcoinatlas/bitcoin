@@ -1,11 +1,11 @@
 import { RocksDatabase } from "@harperfast/rocksdb-js";
+import { randomBytes } from "@noble/hashes/utils";
 import { BytesCodec, TupleCodec, U64 } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
-import { exists } from "@std/fs";
+import { existsSync } from "@std/fs";
 import { join } from "@std/path";
-import { randomBytes } from "@noble/hashes/utils";
-import { Store, StoreRocks } from "~/libs/storage/Store.ts";
-import { writeFile } from "~/libs/fs/mod.ts";
+import { writeFileSync } from "~/libs/fs/mod.ts";
+import { FlushFinalizer, Store, StoreRocks } from "~/libs/storage/Store.ts";
 
 const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
 
@@ -51,7 +51,7 @@ export class Atomic<T extends AtomicStores> {
 		this.endPath = join(options.path, "end.id");
 	}
 
-	static async open<T extends AtomicStores>(options: AtomicOptions<T>) {
+	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
 		const self = new Atomic<T>(options);
 
 		for (const kv of self.rocks.values()) {
@@ -61,24 +61,24 @@ export class Atomic<T extends AtomicStores> {
 			}
 		}
 
-		await Deno.mkdir(options.path, { recursive: true });
-		self.start = await exists(self.startPath) ? await Deno.readFile(self.startPath) : undefined;
-		self.end = await exists(self.endPath) ? await Deno.readFile(self.endPath) : undefined;
+		Deno.mkdirSync(options.path, { recursive: true });
+		self.start = existsSync(self.startPath) ? Deno.readFileSync(self.startPath) : undefined;
+		self.end = existsSync(self.endPath) ? Deno.readFileSync(self.endPath) : undefined;
 
 		return self;
 	}
 
-	private async setStart(id: Uint8Array) {
-		using file = await Deno.open(this.startPath, { create: true, write: true });
-		await writeFile(file, id);
-		await file.sync();
+	private setStart(id: Uint8Array) {
+		using file = Deno.openSync(this.startPath, { create: true, write: true });
+		writeFileSync(file, id);
+		file.syncSync();
 		this.start = id;
 	}
 
-	private async setEnd(id: Uint8Array) {
-		using file = await Deno.open(this.endPath, { create: true, write: true });
-		await writeFile(file, id);
-		await file.sync();
+	private setEnd(id: Uint8Array) {
+		using file = Deno.openSync(this.endPath, { create: true, write: true });
+		writeFileSync(file, id);
+		file.syncSync();
 		this.end = id;
 	}
 
@@ -96,7 +96,7 @@ export class Atomic<T extends AtomicStores> {
 
 	public busy: boolean;
 
-	async flush(): Promise<void> {
+	flush(): void {
 		if (this.busy) {
 			throw new Error(`im busy man, STOP`);
 		}
@@ -129,21 +129,19 @@ export class Atomic<T extends AtomicStores> {
 			for (const store of this.rocks.values()) store.freeze();
 			// ===== everything below drains the frozen snapshots; ticks may run =====
 
-			await Promise.all([...this.storeMap.values()].map((store) => store.pin()));
+			for (const store of this.storeMap.values()) store.pin();
 
-			await this.setStart(id);
+			this.setStart(id);
 
-			await Promise.all([...this.storeMap.values()].map((store) => store.flush()));
+			for (const store of this.storeMap.values()) store.flush();
 
 			if (this.rocksdb) {
-				const finalizers = await this.rocksdb.transaction(async (trx) => {
-					const finalizers = await Promise.all(
-						[...this.rocks.values()].map((store) => store.flush(trx)),
-					);
-					await trx.put("atomic.id", id);
+				const finalizers = this.rocksdb.transactionSync((trx) => {
+					const finalizers = this.rocks.values().map((store) => store.flush(trx)).toArray();
+					trx.putSync("atomic.id", id);
 					return finalizers;
-				}, { disableSnapshot: true, retryOnBusy: false });
-				await this.rocksdb.flush();
+				}, { disableSnapshot: true, retryOnBusy: false }) as FlushFinalizer[];
+				this.rocksdb.flush();
 				if (finalizers) {
 					for (const finalizer of finalizers) finalizer();
 				}
@@ -152,9 +150,9 @@ export class Atomic<T extends AtomicStores> {
 			// All stores and RocksDB have committed — rollback files are no longer
 			// needed. Delete them before writing end.id (best-effort; a leftover
 			// rollback file is harmless on next recover since the data is consistent).
-			await Promise.all([...this.storeMap.values()].map((store) => store.finalize()));
+			for (const store of this.storeMap.values()) store.finalize();
 
-			await this.setEnd(id);
+			this.setEnd(id);
 		} catch (reason) {
 			console.error("Atomic flush failed:", reason);
 			Deno.exit(1);
@@ -164,7 +162,7 @@ export class Atomic<T extends AtomicStores> {
 		}
 	}
 
-	async recover(): Promise<void> {
+	recover(): void {
 		if (this.busy) {
 			throw new Error("im busy man, STOP");
 		}
@@ -173,21 +171,21 @@ export class Atomic<T extends AtomicStores> {
 			if (this.isConsistent()) return;
 			console.log("atomic state is not consistent, recovering...");
 			if (this.start && this.rocksdb) {
-				const id = await this.rocksdb.get("atomic.id");
+				const id = this.rocksdb.getSync("atomic.id");
 				if (id && equals(id, this.start)) {
 					// The rocks transaction committed (it carries atomic.id), and blob
 					// stores were flushed before it — so everything is durable. Just mark
 					// the end to close the window.
-					await this.setEnd(id);
+					this.setEnd(id);
 					return;
 				}
 			}
-			await Promise.all(this.storeMap.values().map((store) => store.rollback()));
+			for (const store of this.storeMap.values()) store.rollback();
 			// Re-establish consistency. The interrupted flush wrote start.id but never
 			// reached end.id, and we've just undone its on-disk effects; realign the
 			// markers. Without this, isConsistent() stays false forever and every
 			// subsequent flush() throws "Previous flush state is inconsistent".
-			await this.setEnd(this.start ?? this.end!);
+			this.setEnd(this.start ?? this.end!);
 			console.log("recovered atomic state");
 		} catch (reason) {
 			console.error(`Atomic recover failed:`, reason);

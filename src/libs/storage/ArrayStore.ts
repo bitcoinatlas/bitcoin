@@ -4,7 +4,7 @@ import { BlobStore, type BlobStoreBatch } from "./BlobStore.ts";
 
 export interface ArrayStoreBatch<T> extends Batch {
 	push(item: T): number;
-	get(index: number): Promise<T | undefined>;
+	get(index: number): T | undefined;
 	length(): number;
 }
 
@@ -28,8 +28,8 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		this.path = options.path;
 	}
 
-	static async open<T extends FixedCodec<any>>(options: ArrayStoreOptions<T>): Promise<ArrayStore<T>> {
-		const blob = await BlobStore.open({
+	static open<T extends FixedCodec<any>>(options: ArrayStoreOptions<T>): ArrayStore<T> {
+		const blob = BlobStore.open({
 			path: options.path,
 			maxMemoryChunkSize: options.memoryItemsPerChunk * options.codec.stride.size,
 			maxDiskChunkSize: options.diskItemsPerChunk * options.codec.stride.size,
@@ -46,7 +46,7 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		return this.blob.size() / this.stride;
 	}
 
-	async get(index: number): Promise<Codec.InferOutput<T> | undefined> {
+	get(index: number): Codec.InferOutput<T> | undefined {
 		const length = this.length();
 		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
@@ -55,7 +55,7 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		return this.blob.get(index * this.stride, this.codec);
 	}
 
-	async slice(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
+	slice(start: number, end: number): Codec.InferOutput<T>[] {
 		const length = this.length();
 		if (end > length) end = length;
 		if (start < 0) {
@@ -95,23 +95,23 @@ export class ArrayStore<T extends FixedCodec<any>> extends Store<ArrayStoreBatch
 		this.blob.freeze();
 	}
 
-	async pin(): Promise<void> {
+	pin(): void {
 		return this.blob.pin();
 	}
 
-	async flush(): Promise<void> {
+	flush(): void {
 		return this.blob.flush();
 	}
 
-	async rollback(): Promise<void> {
+	rollback(): void {
 		return this.blob.rollback();
 	}
 
-	async finalize(): Promise<void> {
+	finalize(): void {
 		return this.blob.finalize();
 	}
 
-	async truncate(length: number): Promise<void> {
+	truncate(length: number): void {
 		return this.blob.truncate(length * this.stride);
 	}
 
