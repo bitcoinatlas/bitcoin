@@ -68,7 +68,7 @@ let consumedChunks = 0;
 
 function keepDownloading() {
 	const notConsumed = postedChunks - consumedChunks;
-	return notConsumed < 8;
+	return notConsumed < 4;
 }
 
 let localChain = new PeerChain([GENESIS_NODE]);
