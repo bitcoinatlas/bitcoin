@@ -136,6 +136,10 @@ export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
 
 /** Reconstruct raw script bytes from a ScriptPubKey. */
 export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array<ArrayBuffer> {
+	// TODO: During ChainStore appendTxs() this is used for hashing the scriptpubkey,
+	// 	it allocates new ArrayBuffer and Uint8Array, having a destination buffer, would reduce allocation.
+	//	also now chain has its own worker and we run everything sync,
+	// 	we can actually do similar optimizations in many places since there is no concurrent access now.
 	switch (parsed.kind) {
 		case "raw":
 		case "opreturn":
