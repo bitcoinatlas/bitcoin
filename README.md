@@ -24,6 +24,35 @@ work "fast enough" with pure Deno + TypeScript.
 We wanna keep the barrier to entry as low as possible, and make it easy for more people to contribute. Deno + TypeScript is a great choice
 for that, since it's more widely known and easier to work with than Rust or C++.
 
+### If TypeScript, Why Deno, and not Bun or NodeJS
+
+- Permission model (`--allow-read`, `--allow-net`, etc.)
+- Web-standard APIs
+- Workers
+- TypeScript support
+- Single executable distribution
+- Reasonably clean standard library
+- No `node_modules` explosion
+
+Permissions model for plugins, particularly attractive:
+
+```ts
+new Worker(pluginUrl, {
+	type: "module",
+	deno: {
+		permissions: {
+			read: false,
+			write: false,
+			net: false,
+		},
+	},
+});
+```
+
+These plugins can also include WASM as well without telling us btw.
+
+Deno is good because it rejects the mistakes of NodeJS, not support them like Bun does.
+
 ### Why another node implementation?
 
 My goal is not to make just another node implementation. My goal is to make a bitcoin app where everything works out of the box as intended
