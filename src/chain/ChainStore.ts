@@ -208,7 +208,7 @@ export class ChainStore {
 				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
 				const speedBlocks = this.totalBlocks / passedSeconds;
 				console.log(
-					`[chain] overall speed`,
+					`[chain] sustained speed`,
 					`${speedBlocks.toFixed(1)}blocks/s`,
 					`${speedTxs.toFixed(0)}txs/s`,
 					`${speedSize.toFixed(2)}MiB/s`,

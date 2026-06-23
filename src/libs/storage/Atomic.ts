@@ -142,6 +142,7 @@ export class Atomic<T extends AtomicStores> {
 			}
 
 			if (this.rocksdb) {
+				const start = performance.now();
 				const finalizers = this.rocksdb.transactionSync((trx) => {
 					const finalizers = this.rocks.values().map((store) => store.flush(trx)).toArray();
 					trx.putSync("atomic.id", id);
@@ -151,6 +152,9 @@ export class Atomic<T extends AtomicStores> {
 				if (finalizers) {
 					for (const finalizer of finalizers) finalizer();
 				}
+				const end = performance.now();
+				const duration = end - start;
+				console.log("rocksdb", "took", `${duration}ms`);
 			}
 
 			// All stores and RocksDB have committed — rollback files are no longer

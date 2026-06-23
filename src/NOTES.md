@@ -1,4 +1,66 @@
-# immediate goal (current)
+## thinking
+
+sometimes im thinking why dont just use a real language with an ECS library or something. get free paralelesim and cache locallity. but then
+i go "NO IM FUCKING GONNA DO IT WITH DENO AND TYPESCRIPT AND IT WILL BE GREAT".
+
+anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
+to be sloppy.
+
+so basically we have p2p waiting for chain worker to consume its chunks constantly. takes a lot of time. so we are just gonna have more
+chain workers consuming more chunks in parallel.
+
+so we are not gonna race to process chunks.
+
+instead we are gonna have some workers, running in parallel then syncing in the end.
+
+so first of all we need to strip concurrent stuff from the blobstore, no freeze(), or a stage, we dont event need the batch, all we need is
+pin() and rollback().
+
+so each worker started to work on their chunk with multiple blocks and multiple txs. chunk size might be dynamic later based on how fast we
+are consuming the incrise parellelsim.
+
+anyway what do these workers do?
+
+they loop blocks, txs, outputs, inputs ok.
+
+and in memory within that worker, and also on the disk they check if scriptpubkey repeats, they also search for prevout tx. if they cant
+find it in during the worker time, they check it in the sync time as well in the end.
+
+they also check spent status of the prevout if they can find it during worker or sync time.
+
+simple.
+
+at the same time they create few buffer, one buffer is for data that will not shift the layout if we find a pointer. another buffer for
+things that might change if we find a pointer during sync time.
+
+so we can just dumb the buffer that is not gonna change directly to the disk raw, fast.
+
+so before we have a one big blob for all of the txs ever, and we had a pointer pointing at stuff on it we had a packed 3bit flag on the tx
+output telling us if the script pubkey is raw, a known format, or a pointer. but thats layout shift.
+
+instead now we are gonna have a pointer always. but this pointer isnt pointing back on one big chain blob. but a blob made out of packed
+unique scriptpubkeys appended back to back. so pointer points to here. this gives us parallesim. because there is no shift in the layout
+based on back data.
+
+we also do the same thing for prevouts.
+
+so scriptpubkey and prevout tx, if we find those during worker time we dont have to double check it sync time.
+
+but for spent pointers we have to double check them all the time. but during sync time we just double check the other workers memory
+results. so it should be fast.
+
+maybe rocksdb might help us during check as well? based on the impl of bindings we have. i gotta check that. we might not even need sync
+time check.
+
+also i think rocksdb bindings we use might be loving concurrency, because its actually paralllesim under the hood. so keep that in mind as
+well.
+
+also i just realized we can open the rocksdb on different workers and can even open it with different family columns. bindings just use the
+same handle under the hood.
+
+anyway so i think that was all. hopefully it will let use consume chunks p2p worker giving use faster and will drain it all.
+
+## major
 
 - [ ] sync to the tip, see if it can reach to the tip. then make the ui, check our timechain see if anything is off.
 
@@ -14,7 +76,7 @@
 
 - [ ] then do relay p2p stuff
 
-# notes
+## notes
 
 - [ ] turn it into a real app with real ui. so things start to fall into their place. instead of looking like a one big sync script.
       (makkeei titncoool sas s fuckck llsks)
