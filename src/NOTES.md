@@ -1,6 +1,6 @@
 # immediate goal (current)
 
-- [ ] sync to the tip, see if it can reach to the tip. then make the ui, check the timechain see if anything is off.
+- [ ] sync to the tip, see if it can reach to the tip. then make the ui, check our timechain see if anything is off.
 
 - [ ] then focus on more speed + storage optimizations.
 
@@ -22,7 +22,7 @@
 - [ ] ok the new storage system we made works right rn. need some more recactor to refine the like flow and interfaces better. but looks
       good rn. another thing is. with BlobStore we call fsync too much. so while refining the interface think about it ,probably make it
       happen at the end of the flush only. i thinking something like dirty flag for the chunks. so we know what to fsync.
-- [ ] another thing about new storage system is, we didnt really make the IndexStore, llm made it. so sometime in the future also rewrite
+- [ ] another thing about new storage system is, we didnt really make our IndexStore, llm made it. so sometime in the future also rewrite
       that as well.
 - [ ] another thing to remember is, in BlobStore, we made open() files per get() call and close open close open close. we made this to make
       multi chunk reads and using seek with concurrency more stable, and simpler. but we can probably have reader pool, and queue if the
@@ -32,13 +32,26 @@
 
 - [ ] also p2p/worker.ts is kinda messy, and some of chain/ChainStore.ts as well, rewrite it better some time
 
-- [ ] keep spender index on the `txid -> txPointer` kv, so something like `txid -> [txPointer, spenderIndex]`, this is both require less
-      reads, and also during spent check we dont have to go look at to the txs blobstore. so current path is
+- [ ] keep spender index on our `txid -> txPointer` kv, so something like `txid -> [txPointer, spenderIndex]`, this is both require less
+      reads, and also during spent check we dont have to go look at to our txs blobstore. so current path is
       `txid -> txPointer -> tx(offset to spenderIndex) -> spender` instead it would be like `txid -> [txPointer, spenderIndex]`, we can even
-      store the spent status on the kv, but we dont wanna hit on rocks for everything. but we are hitting it already, we might just do it
+      store our spent status on our kv, but we dont wanna hit on rocks for everything. but we are hitting it already, we might just do it
       tho. might make more sense. anyway once we decouplbe spending stuff from txs in a good way, we can also compress those files. with
       zstd
 
-- [ ] ok now we put the chain logic on its own worker, and made storage stuff, sync. so now we need to redesign a few things for a sync code
+- [ ] ok now we put our chain logic on its own worker, and made storage stuff, sync. so now we need to redesign a few things for a sync code
       instead of concurrent async code. which will make us gavin a bit more speed. satoshi client(knots/core) sync time with the same local
       network peer takes 11m40s, rn for us it takes 9m31s, so same finally. but we can make it a bit better.
+
+- [ ] ok few new concerns and thoughts. so normally we were just gonna do domain specific encode/decode to optimize storage, but also using
+      the fact that we know that we are always indexing for an explorer, to prevent duplication of indexed data on our timechain. it worked,
+      and our indexed chain size is close to satoshi client's size without index, without electrum without mempoolspace, but we have all of
+      the indexes as well. which is good. BUT its not as small as we hoped for, so to increase the entropy of our chain we thought we might
+      do so general purpose compression like zstd on the reaming data, for example on txs blob store chunks. we already optimized storage
+      for cross chunk repating data, and using domain specific packing. so it seems zstd can earn like 20% more across the chunks. so we can
+      decompress chunks when they are in use and keep them on the disk as long as they are in use then delete them. but issue with that is
+      prevouts can be spending outputs from a wide range of our timechain. so then we need a second utxo storage. which we didnt wanna do
+      before. and our compressed timechain would be used purely for reorgs and eletrum endpoints, and explorer. satoshi client `chainstate/`
+      dir is 11GB atm. so maybe its fine? worse case someone looks at blocks from different chunks back to back, causing a lot of
+      decompression of compressed chunks and deletion of decompressed chunks. we can have a setting like `MAX_DECOMPRESSED_CHUNK_COUNT`or
+      something?
