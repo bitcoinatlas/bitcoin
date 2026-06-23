@@ -133,7 +133,13 @@ export class Atomic<T extends AtomicStores> {
 
 			this.setStart(id);
 
-			for (const store of this.storeMap.values()) store.flush();
+			for (const store of this.storeMap.values()) {
+				const start = performance.now();
+				store.flush();
+				const end = performance.now();
+				const duration = end - start;
+				console.log(store.constructor.name, "took", `${duration}ms`);
+			}
 
 			if (this.rocksdb) {
 				const finalizers = this.rocksdb.transactionSync((trx) => {
