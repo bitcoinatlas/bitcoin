@@ -1,4 +1,4 @@
-export type ScriptPubKey = { kind: "raw" | "opreturn" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
+export type ScriptPubKey = { kind: "raw" | "op_return" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
 
 export const SCRIPTPUBKEY_PATTERN = {
 	p2pkh: {
@@ -36,7 +36,7 @@ export const SCRIPTPUBKEY_PATTERN = {
 /** First opcode of an OP_RETURN (provably-unspendable) output script. */
 export const OP_RETURN = 0x6a;
 
-export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "raw" | "opreturn">, number> = {
+export const EXPECTED_SCRIPT_PAYLOAD_LEN: Record<Exclude<ScriptPubKey["kind"], "raw" | "op_return">, number> = {
 	p2pkh: SCRIPTPUBKEY_PATTERN.p2pkh.hashLen,
 	p2sh: SCRIPTPUBKEY_PATTERN.p2sh.hashLen,
 	p2wpkh: SCRIPTPUBKEY_PATTERN.p2wpkh.hashLen,
@@ -51,7 +51,7 @@ export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
 	// script (including the 0x6a and any pushdata opcodes) is stored verbatim
 	// to guarantee exact round-trip across non-canonical pushes.
 	if (raw.length >= 1 && raw[0] === OP_RETURN) {
-		return { kind: "opreturn", value: raw.slice() };
+		return { kind: "op_return", value: raw.slice() };
 	}
 
 	if (raw.length === SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen) {
@@ -135,54 +135,52 @@ export function parseScriptPubKey(raw: Uint8Array): ScriptPubKey {
 }
 
 /** Reconstruct raw script bytes from a ScriptPubKey. */
-export function rawScriptPubKey(parsed: ScriptPubKey): Uint8Array<ArrayBuffer> {
-	// TODO: During ChainStore appendTxs() this is used for hashing the scriptpubkey,
-	// 	it allocates new ArrayBuffer and Uint8Array, having a destination buffer, would reduce allocation.
-	//	also now chain has its own worker and we run everything sync,
-	// 	we can actually do similar optimizations in many places since there is no concurrent access now.
+export function rawScriptPubKey(parsed: ScriptPubKey, target?: Uint8Array, offset = 0): Uint8Array {
+	if (parsed.kind === "raw" || parsed.kind === "op_return") {
+		// TODO: we store the full with the byte flag opreturn even when parsed, fix that later. not now because syncing
+		return parsed.value.slice();
+	}
+
+	let out;
+	if (target) {
+		out = target;
+		if ("resize" in out.buffer && out.buffer.resizable) {
+			out.buffer.resize(SCRIPTPUBKEY_PATTERN[parsed.kind].scriptLen);
+		}
+	} else {
+		out = new Uint8Array(SCRIPTPUBKEY_PATTERN[parsed.kind].scriptLen);
+	}
+
 	switch (parsed.kind) {
-		case "raw":
-		case "opreturn":
-			return parsed.value.slice();
-		case "p2pkh": {
-			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2pkh.scriptLen);
-			out[0] = 0x76;
-			out[1] = 0xa9;
-			out[2] = 0x14;
-			out.set(parsed.value, 3);
-			out[23] = 0x88;
-			out[24] = 0xac;
+		case "p2pkh":
+			out[offset + 0] = 0x76;
+			out[offset + 1] = 0xa9;
+			out[offset + 2] = 0x14;
+			out.set(parsed.value, offset + 3);
+			out[offset + 23] = 0x88;
+			out[offset + 24] = 0xac;
 			return out;
-		}
-		case "p2sh": {
-			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2sh.scriptLen);
-			out[0] = 0xa9;
-			out[1] = 0x14;
-			out.set(parsed.value, 2);
-			out[22] = 0x87;
+		case "p2sh":
+			out[offset + 0] = 0xa9;
+			out[offset + 1] = 0x14;
+			out.set(parsed.value, offset + 2);
+			out[offset + 22] = 0x87;
 			return out;
-		}
-		case "p2wpkh": {
-			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2wpkh.scriptLen);
-			out[0] = 0x00;
-			out[1] = 0x14;
+		case "p2wpkh":
+			out[offset + 0] = 0x00;
+			out[offset + 1] = 0x14;
 			out.set(parsed.value, 2);
 			return out;
-		}
-		case "p2wsh": {
-			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2wsh.scriptLen);
-			out[0] = 0x00;
-			out[1] = 0x20;
-			out.set(parsed.value, 2);
+		case "p2wsh":
+			out[offset + 0] = 0x00;
+			out[offset + 1] = 0x20;
+			out.set(parsed.value, offset + 2);
 			return out;
-		}
-		case "p2tr": {
-			const out = new Uint8Array(SCRIPTPUBKEY_PATTERN.p2tr.scriptLen);
-			out[0] = 0x51;
-			out[1] = 0x20;
-			out.set(parsed.value, 2);
+		case "p2tr":
+			out[offset + 0] = 0x51;
+			out[offset + 1] = 0x20;
+			out.set(parsed.value, offset + 2);
 			return out;
-		}
 	}
 }
 

@@ -3,20 +3,20 @@ import { Codec, FixedCodec } from "@nomadshiba/codec";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Batch, FlushFinalizer, StoreRocks } from "~/libs/storage/Store.ts";
 
-export type KvStoreOptions<K extends FixedCodec, V extends FixedCodec> = {
+export type KvStoreOptions<K extends FixedCodec, V extends Codec> = {
 	prefix: Uint8Array;
 	rocksdb: RocksDatabase;
 	key: K;
 	value: V;
 };
 
-export interface KvStoreBatch<K extends FixedCodec, V extends FixedCodec> extends Batch {
+export interface KvStoreBatch<K extends FixedCodec, V extends Codec> extends Batch {
 	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined;
 	set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void;
 	delete(key: Codec.InferInput<K>): void;
 }
 
-export class KvStore<K extends FixedCodec, V extends FixedCodec> extends StoreRocks<KvStoreBatch<K, V>> {
+export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks<KvStoreBatch<K, V>> {
 	public readonly rocksdb: RocksDatabase;
 	public readonly key: K;
 	public readonly value: V;

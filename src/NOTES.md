@@ -55,3 +55,14 @@
       dir is 11GB atm. so maybe its fine? worse case someone looks at blocks from different chunks back to back, causing a lot of
       decompression of compressed chunks and deletion of decompressed chunks. we can have a setting like `MAX_DECOMPRESSED_CHUNK_COUNT`or
       something?
+
+- [ ] we might not need spender index, and also therefore IndexStore, we can probably just use rocksdb `txid -> stuff` instead probably. the
+      reason we use it before was, previus kv impl was kinda weird and didnt allow us to safely mutate data. rn its safe.
+
+- [ ] as i said before get all the benefits of using sync function inside a worker. we dont need concurrent mentality, and guards anymore. i
+      believe we can make this shit at least 2-3x faster.
+
+- [ ] it might be a dumb idea but also think about flushes on a different worker? probably? we used to do concurrent, we already designed
+      them to work concurrently before, they might as well be running in parallel maybe? we have `freeze()`, `pin()`, etc. it might work.
+      that can more than double our speed. give the ownership of the frozen stage to the worker, and let it flush it. and tell you when its
+      done.

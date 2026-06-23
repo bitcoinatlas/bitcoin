@@ -185,6 +185,7 @@ class DiskRegion implements Region, Disposable {
 		}
 	}
 
+	private readers: Deno.FsFile[] = [];
 	readInto(offset: number, length: number, target: Uint8Array): void {
 		if (offset >= this.size) {
 			throw new Error(`yeah you wanna read from offset=${offset}, but all i have is size=${this.size}`);
@@ -198,7 +199,7 @@ class DiskRegion implements Region, Disposable {
 			const available = this.maxChunkSize - start;
 			const read = Math.min(want, available);
 
-			using reader = Deno.openSync(this.chunkPath(index), { read: true });
+			const reader = this.readers[index] ??= Deno.openSync(this.chunkPath(index), { read: true });
 			reader.seekSync(start, Deno.SeekMode.Start);
 			readFileIntoSync(reader, target.subarray(copied, copied + read));
 
@@ -216,8 +217,7 @@ class DiskRegion implements Region, Disposable {
 		const oldTail = this.appender.index;
 		const newTail = Math.floor(size / this.maxChunkSize);
 
-		this.appender.file.close();
-		this.appender.index = -1;
+		this.close();
 
 		for (let index = newTail + 1; index <= oldTail; index++) {
 			Deno.removeSync(this.chunkPath(index));
@@ -238,7 +238,13 @@ class DiskRegion implements Region, Disposable {
 	}
 
 	close() {
+		for (const reader of this.readers) {
+			if (!reader) continue;
+			reader.close();
+		}
+		this.readers.length = 0;
 		this.appender.file.close();
+		this.appender.index = -1;
 	}
 
 	[Symbol.dispose](): void {

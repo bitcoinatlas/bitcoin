@@ -14,7 +14,7 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT, MAX_NON_WITNESS_SIZE } from "~/constants.ts";
 import { ARGS, BASE_DATA_DIR } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
@@ -296,6 +296,12 @@ export class ChainStore {
 		}
 	}
 
+	private _rawScriptPubKeyBuffer = new Uint8Array(new ArrayBuffer(0, { maxByteLength: MAX_NON_WITNESS_SIZE }));
+	// input prevOut txids (skip raw-coinbase; same-block ones resolve locally in phase 2)
+	private _txidKeys = new FastUint8ArrayMap<number>(64);
+	// output scriptPubKey hashes
+	private _pubkeyKeys = new FastUint8ArrayMap<number>(64);
+	private _pubkeyHashes: (Uint8Array | null)[] = []; // [t][i] -> hash or null, computed once
 	private appendTxs(
 		txs: StoredTx[],
 		height: number,
@@ -311,36 +317,33 @@ export class ChainStore {
 			// We don't know same-block pointers yet, so we just prefetch *whether* each key
 			// exists in RocksDB. Same-block cases are handled by local maps in phase 2.
 
-			// input prevOut txids (skip raw-coinbase; same-block ones resolve locally in phase 2)
-			const txidKeys = new FastUint8ArrayMap<number>(64);
-			// output scriptPubKey hashes
-			const pubkeyKeys = new FastUint8ArrayMap<number>(64);
-			const outputHashes: (Uint8Array | null)[][] = []; // [t][i] -> hash or null, computed once
+			this._txidKeys.clear();
+			this._pubkeyKeys.clear();
+			this._pubkeyHashes.length = 0;
 			for (let t = 0; t < txs.length; t++) {
 				const tx = txs[t]!;
 				for (const input of tx.inputs) {
-					if (input.prevOut.txId.kind === "raw") txidKeys.set(input.prevOut.txId.value, 1);
+					if (input.prevOut.txId.kind === "raw") this._txidKeys.set(input.prevOut.txId.value, 1);
 				}
-				const hashes: (Uint8Array | null)[] = [];
 				for (const output of tx.outputs) {
 					if (output.scriptPubKey.kind === "pointer") {
-						hashes.push(null);
+						this._pubkeyHashes.push(null);
 						continue;
 					}
-					const raw = rawScriptPubKey(output.scriptPubKey);
-					hashes.push(sha256(raw)); // computed ONCE here, reused everywhere below
-					pubkeyKeys.set(hashes[hashes.length - 1]!, 1);
+					// computed ONCE here, reused everywhere below
+					const hash = sha256(rawScriptPubKey(output.scriptPubKey, this._rawScriptPubKeyBuffer));
+					this._pubkeyHashes.push(hash);
+					this._pubkeyKeys.set(hash, 1);
 				}
-				outputHashes.push(hashes);
 			}
 
-			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(txidKeys.size());
-			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(pubkeyKeys.size());
-			for (const id of txidKeys.keys()) {
+			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(this._txidKeys.size());
+			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(this._pubkeyKeys.size());
+			for (const id of this._txidKeys.keys()) {
 				const p = batch.txid.get(id);
 				if (p !== undefined) txidPrefetch.set(id, p);
 			}
-			for (const h of pubkeyKeys.keys()) {
+			for (const h of this._pubkeyKeys.keys()) {
 				const p = batch.pubkey.get(h);
 				if (p !== undefined) pubkeyPrefetch.set(h, p);
 			}
@@ -348,7 +351,7 @@ export class ChainStore {
 			// --- PHASE 2: sequential, no RocksDB ---
 			const blockTxIds = new FastUint8ArrayMap<number>(txs.length * 2); // same-block txid -> pointer
 			const blockPubkeys = new FastUint8ArrayMap<StoredPointer>(64); // same-block hash -> pointer
-
+			let pubKeyHashesOffset = 0;
 			let offset = txCountBytes.length;
 			for (let t = 0; t < txs.length; t++) {
 				const tx = txs[t]!;
@@ -371,11 +374,10 @@ export class ChainStore {
 				}
 
 				// scriptPubKey reuse: local block map first, then prefetched
-				const hashes = outputHashes[t]!;
 				for (let i = 0; i < tx.outputs.length; i++) {
 					const output = tx.outputs[i]!;
 					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = hashes[i]!;
+					const hash = this._pubkeyHashes[pubKeyHashesOffset + i]!;
 					const existing = blockPubkeys.get(hash) ?? pubkeyPrefetch.get(hash);
 					if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
 				}
@@ -393,7 +395,7 @@ export class ChainStore {
 					const output = tx.outputs[i]!;
 					batch.spender.push(0);
 					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = hashes[i]!;
+					const hash = this._pubkeyHashes[pubKeyHashesOffset + i]!;
 					if (blockPubkeys.get(hash) === undefined && pubkeyPrefetch.get(hash) === undefined) {
 						const ptr = txPointer + offsets.outputs[i]!;
 						batch.pubkey.set(hash, ptr);
@@ -415,6 +417,7 @@ export class ChainStore {
 				}
 
 				offset += size;
+				pubKeyHashesOffset = tx.outputs.length;
 			}
 
 			const currentLength = batch.block.length();
@@ -478,7 +481,7 @@ export class ChainStore {
 				}
 				for (const output of tx.outputs) {
 					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = sha256(rawScriptPubKey(output.scriptPubKey));
+					const hash = sha256(rawScriptPubKey(output.scriptPubKey, this._rawScriptPubKeyBuffer));
 					const existingPub = batch.pubkey.get(hash);
 					if (existingPub !== undefined && existingPub >= cutOffset) {
 						batch.pubkey.delete(hash); // assumed KvStore.delete

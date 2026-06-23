@@ -21,7 +21,7 @@ export type StoredTxOutput = {
  *
  * Packed form of the clean shape:
  *   { value: VarInt, scriptPubKey: Enum<{ pointer, raw, p2pkh, p2sh, p2wpkh,
- *     p2wsh, p2tr, opreturn }> }
+ *     p2wsh, p2tr, op_return }> }
  *
  * Field order: flag byte, value, then the single variable-length script payload
  * last. Single forward cursor, no padding.
@@ -32,7 +32,7 @@ export type StoredTxOutput = {
  *
  * scriptTypeId mapping:
  *   0 = pointer, 1 = raw, 2 = p2pkh, 3 = p2sh, 4 = p2wpkh, 5 = p2wsh,
- *   6 = p2tr, 7 = opreturn
+ *   6 = p2tr, 7 = op_return
  *
  * -- value (variable) --
  *   VarInt-encoded satoshis (51-bit max; <= 7 bytes for any valid value)
@@ -40,13 +40,13 @@ export type StoredTxOutput = {
  * -- script payload (variable, LAST) --
  *   pointer:  6 bytes (StoredPointer u48)
  *   raw:      VarInt-prefixed full script bytes
- *   opreturn: VarInt-prefixed full script bytes
+ *   op_return: VarInt-prefixed full script bytes
  *   known:    fixed-length hash bytes (20 or 32)
  */
 
 export type StoredScriptPubKey =
 	| { kind: "pointer"; value: number }
-	| { kind: "raw" | "opreturn" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
+	| { kind: "raw" | "op_return" | keyof typeof SCRIPTPUBKEY_PATTERN; value: Uint8Array };
 
 const SCRIPT_KIND_TO_ID: Record<StoredScriptPubKey["kind"], number> = {
 	pointer: 0,
@@ -56,7 +56,7 @@ const SCRIPT_KIND_TO_ID: Record<StoredScriptPubKey["kind"], number> = {
 	p2wpkh: 4,
 	p2wsh: 5,
 	p2tr: 6,
-	opreturn: 7,
+	op_return: 7,
 };
 
 const SCRIPT_ID_TO_KIND: Record<number, StoredScriptPubKey["kind"]> = {
@@ -67,7 +67,7 @@ const SCRIPT_ID_TO_KIND: Record<number, StoredScriptPubKey["kind"]> = {
 	4: "p2wpkh",
 	5: "p2wsh",
 	6: "p2tr",
-	7: "opreturn",
+	7: "op_return",
 };
 
 // bits 0-2: scriptTypeId (0..7), bits 3-7: spare.
@@ -79,7 +79,7 @@ function decodeScriptPubKey(kind: StoredScriptPubKey["kind"], payload: Uint8Arra
 		return [{ kind: "pointer", value: pointer }, size];
 	}
 
-	if (kind === "raw" || kind === "opreturn") {
+	if (kind === "raw" || kind === "op_return") {
 		const [scriptLen, lenSize] = VarInt.decode(payload);
 		const scriptBytes = payload.subarray(lenSize, lenSize + scriptLen);
 		const decoded = parseScriptPubKey(scriptBytes);
@@ -97,7 +97,7 @@ function scriptPayloadSize(data: StoredScriptPubKey): number {
 		return StoredPointer.stride.size;
 	}
 	const normalized = normalizeScriptPubKey(data);
-	if (normalized.kind === "raw" || normalized.kind === "opreturn") {
+	if (normalized.kind === "raw" || normalized.kind === "op_return") {
 		const script = rawScriptPubKey(normalized);
 		return VarInt.size(script.length) + script.length;
 	}
@@ -140,7 +140,7 @@ export class StoredTxOutputCodec extends Codec<StoredTxOutput> {
 		target[cursor++] = SCRIPT_KIND_TO_ID[normalized.kind] & SCRIPT_TYPE_MASK;
 		cursor += VarInt.encodeInto(Number(value), target, cursor);
 
-		if (normalized.kind === "raw" || normalized.kind === "opreturn") {
+		if (normalized.kind === "raw" || normalized.kind === "op_return") {
 			// Length prefix + script bytes, both written in place. The only copy
 			// left is the script payload itself (its bytes already exist).
 			const script = rawScriptPubKey(normalized);
