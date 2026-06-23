@@ -69,4 +69,5 @@
       with append(), in parallel. while we are doing other shit. ArrayStore is a BlobStore wrapper so that would automatically have the same
       parallel flush() ability. really easy to impl tbh. let me first profile how long each flush takes per store. UPDATE: ok IndexStore
       seem to take almost all of the time, and i dont see a lot of overhead on other stores that we would need to flush it in parallel. I
-      can optimize IndexStore, but we are probably gonna elimanate it soon anyway. so yeah.
+      can optimize IndexStore, but we are probably gonna elimanate it soon anyway. so yeah. Ok so im gonna remove IndexStore btu first let
+      me sync to the segwit, im almost there, let's first see if there are any issues there first.
