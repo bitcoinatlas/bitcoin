@@ -1,8 +1,5 @@
 ## thinking
 
-sometimes im thinking why dont just use a real language with an ECS library or something. get free paralelesim and cache locallity. but then
-i go "NO IM FUCKING GONNA DO IT WITH DENO AND TYPESCRIPT AND IT WILL BE GREAT".
-
 anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
 to be sloppy.
 
