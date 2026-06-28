@@ -1,7 +1,7 @@
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { Codec, FixedCodec } from "@nomadshiba/codec";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
-import { Batch, FlushFinalizer, StoreRocks } from "~/libs/storage/Store.ts";
+import { FlushFinalizer, StoreRocks } from "~/libs/storage/Store.ts";
 
 export type KvStoreOptions<K extends FixedCodec, V extends Codec> = {
 	prefix: Uint8Array;
@@ -10,13 +10,7 @@ export type KvStoreOptions<K extends FixedCodec, V extends Codec> = {
 	value: V;
 };
 
-export interface KvStoreBatch<K extends FixedCodec, V extends Codec> extends Batch {
-	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined;
-	set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void;
-	delete(key: Codec.InferInput<K>): void;
-}
-
-export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks<KvStoreBatch<K, V>> {
+export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks {
 	public readonly rocksdb: RocksDatabase;
 	public readonly key: K;
 	public readonly value: V;
@@ -75,42 +69,13 @@ export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks<K
 		return this.value.decodeValue(bytes);
 	}
 
-	batch(): KvStoreBatch<K, V> {
-		const batch = new FastUint8ArrayMap<Uint8Array | null>();
-
-		const set: KvStoreBatch<K, V>["set"] = (key, value) => {
+	const set: KvStoreBatch<K, V>["set"] = (key, value) => {
 			batch.set(this.key.encode(key), this.value.encode(value));
 		};
 
 		const del: KvStoreBatch<K, V>["delete"] = (key) => {
 			batch.set(this.key.encode(key), null);
 		};
-
-		const get: KvStoreBatch<K, V>["get"] = (key) => {
-			this.key.encodeInto(key, this.encodedKeyView);
-			// Freshness: batch > staged > frozen > rocksdb. Layer-by-layer for the
-			// same tombstone-correctness reason as KvStore.get above.
-			let bytes: Uint8Array | null | undefined = batch.get(this.encodedKeyView);
-			if (bytes === undefined) bytes = this.staged.get(this.encodedKeyView);
-			if (bytes === undefined && this.frozen) bytes = this.frozen.get(this.encodedKeyView);
-			if (bytes === undefined) bytes = this.rocksdb.getSync(this.keyBuf);
-
-			if (!bytes) return undefined;
-			return this.value.decodeValue(bytes);
-		};
-
-		const apply: KvStoreBatch<K, V>["apply"] = () => {
-			for (const [key, bytes] of batch.entries()) {
-				this.staged.setOwned(key, bytes);
-			}
-		};
-
-		const discard: KvStoreBatch<K, V>["discard"] = () => {
-			batch.clear();
-		};
-
-		return { set, delete: del, get, apply, discard };
-	}
 
 	flush(trx: Transaction): FlushFinalizer {
 		// Standalone callers (and the test suite) flush without a separate freeze;

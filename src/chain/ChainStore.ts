@@ -20,9 +20,8 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
-import { Atomic, InferBatches, InferStores } from "~/libs/storage/Atomic.ts";
+import { Atomic, InferStores } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
-import { IndexStore } from "~/libs/storage/IndexStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
 import { formatDuration } from "~/libs/formatting/mod.ts";
 
@@ -119,19 +118,16 @@ const atomic = Atomic.open({
 		header: ArrayStore.open({
 			path: join(BASE_DATA_DIR, "header"),
 			codec: StoredBlockHeader,
-			diskItemsPerChunk: 1_000_000,
-			memoryItemsPerChunk: 1_000_000,
+			itemsPerChunk: 1_000_000,
 		}),
 		block: ArrayStore.open({
 			path: join(BASE_DATA_DIR, "block"),
 			codec: StoredPointer,
-			diskItemsPerChunk: 1_000_000,
-			memoryItemsPerChunk: 1_000_000,
+			itemsPerChunk: 1_000_000,
 		}),
 		tx: BlobStore.open({
 			path: join(BASE_DATA_DIR, "tx"),
-			maxDiskChunkSize: 1 * 1000 * 1000 * 1000,
-			maxMemoryChunkSize: MAX_BLOCK_SIZE,
+			maxChunkSize: 1 * 1000 * 1000 * 1000,
 		}),
 		txid: KvStore.open({
 			rocksdb,
@@ -144,11 +140,6 @@ const atomic = Atomic.open({
 			prefix: new Uint8Array([1]),
 			key: Bytes32,
 			value: StoredPointer,
-		}),
-		spender: IndexStore.open({
-			path: join(BASE_DATA_DIR, "spender"),
-			codec: StoredPointer,
-			itemsPerChunk: 1_000_000,
 		}),
 	},
 });
@@ -270,27 +261,17 @@ export class ChainStore {
 		}); */
 	}
 
-	private pushHeaders(headers: WireBlockHeader[], batches?: InferBatches<typeof atomic, "header">): { height: number } {
-		const batch = batches ?? atomic.batch(["header"]);
-
-		const op = () => {
+	private pushHeaders(headers: WireBlockHeader[]): { height: number } {
+		try {
+			atomic.pin();
+			let height = atomic.stores.header.length();
 			for (const header of headers) {
-				const height = batch.header.push(header);
+				height = atomic.stores.header.push(header);
 				this.blockHashToHeightMap.set(header.hash(), height);
 			}
-		};
-
-		if (batches) {
-			op();
-			return { height: batch.header.length() - 1 };
-		}
-
-		try {
-			op();
-			batch.header.apply();
-			return { height: batch.header.length() - 1 };
+			atomic.commit();
+			return { height };
 		} catch (reason) {
-			batch.header.discard();
 			console.error("Failed to append block header:", reason);
 			Deno.exit(1);
 		}
