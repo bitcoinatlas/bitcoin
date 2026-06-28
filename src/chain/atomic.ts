@@ -8,6 +8,8 @@ import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
 import { RocksDatabase } from "../../vendor/rocksdb-js/dist/index.d.cts";
+import { U40 } from "~/codec/primitives/U40.ts";
+import { StructCodec } from "@nomadshiba/codec";
 
 const ROCKS_PATH = join(BASE_DATA_DIR, "rocksdb");
 
@@ -48,27 +50,32 @@ export const atomic = Atomic.open({
 	rocksdb,
 	path: join(BASE_DATA_DIR, "atomic"),
 	stores: {
-		header: ArrayStore.open({
-			path: join(BASE_DATA_DIR, "header"),
+		headers: ArrayStore.open({
+			path: join(BASE_DATA_DIR, "headers"),
 			codec: StoredBlockHeader,
 			itemsPerChunk: 1_000_000,
 		}),
-		block: ArrayStore.open({
-			path: join(BASE_DATA_DIR, "block"),
+		blocks: ArrayStore.open({
+			path: join(BASE_DATA_DIR, "blocks"),
 			codec: StoredPointer,
 			itemsPerChunk: 1_000_000,
 		}),
-		tx: BlobStore.open({
-			path: join(BASE_DATA_DIR, "tx"),
+		txs: BlobStore.open({
+			path: join(BASE_DATA_DIR, "txs"),
+			maxChunkSize: 1 * 1000 * 1000 * 1000,
+		}),
+		pubkey: KvStore.open({
+			rocksdb: RocksDatabase.open(ROCKS_PATH, { name: "pubkey" }),
+			key: Bytes32,
+			// TODO: value might also include HEAD and TAIL of the linked list of outputs or something
+			value: new StructCodec({ pointer: U40 }),
+		}),
+		pubkeys: BlobStore.open({
+			path: join(BASE_DATA_DIR, "pubkeys"),
 			maxChunkSize: 1 * 1000 * 1000 * 1000,
 		}),
 		txid: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { name: "txid" }),
-			key: Bytes32,
-			value: StoredPointer,
-		}),
-		pubkey: KvStore.open({
-			rocksdb: RocksDatabase.open(ROCKS_PATH, { name: "pubkey" }),
 			key: Bytes32,
 			value: StoredPointer,
 		}),
