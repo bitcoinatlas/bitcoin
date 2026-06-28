@@ -8,7 +8,7 @@ import { Store } from "~/libs/storage/Store.ts";
 type Region = {
 	size: number;
 	append(bytes: Uint8Array): void;
-	readInto(offset: number, length: number, target: Uint8Array): void;
+	readInto(offset: number, length: number, target: Uint8Array): number;
 };
 
 type DiskRegionOptions = {
@@ -42,8 +42,13 @@ export class BlobStore extends Store implements Disposable {
 	get<T extends Codec<any>>(pointer: number, codec: T, options?: { readAheadSize?: number }): Codec.InferOutput<T> {
 		const needed = codec.stride.size ?? options?.readAheadSize ?? MAX_BLOCK_SIZE;
 		const output = new Uint8Array(needed);
-		this.disk.readInto(pointer, needed, output);
-		const [decoded] = codec.decode(output);
+		// FIX #2: readInto now clamps to what actually exists past `pointer` and
+		// returns the number of bytes filled. For a fixed-stride codec `needed`
+		// is exact so `filled === needed`. For a variable-stride readahead near
+		// the tail, fewer bytes may exist; we decode only the valid prefix so we
+		// never feed uninitialized buffer tail to the codec (no crash, no garbage).
+		const filled = this.disk.readInto(pointer, needed, output);
+		const [decoded] = codec.decode(filled === needed ? output : output.subarray(0, filled));
 		return decoded;
 	}
 
@@ -184,14 +189,19 @@ class DiskRegion implements Region, Disposable {
 	}
 
 	private readers: Deno.FsFile[] = [];
-	readInto(offset: number, length: number, target: Uint8Array): void {
+	// FIX #2: clamp the requested length to bytes that actually exist, and
+	// return how many were filled so the caller can decode only the valid range.
+	readInto(offset: number, length: number, target: Uint8Array): number {
 		if (offset >= this.size) {
 			throw new Error(`yeah you wanna read from offset=${offset}, but all i have is size=${this.size}`);
 		}
 
+		// Never try to read past the end of written data.
+		const clamped = Math.min(length, this.size - offset);
+
 		let copied = 0;
-		while (copied < length) {
-			const want = length - copied;
+		while (copied < clamped) {
+			const want = clamped - copied;
 			const index = Math.floor(offset / this.maxChunkSize);
 			const start = offset % this.maxChunkSize;
 			const available = this.maxChunkSize - start;
@@ -204,25 +214,46 @@ class DiskRegion implements Region, Disposable {
 			copied += read;
 			offset += read;
 		}
+		return copied;
 	}
 
 	private truncating: boolean = false;
 	truncate(size: number): void {
 		if (this.appending) throw new Error("you cant truncate while appending");
 		if (this.truncating) throw new Error("you are trying to truncate back to back, check your logic");
+		if (size > this.size) throw new Error(`cant truncate upward size=${size} current=${this.size}`);
 		this.truncating = true;
 
 		const oldTail = this.appender.index;
 		const newTail = Math.floor(size / this.maxChunkSize);
+		const tailEnd = size % this.maxChunkSize;
 
 		this.close();
 
-		for (let index = newTail + 1; index <= oldTail; index++) {
-			Deno.removeSync(this.chunkPath(index));
+		// FIX #5: delete high-to-low. If a crash happens mid-truncate, the
+		// surviving chunks are always a contiguous prefix [0..k], never a set
+		// with a gap. A gap would make DiskRegion.open throw ("chunks are
+		// fucked") and brick recovery. High-to-low guarantees no gap.
+		for (let index = oldTail; index > newTail; index--) {
+			// Tolerate already-removed chunks so a re-run of a crashed rollback
+			// is idempotent.
+			try {
+				Deno.removeSync(this.chunkPath(index));
+			} catch (e) {
+				if (!(e instanceof Deno.errors.NotFound)) throw e;
+			}
 		}
 
-		const tailEnd = size % this.maxChunkSize;
-		Deno.truncateSync(this.chunkPath(newTail), tailEnd);
+		// FIX #1: when size lands exactly on a chunk boundary (tailEnd === 0),
+		// chunk `newTail` may not exist yet (it is only created when data first
+		// spills into it). Create-or-truncate it to length 0 explicitly instead
+		// of calling Deno.truncateSync on a possibly-missing file.
+		if (tailEnd === 0) {
+			// Ensure newTail exists and is empty.
+			using _ = Deno.openSync(this.chunkPath(newTail), { create: true, write: true, truncate: true });
+		} else {
+			Deno.truncateSync(this.chunkPath(newTail), tailEnd);
+		}
 
 		this.appender.file = Deno.openSync(this.chunkPath(newTail), { create: true, append: true });
 		this.appender.index = newTail;

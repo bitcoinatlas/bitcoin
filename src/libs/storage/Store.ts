@@ -1,4 +1,4 @@
-import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
+import { RocksDatabase } from "@harperfast/rocksdb-js";
 
 export abstract class Store {
 	abstract readonly path: string;
@@ -11,5 +11,4 @@ export type FlushFinalizer = () => void;
 
 export abstract class StoreRocks {
 	abstract readonly rocksdb: RocksDatabase;
-	abstract flush(trx: Transaction): FlushFinalizer;
 }

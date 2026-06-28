@@ -222,7 +222,6 @@ export class ChainStore {
 					this.totalBlocks++;
 				}
 			}
-			this.requestFlush();
 			this.p2pChannel.postMessage({ type: "consume" });
 			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
 
@@ -233,32 +232,14 @@ export class ChainStore {
 			const headers = WireBlockHeaders.decodeValue(message.data);
 			const { height } = this.pushHeaders(headers);
 			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
-			this.requestFlush();
 			return;
 		}
 
 		if (message.type === "reorg") {
 			console.log(`[chain] tick reorg keepHeight=${message.data}`);
-			// truncate() rejects staged/frozen data, so flush to disk first
-			while (atomic.busy) await delay(1);
-			atomic.flush();
 			this.reorg(message.data);
-			this.requestFlush();
 			return;
 		}
-	}
-
-	private needFlush = false;
-	private requestFlush() {
-		if (atomic.busy) {
-			this.needFlush = true;
-			return;
-		}
-		atomic.flush(); /* .then(() => {
-			if (!this.needFlush) return;
-			this.needFlush = false;
-			this.requestFlush();
-		}); */
 	}
 
 	private pushHeaders(headers: WireBlockHeader[]): { height: number } {
@@ -283,16 +264,11 @@ export class ChainStore {
 	// output scriptPubKey hashes
 	private _pubkeyKeys = new FastUint8ArrayMap<number>(64);
 	private _pubkeyHashes: (Uint8Array | null)[] = []; // [t][i] -> hash or null, computed once
-	private appendTxs(
-		txs: StoredTx[],
-		height: number,
-		batches?: InferBatches<typeof atomic>,
-	): { pointer: StoredPointer } {
-		const batch = batches ?? atomic.batch();
-
-		const op = () => {
+	private appendTxs(txs: StoredTx[], height: number): { pointer: StoredPointer } {
+		try {
+			atomic.pin();
 			const txCountBytes = StoredTxs.counter.encode(txs.length);
-			const blockPointer = batch.tx.append(txCountBytes);
+			const blockPointer = atomic.stores.tx.append(txCountBytes);
 
 			// --- PHASE 1: prefetch all RocksDB reads up front, in parallel ---
 			// We don't know same-block pointers yet, so we just prefetch *whether* each key
@@ -321,11 +297,11 @@ export class ChainStore {
 			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(this._txidKeys.size());
 			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(this._pubkeyKeys.size());
 			for (const id of this._txidKeys.keys()) {
-				const p = batch.txid.get(id);
+				const p = atomic.stores.txid.get(id);
 				if (p !== undefined) txidPrefetch.set(id, p);
 			}
 			for (const h of this._pubkeyKeys.keys()) {
-				const p = batch.pubkey.get(h);
+				const p = atomic.stores.pubkey.get(h);
 				if (p !== undefined) pubkeyPrefetch.set(h, p);
 			}
 
@@ -404,31 +380,9 @@ export class ChainStore {
 			const currentLength = batch.block.length();
 			if (currentLength !== height) throw new Error(`Unexpected length=${height}, got ${currentLength}`);
 			batch.block.push(blockPointer);
-			return blockPointer;
-		};
-
-		if (batches) {
-			const blockPointer = op();
-			return { pointer: blockPointer };
-		}
-
-		try {
-			const blockPointer = op();
-			batch.header.apply();
-			batch.block.apply();
-			batch.spender.apply();
-			batch.tx.apply();
-			batch.txid.apply();
-			batch.pubkey.apply();
 
 			return { pointer: blockPointer };
 		} catch (reason) {
-			batch.header.discard();
-			batch.block.discard();
-			batch.spender.discard();
-			batch.tx.discard();
-			batch.txid.discard();
-			batch.pubkey.discard();
 			console.error("Failed to append txs:", reason);
 			Deno.exit(1);
 		}

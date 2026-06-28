@@ -49,9 +49,8 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		if (start < 0) {
 			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
 		}
-		// start/end are item indices, so the blob pointer must be a byte offset.
-		// Previously `start` was passed straight through as a byte pointer, reading
-		// from byte `start` instead of `start * stride` for any start > 0.
+		if (start > length) start = length;
+		if (end <= start) return [];
 		return this.blob.get(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
 	}
 
