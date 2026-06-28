@@ -1,4 +1,4 @@
-import { RocksDatabase } from "@harperfast/rocksdb-js";
+import { RocksDatabase, RocksDatabaseOptions } from "@harperfast/rocksdb-js";
 import { sha256 } from "@noble/hashes/sha2";
 import { delay } from "@std/async";
 import { join } from "@std/path";
@@ -14,16 +14,16 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT, MAX_NON_WITNESS_SIZE } from "~/constants.ts";
-import { ARGS, BASE_DATA_DIR } from "~/env.ts";
+import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT, MAX_NON_WITNESS_BLOCK_SIZE } from "~/constants.ts";
+import { BASE_DATA_DIR } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
+import { formatDuration } from "~/libs/formatting/mod.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic, InferStores } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
-import { formatDuration } from "~/libs/formatting/mod.ts";
 
 const GiB = 1024 ** 3;
 const totalRam = Deno.systemMemoryInfo().total;
@@ -41,119 +41,9 @@ const blockCacheSize = Math.max(
 	Math.min(available * 0.6, 32 * GiB), // 60% of remainder, hard ceiling
 );
 
-console.log(
-	`[rocksdb] ram=${(totalRam / GiB).toFixed(1)}GiB`,
-	`blockCache=${(blockCacheSize / GiB).toFixed(1)}GiB`,
-	`writeBuffer=${(writeBufferSize / GiB).toFixed(1)}GiB`,
-);
-
-RocksDatabase.config({
-	blockCacheSize,
-	writeBufferManagerSize: writeBufferSize,
-	writeBufferManagerCostToCache: false,
-	writeBufferManagerAllowStall: false,
-});
-
-const rocksdb = RocksDatabase.open(join(BASE_DATA_DIR, "rocksdb"), {
-	disableWAL: true,
-	pessimistic: true,
-	enableStats: ARGS["rocksdb-stats"],
-	parallelismThreads: Math.min(10, navigator.hardwareConcurrency),
-	transactionLogRetention: 0,
-	bloomBitsPerKey: 10,
-	ribbonFilter: true,
-	transactionLogMaxSize: 0,
-	keyEncoder: {
-		readKey(source: any, start: number, end?: number) {
-			return source.subarray(start, end);
-		},
-		writeKey(key: any, target: any, start: number) {
-			target.set(key, start);
-			return start + key.length;
-		},
-	},
-});
-
-if (ARGS["rocksdb-stats"]) {
-	globalThis.addEventListener("unload", () => {
-		try {
-			logRocksStats(rocksdb);
-		} catch (e) {
-			console.error("[rocksdb stats] failed:", e);
-		}
-	});
-
-	function logRocksStats(db: RocksDatabase): void {
-		const num = (name: string) => {
-			const v = db.getStat(name);
-			return typeof v === "number" ? v : 0;
-		};
-
-		const cHit = num("rocksdb.block.cache.hit");
-		const cMiss = num("rocksdb.block.cache.miss");
-		const hitRate = cHit + cMiss ? (100 * cHit) / (cHit + cMiss) : 0;
-
-		const bloomUseful = num("rocksdb.bloom.filter.useful");
-		const bloomFullPos = num("rocksdb.bloom.filter.full.positive");
-
-		const get = db.getStat("rocksdb.db.get.micros"); // histogram
-
-		console.log("[rocksdb stats] -----------------------------");
-		console.log(`  block cache  hit=${cHit} miss=${cMiss} hitRate=${hitRate.toFixed(2)}%`);
-		console.log(`  memtable     hit=${num("rocksdb.memtable.hit")} miss=${num("rocksdb.memtable.miss")}`);
-		console.log(`  sst bloom    useful=${bloomUseful} fullPositive=${bloomFullPos}`);
-		if (get && typeof get === "object") {
-			console.log(
-				`  get.micros   p50=${get.median.toFixed(1)} p95=${get.percentile95.toFixed(1)} ` +
-					`p99=${get.percentile99.toFixed(1)} max=${get.max.toFixed(0)} count=${get.count}`,
-			);
-		}
-		console.log(db.getStats()); // full curated dump for everything else
-	}
-}
-
-const atomic = Atomic.open({
-	path: join(BASE_DATA_DIR, "atomic"),
-	stores: {
-		header: ArrayStore.open({
-			path: join(BASE_DATA_DIR, "header"),
-			codec: StoredBlockHeader,
-			itemsPerChunk: 1_000_000,
-		}),
-		block: ArrayStore.open({
-			path: join(BASE_DATA_DIR, "block"),
-			codec: StoredPointer,
-			itemsPerChunk: 1_000_000,
-		}),
-		tx: BlobStore.open({
-			path: join(BASE_DATA_DIR, "tx"),
-			maxChunkSize: 1 * 1000 * 1000 * 1000,
-		}),
-		txid: KvStore.open({
-			rocksdb,
-			prefix: new Uint8Array([0]),
-			key: Bytes32,
-			value: StoredPointer,
-		}),
-		pubkey: KvStore.open({
-			rocksdb,
-			prefix: new Uint8Array([1]),
-			key: Bytes32,
-			value: StoredPointer,
-		}),
-	},
-});
-
-atomic.recover();
-
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
 	public readonly atomic = atomic;
-
-	// Reused across every _appendTxs call/tx so encodeWithOffsets never
-	// allocates per-tx. Sized to the max a single serialized tx can be
-	// (bounded by block size/weight); append() copies the live prefix out.
-	private readonly txScratch = new Uint8Array(MAX_BLOCK_SIZE);
 
 	private p2pChannel: MessagePort;
 	private p2pMessageQueue: Queue<{ type: string; data: any }>;
@@ -254,136 +144,6 @@ export class ChainStore {
 			return { height };
 		} catch (reason) {
 			console.error("Failed to append block header:", reason);
-			Deno.exit(1);
-		}
-	}
-
-	private _rawScriptPubKeyBuffer = new Uint8Array(new ArrayBuffer(0, { maxByteLength: MAX_NON_WITNESS_SIZE }));
-	// input prevOut txids (skip raw-coinbase; same-block ones resolve locally in phase 2)
-	private _txidKeys = new FastUint8ArrayMap<number>(64);
-	// output scriptPubKey hashes
-	private _pubkeyKeys = new FastUint8ArrayMap<number>(64);
-	private _pubkeyHashes: (Uint8Array | null)[] = []; // [t][i] -> hash or null, computed once
-	private appendTxs(txs: StoredTx[], height: number): { pointer: StoredPointer } {
-		try {
-			atomic.pin();
-			const txCountBytes = StoredTxs.counter.encode(txs.length);
-			const blockPointer = atomic.stores.tx.append(txCountBytes);
-
-			// --- PHASE 1: prefetch all RocksDB reads up front, in parallel ---
-			// We don't know same-block pointers yet, so we just prefetch *whether* each key
-			// exists in RocksDB. Same-block cases are handled by local maps in phase 2.
-
-			this._txidKeys.clear();
-			this._pubkeyKeys.clear();
-			this._pubkeyHashes.length = 0;
-			for (let t = 0; t < txs.length; t++) {
-				const tx = txs[t]!;
-				for (const input of tx.inputs) {
-					if (input.prevOut.txId.kind === "raw") this._txidKeys.set(input.prevOut.txId.value, 1);
-				}
-				for (const output of tx.outputs) {
-					if (output.scriptPubKey.kind === "pointer") {
-						this._pubkeyHashes.push(null);
-						continue;
-					}
-					// computed ONCE here, reused everywhere below
-					const hash = sha256(rawScriptPubKey(output.scriptPubKey, this._rawScriptPubKeyBuffer));
-					this._pubkeyHashes.push(hash);
-					this._pubkeyKeys.set(hash, 1);
-				}
-			}
-
-			const txidPrefetch = new FastUint8ArrayMap<StoredPointer>(this._txidKeys.size());
-			const pubkeyPrefetch = new FastUint8ArrayMap<StoredPointer>(this._pubkeyKeys.size());
-			for (const id of this._txidKeys.keys()) {
-				const p = atomic.stores.txid.get(id);
-				if (p !== undefined) txidPrefetch.set(id, p);
-			}
-			for (const h of this._pubkeyKeys.keys()) {
-				const p = atomic.stores.pubkey.get(h);
-				if (p !== undefined) pubkeyPrefetch.set(h, p);
-			}
-
-			// --- PHASE 2: sequential, no RocksDB ---
-			const blockTxIds = new FastUint8ArrayMap<number>(txs.length * 2); // same-block txid -> pointer
-			const blockPubkeys = new FastUint8ArrayMap<StoredPointer>(64); // same-block hash -> pointer
-			let pubKeyHashesOffset = 0;
-			let offset = txCountBytes.length;
-			for (let t = 0; t < txs.length; t++) {
-				const tx = txs[t]!;
-				const txPointer = blockPointer + offset;
-				tx.spender = batch.spender.length();
-				batch.txid.set(tx.txId, txPointer);
-				blockTxIds.set(tx.txId, txPointer);
-
-				// inputs: local block map first, then prefetched
-				for (let i = 0; i < tx.inputs.length; i++) {
-					const input = tx.inputs[i]!;
-					if (input.prevOut.txId.kind !== "raw") continue;
-					const id = input.prevOut.txId.value;
-					const pointer = blockTxIds.get(id) ?? txidPrefetch.get(id);
-					if (pointer === undefined) {
-						console.error(`[appendTxs] unresolved prevOut height=${height} tx=${t} vin=${i}`);
-						Deno.exit(1);
-					}
-					input.prevOut.txId = { kind: "pointer", value: pointer };
-				}
-
-				// scriptPubKey reuse: local block map first, then prefetched
-				for (let i = 0; i < tx.outputs.length; i++) {
-					const output = tx.outputs[i]!;
-					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = this._pubkeyHashes[pubKeyHashesOffset + i]!;
-					const existing = blockPubkeys.get(hash) ?? pubkeyPrefetch.get(hash);
-					if (existing !== undefined) output.scriptPubKey = { kind: "pointer", value: existing };
-				}
-
-				// size is computed AFTER resolution above — raw→pointer changes the byte length
-				const size = StoredTx.size(tx);
-				const offsets = StoredTx.encodeWithOffsets(tx, this.txScratch, 0);
-				const written = batch.tx.append(this.txScratch.subarray(0, size));
-				if (written !== txPointer) {
-					throw new Error(`[appendTxs] pointer drift: append=${written} txPointer=${txPointer}`);
-				}
-
-				// pubkey index writes: reuse the same hashes, dedup via local + prefetch
-				for (let i = 0; i < tx.outputs.length; i++) {
-					const output = tx.outputs[i]!;
-					batch.spender.push(0);
-					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = this._pubkeyHashes[pubKeyHashesOffset + i]!;
-					if (blockPubkeys.get(hash) === undefined && pubkeyPrefetch.get(hash) === undefined) {
-						const ptr = txPointer + offsets.outputs[i]!;
-						batch.pubkey.set(hash, ptr);
-						blockPubkeys.set(hash, ptr); // so a later same-block output reuses it
-					}
-				}
-
-				for (let i = 0; i < tx.inputs.length; i++) {
-					const input = tx.inputs[i]!;
-					if (input.prevOut.txId.kind !== "pointer") continue;
-					const txSpenderOffset = batch.tx.get(input.prevOut.txId.value + Bytes32.stride.size, U40);
-					const spenderIndex = txSpenderOffset + input.prevOut.vout;
-					const spender = batch.spender.get(spenderIndex);
-					if (spender && spender > 0) {
-						const txid = batch.tx.get(input.prevOut.txId.value, Bytes32);
-						throw new Error(`Output ${formatHash(txid)}:${input.prevOut.vout} is already spent.`);
-					}
-					batch.spender.set(spenderIndex, txPointer);
-				}
-
-				offset += size;
-				pubKeyHashesOffset = tx.outputs.length;
-			}
-
-			const currentLength = batch.block.length();
-			if (currentLength !== height) throw new Error(`Unexpected length=${height}, got ${currentLength}`);
-			batch.block.push(blockPointer);
-
-			return { pointer: blockPointer };
-		} catch (reason) {
-			console.error("Failed to append txs:", reason);
 			Deno.exit(1);
 		}
 	}

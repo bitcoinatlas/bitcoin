@@ -29,9 +29,9 @@ export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks {
 		return self;
 	}
 
-	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined {
+	get(key: Codec.InferInput<K>, transaction?: Transaction): Codec.InferOutput<V> | undefined {
 		this.key.encodeInto(key, this.keyBuf);
-		const bytes = this.rocksdb.getSync(this.keyBuf);
+		const bytes = this.rocksdb.getSync(this.keyBuf, { transaction });
 		if (!bytes) return undefined; // tombstone (null) or rocksdb miss
 		return this.value.decodeValue(bytes);
 	}

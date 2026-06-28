@@ -5,73 +5,82 @@ import { existsSync } from "@std/fs";
 import { join } from "@std/path";
 import { writeFileSync } from "~/libs/fs/mod.ts";
 import { Store, StoreRocks } from "~/libs/storage/Store.ts";
+import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 
 const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
 
-type AtomicStores = { readonly [name: string]: Store | StoreRocks };
+export type AtomicStores = { readonly [name: string]: Store | StoreRocks };
 export type AtomicOptions<T extends AtomicStores> = {
 	path: string;
+	rocksdb: RocksDatabase;
 	stores: T;
-};
-
-export type InferStores<T extends Atomic<AtomicStores>, TNames extends keyof T["stores"] = keyof T["stores"]> = {
-	readonly [K in Extract<keyof T["stores"], TNames>]: T["stores"][K];
 };
 
 export class Atomic<T extends AtomicStores> {
 	public readonly stores: T;
+	private readonly rocksdb: RocksDatabase;
 
-	private rocks: ReadonlyMap<string, StoreRocks>;
+	private rockMap: ReadonlyMap<string, StoreRocks>;
 	private storeMap: ReadonlyMap<string, Store>;
 
-	private start: Uint8Array | undefined;
-	private end: Uint8Array | undefined;
+	private start: Uint8Array;
+	private end: Uint8Array;
 
 	private startPath: string;
 	private endPath: string;
 
 	private constructor(options: AtomicOptions<T>) {
+		this.rocksdb = options.rocksdb;
 		this.stores = options.stores;
 
 		const entries = Object.entries(options.stores);
-		this.rocks = new Map(entries.filter((entry): entry is [string, StoreRocks] => entry[1] instanceof StoreRocks));
+		this.rockMap = new Map(entries.filter((entry): entry is [string, StoreRocks] => entry[1] instanceof StoreRocks));
 		this.storeMap = new Map(entries.filter((entry): entry is [string, Store] => entry[1] instanceof Store));
+
+		for (const rock of this.rockMap.values()) {
+			if (this.rocksdb.path === rock.rocksdb.path) continue;
+			throw new Error("inconsistent rocksdb paths");
+		}
 
 		this.startPath = join(options.path, `start.id`);
 		this.endPath = join(options.path, "end.id");
+		this.start = new Uint8Array();
+		this.end = new Uint8Array();
 	}
 
 	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
 		const self = new Atomic<T>(options);
 		Deno.mkdirSync(options.path, { recursive: true });
-		self.start = existsSync(self.startPath) ? Deno.readFileSync(self.startPath) : undefined;
-		self.end = existsSync(self.endPath) ? Deno.readFileSync(self.endPath) : undefined;
+		if (existsSync(self.startPath)) self.start = Deno.readFileSync(self.startPath);
+		if (existsSync(self.endPath)) self.end = Deno.readFileSync(self.endPath);
 
 		return self;
-	}
-
-	validPin() {
-		if (!this.start && !this.end) return true;
-		if (!this.start || !this.end) return false;
-		return equals(this.start, this.end);
 	}
 
 	pin() {
 		try {
 			this.setStart();
 			for (const store of this.storeMap.values()) store.pin();
+			this.setEnd();
 		} catch (reason) {
 			console.error("pinning failed", reason);
 			Deno.exit(1);
 		}
 	}
 
-	commit() {
-		this.setEnd();
+	trx(call: (stores: T, trx: Transaction) => void) {
+		try {
+			this.pin();
+			this.rocksdb.transactionSync((trx) => call(this.stores, trx));
+			this.rocksdb.flushSync();
+		} catch (reason) {
+			console.error("atomic trx failed", reason);
+			Deno.exit(1);
+		}
 	}
 
 	recover(): void {
-		if (!this.validPin()) return;
+		if (!equals(this.start, this.end)) return;
 		for (const store of this.storeMap.values()) store.rollback();
 	}
 
@@ -85,9 +94,6 @@ export class Atomic<T extends AtomicStores> {
 
 	private setEnd() {
 		const id = this.start;
-		if (!id) {
-			throw new Error("did you call end without start, or something? because this is weird");
-		}
 		using file = Deno.openSync(this.endPath, { create: true, write: true });
 		writeFileSync(file, id);
 		file.syncSync();

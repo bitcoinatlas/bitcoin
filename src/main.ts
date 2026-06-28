@@ -1,10 +1,12 @@
 import { ARGS } from "~/env.ts";
+import { atomic } from "~/chain/atomic.ts";
 
 const global = globalThis as typeof globalThis & { gc?(): void };
 
 if (import.meta.main) {
 	Deno.addSignalListener("SIGINT", () => Deno.exit(0));
 
+	atomic.recover();
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
 	const chainWorker = new Worker(new URL("./chain/worker.ts", import.meta.url), { type: "module", name: "chain" });
 	const syncMessageChannel = new MessageChannel();
