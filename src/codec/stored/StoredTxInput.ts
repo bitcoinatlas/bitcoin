@@ -115,7 +115,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		const { kind } = input.prevOut.txId;
 		if (kind === "pointer") {
 			prevOutKind = PREVOUT_RESOLVED;
-			prevOutSize = StoredTxPointer.stride.size + VarInt.size(input.prevOut.vout);
+			prevOutSize = StoredTxPointer.stride.size + VarInt.encode(input.prevOut.vout).length;
 		} else if (kind === "coinbase") {
 			prevOutKind = PREVOUT_COINBASE;
 			prevOutSize = 0;
@@ -177,26 +177,11 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		return offset - start;
 	}
 
-	override size(input: StoredTxInput): number {
-		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
-		const seqExplicit = sequenceTagForU32(seqU32) === SEQ_EXPLICIT;
+	decodeFrom(data: Uint8Array, offset: number): [StoredTxInput, number] {
+		let currentOffset = offset;
 
-		let prevOutSize: number;
-		if (input.prevOut.txId.kind === "pointer") {
-			prevOutSize = StoredTxPointer.stride.size + VarInt.size(input.prevOut.vout);
-		} else {
-			prevOutSize = 0;
-		}
-
-		return 1 + prevOutSize + (seqExplicit ? 4 : 0) +
-			scriptSigCodec.size(input.scriptSig) + StoredWitness.size(input.witness);
-	}
-
-	decode(data: Uint8Array): [StoredTxInput, number] {
-		let offset = 0;
-
-		const tagByte = data[offset]!;
-		offset += 1;
+		const tagByte = data[currentOffset]!;
+		currentOffset += 1;
 
 		const prevOutKind = tagByte & PREVOUT_MASK;
 		const seqTag = (tagByte & SEQ_MASK) >>> SEQ_SHIFT;
@@ -205,30 +190,28 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		let vout: number;
 
 		if (prevOutKind === PREVOUT_RESOLVED) {
-			const [pointer] = StoredTxPointer.decode(data.subarray(offset));
-			offset += StoredTxPointer.stride.size;
+			const [pointer] = StoredTxPointer.decodeFrom(data, currentOffset);
+			currentOffset += StoredTxPointer.stride.size;
 			let voutOffset;
-			[vout, voutOffset] = VarInt.decode(data.subarray(offset));
-			offset += voutOffset;
+			[vout, voutOffset] = VarInt.decodeFrom(data, currentOffset);
+			currentOffset += voutOffset;
 			txId = { kind: "pointer", value: pointer };
 		} else {
-			// PREVOUT_COINBASE (1-bit kind: only two possibilities)
 			txId = { kind: "coinbase" };
 			vout = COINBASE_VOUT;
 		}
 
-		// Sequence: either from tag or explicit u32
 		let seqU32 = sequenceU32ForTag(seqTag);
 		if (seqU32 === null) {
-			seqU32 = U32LE.decode(data.subarray(offset))[0] >>> 0;
-			offset += 4;
+			seqU32 = U32LE.decodeFrom(data, currentOffset)[0] >>> 0;
+			currentOffset += 4;
 		}
 
-		const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data.subarray(offset));
-		offset += scriptSigBytes;
+		const [scriptSig, scriptSigBytes] = scriptSigCodec.decodeFrom(data, currentOffset);
+		currentOffset += scriptSigBytes;
 
-		const [witness, witnessBytes] = StoredWitness.decode(data.subarray(offset));
-		offset += witnessBytes;
+		const [witness, witnessBytes] = StoredWitness.decodeFrom(data, currentOffset);
+		currentOffset += witnessBytes;
 
 		const input: StoredTxInput = {
 			prevOut: { txId, vout },
@@ -237,7 +220,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 			witness,
 		};
 
-		return [input, offset];
+		return [input, currentOffset - offset];
 	}
 }
 

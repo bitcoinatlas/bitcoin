@@ -82,4 +82,6 @@ export const GENESIS_BLOCK_PREV_HASH = GENESIS_BLOCK_HEADER.subarray(
 	WireBlockHeader.inner.shape.version.stride.size + WireBlockHeader.inner.shape.prevHash.stride.size,
 );
 export const GENESIS_BLOCK_HASH = sha256(sha256(GENESIS_BLOCK_HEADER));
-export const GENESIS_WORK = workFromHeader(WireBlockHeader.decodeValue(GENESIS_BLOCK_HEADER));
+
+export const [GENESIS_BLOCK_HEADER_DECODED] = WireBlockHeader.decode(GENESIS_BLOCK_HEADER);
+export const GENESIS_WORK = workFromHeader(GENESIS_BLOCK_HEADER_DECODED);

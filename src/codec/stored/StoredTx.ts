@@ -102,24 +102,19 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return offset - start;
 	}
 
-	public override size(value: StoredTx): number {
-		return TXID.stride.size + PACK.size(value) +
-			OUTPUTS.size(value.outputs) + INPUTS.size(value.inputs);
-	}
+	public decodeFrom(data: Uint8Array, offset: number): [StoredTx, number] {
+		let pos = offset;
 
-	public decode(data: Uint8Array): [StoredTx, number] {
-		let pos = 0;
-
-		const [txId, txIdSize] = TXID.decode(data.subarray(pos));
+		const [txId, txIdSize] = TXID.decodeFrom(data, pos);
 		pos += txIdSize;
-		const [{ locktime, version }, packSize] = PACK.decode(data.subarray(pos));
+		const [{ locktime, version }, packSize] = PACK.decodeFrom(data, pos);
 		pos += packSize;
-		const [vout, voutSize] = OUTPUTS.decode(data.subarray(pos));
+		const [vout, voutSize] = OUTPUTS.decodeFrom(data, pos);
 		pos += voutSize;
-		const [vin, vinSize] = INPUTS.decode(data.subarray(pos));
+		const [vin, vinSize] = INPUTS.decodeFrom(data, pos);
 		pos += vinSize;
 
-		return [{ txId, locktime, version, outputs: vout, inputs: vin }, pos];
+		return [{ txId, locktime, version, outputs: vout, inputs: vin }, pos - offset];
 	}
 
 	/**
@@ -128,7 +123,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 	 * Add `txPointer` (the blob offset where the tx starts) to each returned
 	 * offset to get the absolute blob pointer for that output/input.
 	 *
-	 * Invariant: the number of bytes written equals `this.size(value)`.
+	 * Invariant: the number of bytes written equals the total encoded size.
 	 */
 	public encodeWithOffsets(value: StoredTx, target: Uint8Array, offset: number): StoredTxOffsets {
 		const start = offset;

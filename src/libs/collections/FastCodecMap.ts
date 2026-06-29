@@ -243,7 +243,8 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		while (occupied[slot]) {
 			if (hashes[slot] === hash && this.eqAt(slot, ks)) {
 				const vo = slot * this.valLen;
-				return this.value.decodeValue(this.valBytes.subarray(vo, vo + this.valLen));
+				const [value] = this.value.decodeFrom(this.valBytes, vo);
+				return value;
 			}
 			slot = (slot + 1) & mask;
 		}
@@ -310,10 +311,9 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 			if (!occupied[i]) continue;
 			const ko = i * keyLen;
 			const vo = i * valLen;
-			yield [
-				this.key.decodeValue(this.keyBytes.subarray(ko, ko + keyLen)),
-				this.value.decodeValue(this.valBytes.subarray(vo, vo + valLen)),
-			];
+			const [key] = this.key.decode(this.keyBytes.subarray(ko));
+			const [value] = this.value.decode(this.valBytes.subarray(vo));
+			yield [key, value];
 		}
 	}
 
@@ -323,7 +323,8 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		for (let i = 0; i < this.capacity; i++) {
 			if (!occupied[i]) continue;
 			const ko = i * keyLen;
-			yield this.key.decodeValue(this.keyBytes.subarray(ko, ko + keyLen));
+			const [key] = this.key.decode(this.keyBytes.subarray(ko, ko + keyLen));
+			yield key;
 		}
 	}
 
@@ -333,7 +334,8 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		for (let i = 0; i < this.capacity; i++) {
 			if (!occupied[i]) continue;
 			const vo = i * valLen;
-			yield this.value.decodeValue(this.valBytes.subarray(vo, vo + valLen));
+			const [key] = this.value.decode(this.valBytes.subarray(vo, vo + valLen));
+			yield key;
 		}
 	}
 }

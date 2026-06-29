@@ -38,8 +38,8 @@ export class LockTimeCodec extends Codec<LockTime> {
 		return U32LE.encodeInto(LockTimeCodec.toU32(value), target, offset);
 	}
 
-	public decode(data: Uint8Array): [LockTime, number] {
-		const [locktime] = U32LE.decode(data);
+	public decodeFrom(data: Uint8Array, offset: number): [LockTime, number] {
+		const [locktime] = U32LE.decodeFrom(data, offset);
 		const value = locktime >>> 0;
 		return [LockTimeCodec.fromU32(value), 4];
 	}

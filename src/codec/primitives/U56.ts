@@ -19,11 +19,11 @@ export class U56Codec extends Codec<bigint> {
 		return 7;
 	}
 
-	public decode(data: Uint8Array): [bigint, number] {
-		if (data.length < 7) throw new Error("Not enough bytes for U56");
+	public decodeFrom(data: Uint8Array, offset: number): [bigint, number] {
+		if (data.length - offset < 7) throw new Error("Not enough bytes for U56");
 		let value = 0n;
 		for (let i = 0; i < 7; i++) {
-			value |= BigInt(data[i]!) << BigInt((6 - i) * 8);
+			value |= BigInt(data[offset + i]!) << BigInt((6 - i) * 8);
 		}
 		return [value, 7];
 	}

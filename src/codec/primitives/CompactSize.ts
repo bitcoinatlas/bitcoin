@@ -46,15 +46,8 @@ export class CompactSizeCodec extends Codec<number> {
 		return 9;
 	}
 
-	public override size(n: number): number {
-		if (n < 0xfd) return 1;
-		if (n <= 0xffff) return 3;
-		if (n <= 0xffffffff) return 5;
-		return 9;
-	}
-
-	public decode(data: Uint8Array): [number, number] {
-		const view = new Uint8ArrayView(data);
+	public decodeFrom(data: Uint8Array, offset: number): [number, number] {
+		const view = new Uint8ArrayView(data, offset);
 		const first = view.getUint8(0);
 		if (first < 0xfd) return [first, 1];
 		if (first === 0xfd) {

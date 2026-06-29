@@ -16,8 +16,8 @@ class PingPongCodec extends Codec<bigint> {
 		return 8;
 	}
 
-	public decode(bytes: Uint8Array): [bigint, number] {
-		return [new Uint8ArrayView(bytes).getBigUint64(0, true), 8];
+	public decodeFrom(bytes: Uint8Array, offset: number): [bigint, number] {
+		return [new Uint8ArrayView(bytes, offset).getBigUint64(0, true), 8];
 	}
 }
 

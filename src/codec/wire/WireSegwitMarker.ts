@@ -16,12 +16,8 @@ export class WireSegwitMarkerCodec extends Codec<boolean> {
 		return 2;
 	}
 
-	public override size(hasWitness: boolean): number {
-		return hasWitness ? 2 : 0;
-	}
-
-	public decode(data: Uint8Array): [boolean, number] {
-		if (data.length >= 2 && data[0] === 0x00 && data[1] === 0x01) {
+	public decodeFrom(data: Uint8Array, offset: number): [boolean, number] {
+		if (data.length - offset >= 2 && data[offset] === 0x00 && data[offset + 1] === 0x01) {
 			return [true, 2];
 		}
 		return [false, 0];

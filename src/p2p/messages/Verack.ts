@@ -12,7 +12,7 @@ class VerackCodec extends Codec<null> {
 		return 0;
 	}
 
-	public decode(_bytes: Uint8Array): [null, number] {
+	public decodeFrom(_bytes: Uint8Array, _offset: number): [null, number] {
 		return [null, 0];
 	}
 }

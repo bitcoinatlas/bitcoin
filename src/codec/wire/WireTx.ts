@@ -66,33 +66,23 @@ class WireTxCodec extends Codec<T> {
 		return offset - start;
 	}
 
-	public override size(tx: T): number {
-		const hasWitness = tx.witness.length > 0;
-		let total = WireTxPreWitness.size({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs });
-		if (hasWitness) total += witnessSize(tx.witness);
-		total += WireTxPostWitness.size({ locktime: tx.locktime });
-		return total;
-	}
+	public decodeFrom(bytes: Uint8Array, offset: number): [T, number] {
+		const [preWitness, preWitnessBytes] = WireTxPreWitness.decodeFrom(bytes, offset);
+		let currentOffset = offset + preWitnessBytes;
 
-	public decode(bytes: Uint8Array): [T, number] {
-		// Decode pre-witness data
-		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes);
-		let offset = preWitnessBytes;
-
-		// Decode witness (if present)
 		let witness: Uint8Array[][] = [];
 		if (preWitness.hasWitness) {
 			const [w, witnessBytes] = decodeWitness(
-				bytes.subarray(offset),
+				bytes,
+				currentOffset,
 				preWitness.inputs.length,
 			);
 			witness = w;
-			offset += witnessBytes;
+			currentOffset += witnessBytes;
 		}
 
-		// Decode locktime
-		const [postWitness] = WireTxPostWitness.decode(bytes.subarray(offset));
-		offset += 4; // locktime is 4 bytes
+		const [postWitness] = WireTxPostWitness.decodeFrom(bytes, currentOffset);
+		currentOffset += 4;
 
 		return [{
 			version: preWitness.version,
@@ -100,7 +90,7 @@ class WireTxCodec extends Codec<T> {
 			inputs: preWitness.inputs,
 			outputs: preWitness.outputs,
 			witness,
-		}, offset];
+		}, currentOffset - offset];
 	}
 }
 
@@ -131,36 +121,24 @@ function encodeWitnessInto(witness: Uint8Array[][], target: Uint8Array, offset: 
 	return offset - start;
 }
 
-// Byte length of the witness section without allocating (mirror of encodeWitness).
-function witnessSize(witness: Uint8Array[][]): number {
-	let total = 0;
-	for (const inputWitness of witness) {
-		total += CompactSize.size(inputWitness.length);
-		for (const item of inputWitness) {
-			total += CompactSize.size(item.length) + item.length;
-		}
-	}
-	return total;
-}
-
 // Decode witness: array of witness per input
-function decodeWitness(data: Uint8Array, inputCount: number): [Uint8Array[][], number] {
-	let offset = 0;
+function decodeWitness(data: Uint8Array, offset: number, inputCount: number): [Uint8Array[][], number] {
+	let currentOffset = offset;
 	const witness: Uint8Array[][] = [];
 	for (let i = 0; i < inputCount; i++) {
-		const [nItems, nItemsBytes] = CompactSize.decode(data.subarray(offset));
-		offset += nItemsBytes;
+		const [nItems, nItemsBytes] = CompactSize.decodeFrom(data, currentOffset);
+		currentOffset += nItemsBytes;
 		const items: Uint8Array[] = [];
 		for (let j = 0; j < nItems; j++) {
-			const [itemLen, itemLenBytes] = CompactSize.decode(data.subarray(offset));
-			offset += itemLenBytes;
-			const item = data.subarray(offset, offset + itemLen);
-			offset += itemLen;
+			const [itemLen, itemLenBytes] = CompactSize.decodeFrom(data, currentOffset);
+			currentOffset += itemLenBytes;
+			const item = data.subarray(currentOffset, currentOffset + itemLen);
+			currentOffset += itemLen;
 			items.push(item);
 		}
 		witness.push(items);
 	}
-	return [witness, offset];
+	return [witness, currentOffset - offset];
 }
 
 export type WireTx = Codec.InferOutput<typeof WireTx>;

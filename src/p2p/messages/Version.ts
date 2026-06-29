@@ -94,13 +94,8 @@ class VersionCodec extends Codec<VersionPayload> {
 		return off;
 	}
 
-	public override size(data: VersionPayload): number {
-		const uaLen = new TextEncoder().encode(data.userAgent).length;
-		return 4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + uaLen + 4 + 1;
-	}
-
-	public decode(bytes: Uint8Array): [VersionPayload, number] {
-		const view = new Uint8ArrayView(bytes);
+	public decodeFrom(bytes: Uint8Array, offset: number): [VersionPayload, number] {
+		const view = new Uint8ArrayView(bytes, offset);
 		let off = 0;
 
 		const version = view.getInt32(off, true);
@@ -111,24 +106,24 @@ class VersionCodec extends Codec<VersionPayload> {
 		off += 8;
 		const recvServices = view.getBigUint64(off, true);
 		off += 8;
-		const recvIP = decodeIP(bytes.subarray(off, off + 16));
+		const recvIP = decodeIP(bytes.subarray(offset + off, offset + off + 16));
 		off += 16;
 		const recvPort = view.getUint16(off, false);
 		off += 2;
 		const transServices = view.getBigUint64(off, true);
 		off += 8;
-		const transIP = decodeIP(bytes.subarray(off, off + 16));
+		const transIP = decodeIP(bytes.subarray(offset + off, offset + off + 16));
 		off += 16;
 		const transPort = view.getUint16(off, false);
 		off += 2;
 		const nonce = view.getBigUint64(off, true);
 		off += 8;
-		const uaLen = bytes[off++]!;
-		const userAgent = new TextDecoder().decode(bytes.subarray(off, off + uaLen));
+		const uaLen = bytes[offset + off++]!;
+		const userAgent = new TextDecoder().decode(bytes.subarray(offset + off, offset + off + uaLen));
 		off += uaLen;
 		const startHeight = view.getInt32(off, true);
 		off += 4;
-		const relay = !!bytes[off++];
+		const relay = !!bytes[offset + off++];
 
 		return [{
 			version,

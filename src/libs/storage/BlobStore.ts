@@ -71,7 +71,13 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	rollback(): void {
-		const size = existsSync(this.rollbackPath) ? Number(U64.decodeValue(Deno.readFileSync(this.rollbackPath))) : 0;
+		let size: number;
+		if (existsSync(this.rollbackPath)) {
+			const [decoded] = U64.decode(Deno.readFileSync(this.rollbackPath));
+			size = Number(decoded);
+		} else {
+			size = 0;
+		}
 		this.truncate(size);
 	}
 

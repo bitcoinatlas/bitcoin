@@ -24,9 +24,9 @@ export class U24Codec extends Codec<number> {
 		return 3;
 	}
 
-	public decode(data: Uint8Array): [number, number] {
-		if (data.length < 3) throw new Error("Not enough bytes for U24");
-		const value = (data[0]! << 16) | (data[1]! << 8) | data[2]!;
+	public decodeFrom(data: Uint8Array, offset: number): [number, number] {
+		if (data.length - offset < 3) throw new Error("Not enough bytes for U24");
+		const value = (data[offset]! << 16) | (data[offset + 1]! << 8) | data[offset + 2]!;
 		return [value, 3];
 	}
 }

@@ -32,15 +32,11 @@ class GetHeadersCodec extends Codec<GetHeadersPayload> {
 		return 4 + 1 + 32 * count + 32;
 	}
 
-	public override size(data: GetHeadersPayload): number {
-		return 4 + 1 + 32 * data.locators.length + 32;
-	}
-
-	public decode(bytes: Uint8Array): [GetHeadersPayload, number] {
-		const view = new Uint8ArrayView(bytes);
+	public decodeFrom(bytes: Uint8Array, offset: number): [GetHeadersPayload, number] {
+		const view = new Uint8ArrayView(bytes, offset);
 		const version = view.getUint32(0, true);
-		const count = bytes[4]!;
-		let off = 5;
+		const count = bytes[offset + 4]!;
+		let off = offset + 5;
 		const locators: Uint8Array[] = [];
 		for (let i = 0; i < count; i++) {
 			locators.push(bytes.slice(off, off + 32));
@@ -48,7 +44,7 @@ class GetHeadersCodec extends Codec<GetHeadersPayload> {
 		}
 		const stopHash = bytes.slice(off, off + 32);
 		off += 32;
-		return [{ version, locators, stopHash }, off];
+		return [{ version, locators, stopHash }, off - offset];
 	}
 }
 

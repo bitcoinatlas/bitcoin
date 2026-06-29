@@ -25,10 +25,10 @@ export class U48Codec extends Codec<number> {
 		return 6;
 	}
 
-	public decode(data: Uint8Array): [number, number] {
-		if (data.length < 6) throw new Error("Not enough bytes for U48");
-		const hi = (data[0]! << 8) | data[1]!;
-		const lo = ((data[2]! << 24) | (data[3]! << 16) | (data[4]! << 8) | data[5]!) >>> 0;
+	public decodeFrom(data: Uint8Array, offset: number): [number, number] {
+		if (data.length - offset < 6) throw new Error("Not enough bytes for U48");
+		const hi = (data[offset]! << 8) | data[offset + 1]!;
+		const lo = ((data[offset + 2]! << 24) | (data[offset + 3]! << 16) | (data[offset + 4]! << 8) | data[offset + 5]!) >>> 0;
 		return [hi * 0x100000000 + lo, 6];
 	}
 }

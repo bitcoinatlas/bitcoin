@@ -1,10 +1,8 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { delay } from "@std/async";
-import { rawScriptPubKey, ScriptPubKey } from "~/chain/ScriptPubKey.ts";
+import { atomic } from "~/chain/atomic.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
-import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
@@ -13,8 +11,6 @@ import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { formatDuration } from "~/libs/formatting/mod.ts";
-import { atomic } from "~/chain/atomic.ts";
-import { Bytes } from "@nomadshiba/codec";
 
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
@@ -77,7 +73,7 @@ export class ChainStore {
 			let offset = 0;
 			let blocks = 0;
 			while (offset < buffer.length) {
-				const [txs, size] = StoredTxs.decode(buffer.subarray(offset));
+				const [txs, size] = StoredTxs.decodeFrom(buffer, offset);
 				offset += size;
 				blocks++;
 				this.appendTxs(txs, atomic.stores.blocks.length());
@@ -94,7 +90,7 @@ export class ChainStore {
 		}
 
 		if (message.type === "headers") {
-			const headers = WireBlockHeaders.decodeValue(message.data);
+			const [headers] = WireBlockHeaders.decode(message.data);
 			const { height } = this.pushHeaders(headers);
 			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
 			return;

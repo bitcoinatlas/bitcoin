@@ -295,12 +295,8 @@ export class StoredWitnessPatternCodec extends Codec<WitnessPattern> {
 		return StoredWitnessUnion.encodeInto(toUnion(pattern), target, offset);
 	}
 
-	override size(pattern: WitnessPattern): number {
-		return StoredWitnessUnion.size(toUnion(pattern));
-	}
-
-	decode(bytes: Uint8Array): [WitnessPattern, number] {
-		const [stored, bytesRead] = StoredWitnessUnion.decode(bytes);
+	decodeFrom(bytes: Uint8Array, offset: number): [WitnessPattern, number] {
+		const [stored, bytesRead] = StoredWitnessUnion.decodeFrom(bytes, offset);
 		return [fromUnion(stored), bytesRead];
 	}
 }
@@ -318,12 +314,8 @@ export class StoredWitnessCodec extends Codec<Uint8Array[]> {
 		return StoredWitnessPattern.encodeInto(detectWitnessPattern(items), target, offset);
 	}
 
-	public override size(items: Uint8Array[]): number {
-		return StoredWitnessPattern.size(detectWitnessPattern(items));
-	}
-
-	public decode(bytes: Uint8Array): [Uint8Array[], number] {
-		const [pattern, bytesRead] = StoredWitnessPattern.decode(bytes);
+	public decodeFrom(bytes: Uint8Array, offset: number): [Uint8Array[], number] {
+		const [pattern, bytesRead] = StoredWitnessPattern.decodeFrom(bytes, offset);
 		return [reconstructWitness(pattern), bytesRead];
 	}
 }

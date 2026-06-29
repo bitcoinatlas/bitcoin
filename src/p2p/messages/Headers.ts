@@ -29,22 +29,18 @@ class HeadersCodec extends Codec<HeadersPayload> {
 		return offset - start;
 	}
 
-	public override size(data: HeadersPayload): number {
-		return CompactSize.size(data.headers.length) + data.headers.length * (HEADER_STRIDE + 1);
-	}
-
-	public decode(bytes: Uint8Array): [HeadersPayload, number] {
-		const [count, csLen] = CompactSize.decode(bytes);
-		let off = csLen;
+	public decodeFrom(bytes: Uint8Array, offset: number): [HeadersPayload, number] {
+		const [count, csLen] = CompactSize.decodeFrom(bytes, offset);
+		let off = offset + csLen;
 		if (count > 2000) throw new Error("too many headers");
 		const headers: WireBlockHeader[] = [];
 		for (let i = 0; i < count; i++) {
-			const [header, stride] = WireBlockHeader.decode(bytes.subarray(off));
+			const [header, stride] = WireBlockHeader.decodeFrom(bytes, off);
 			off += stride;
 			off += 1; // skip tx count byte
 			headers.push(header);
 		}
-		return [{ headers }, off];
+		return [{ headers }, off - offset];
 	}
 }
 

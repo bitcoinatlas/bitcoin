@@ -25,10 +25,10 @@ export class U40Codec extends Codec<number> {
 		return 5;
 	}
 
-	public decode(data: Uint8Array): [number, number] {
-		if (data.length < 5) throw new Error("Not enough bytes for U40");
-		const hi = data[0]!;
-		const lo = ((data[1]! << 24) | (data[2]! << 16) | (data[3]! << 8) | data[4]!) >>> 0;
+	public decodeFrom(data: Uint8Array, offset: number): [number, number] {
+		if (data.length - offset < 5) throw new Error("Not enough bytes for U40");
+		const hi = data[offset]!;
+		const lo = ((data[offset + 1]! << 24) | (data[offset + 2]! << 16) | (data[offset + 3]! << 8) | data[offset + 4]!) >>> 0;
 		return [hi * 0x100000000 + lo, 5];
 	}
 }

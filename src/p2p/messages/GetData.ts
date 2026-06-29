@@ -41,13 +41,9 @@ class GetDataCodec extends Codec<GetDataPayload> {
 		return offset - start;
 	}
 
-	public override size(data: GetDataPayload): number {
-		return CompactSize.size(data.inventory.length) + data.inventory.length * 36;
-	}
-
-	public decode(bytes: Uint8Array): [GetDataPayload, number] {
-		const [count, csLen] = CompactSize.decode(bytes);
-		let off = csLen;
+	public decodeFrom(bytes: Uint8Array, offset: number): [GetDataPayload, number] {
+		const [count, csLen] = CompactSize.decodeFrom(bytes, offset);
+		let off = offset + csLen;
 		const inventory: InvVector[] = [];
 		for (let i = 0; i < count; i++) {
 			const type = (bytes[off]! | (bytes[off + 1]! << 8) | (bytes[off + 2]! << 16) | (bytes[off + 3]! << 24)) >>>
@@ -56,7 +52,7 @@ class GetDataCodec extends Codec<GetDataPayload> {
 			inventory.push({ type, hash });
 			off += 36;
 		}
-		return [{ inventory }, off];
+		return [{ inventory }, off - offset];
 	}
 }
 

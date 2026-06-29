@@ -75,33 +75,24 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 		return 1 + 4 + 4;
 	}
 
-	public override size(value: LockTimeVersionPack): number {
-		const { version, locktime } = value;
-		const noLock = locktime.kind === "none";
-		if (noLock && version === 0x1) return 1;
-		if (noLock && version === 0x2) return 1;
-		if (!noLock && (version === 0x1 || version === 0x2)) return 1 + 4;
-		return 1 + 4 + 4;
-	}
-
-	public decode(data: Uint8Array): [LockTimeVersionPack, number] {
-		const tag = data[0]!;
+	public decodeFrom(data: Uint8Array, offset: number): [LockTimeVersionPack, number] {
+		const tag = data[offset]!;
 		switch (tag) {
 			case TAG_V1_NONE:
 				return [{ locktime: NONE, version: 0x1 }, 1];
 			case TAG_V2_NONE:
 				return [{ locktime: NONE, version: 0x2 }, 1];
 			case TAG_V1_SOME: {
-				const [locktime, size] = LockTime.decode(data.subarray(1));
+				const [locktime, size] = LockTime.decodeFrom(data, offset + 1);
 				return [{ locktime, version: 0x1 }, 1 + size];
 			}
 			case TAG_V2_SOME: {
-				const [locktime, size] = LockTime.decode(data.subarray(1));
+				const [locktime, size] = LockTime.decodeFrom(data, offset + 1);
 				return [{ locktime, version: 0x2 }, 1 + size];
 			}
 			case TAG_RAW: {
-				const [version] = U32LE.decode(data.subarray(1));
-				const [locktime, ltSize] = LockTime.decode(data.subarray(5));
+				const [version] = U32LE.decodeFrom(data, offset + 1);
+				const [locktime, ltSize] = LockTime.decodeFrom(data, offset + 5);
 				return [{ locktime, version }, 1 + 4 + ltSize];
 			}
 			default:

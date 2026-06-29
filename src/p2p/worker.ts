@@ -1,6 +1,6 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
-import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER, GENESIS_WORK } from "~/chain/genesis.ts";
+import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED, GENESIS_WORK } from "~/chain/genesis.ts";
 import { verifyProofOfWork, workFromHeader } from "~/chain/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
@@ -20,7 +20,7 @@ import { PeerChainNode } from "~/p2p/PeerChainNode.ts";
 import { handshake } from "~/p2p/peers.ts";
 
 const GENESIS_NODE: PeerChainNode = {
-	header: WireBlockHeader.decodeValue(GENESIS_BLOCK_HEADER),
+	header: GENESIS_BLOCK_HEADER_DECODED,
 	cumulativeWork: GENESIS_WORK,
 };
 
@@ -93,12 +93,14 @@ async function drainMessages(): Promise<void> {
 	let message;
 	while ((message = messageQueue.dequeue())) {
 		if (!started && message.type === "start") {
-			await start(WireBlockHeaders.decodeValue(message.data));
+			const [headers] = WireBlockHeaders.decode(message.data);
+			await start(headers);
 			continue;
 		}
 
 		if (message.type === "blacklist") {
-			blacklist.add(Bytes32.decodeValue(message.data));
+			const [hash] = Bytes32.decode(message.data);
+			blacklist.add(hash);
 			continue;
 		}
 
