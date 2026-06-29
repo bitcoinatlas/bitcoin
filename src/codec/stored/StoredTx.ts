@@ -1,8 +1,8 @@
 import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
 import { ChainStore } from "~/chain/ChainStore.ts";
-import { rawScriptPubKey } from "~/chain/ScriptPubKey.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
+import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
@@ -62,10 +62,10 @@ export class StoredTxCodec extends Codec<StoredTx> {
 
 		const outputs: WireTxOutput[] = [];
 		for (const output of storedTx.outputs) {
-			const scriptPubKey = chainStore.getScriptPubKey(output);
+			const scriptPubKey = chainStore.atomic.stores.pubkeys.get(output.scriptPubKey, StoredScriptPubKey);
 			outputs.push({
 				value: BigInt(output.value), // TODO: VarInt should give bigint
-				scriptPubKey: rawScriptPubKey(scriptPubKey),
+				scriptPubKey,
 			});
 		}
 

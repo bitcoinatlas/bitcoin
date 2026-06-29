@@ -251,18 +251,6 @@ export class ChainStore {
 		return { height, header };
 	}
 
-	getScriptPubKey(output: StoredTxOutput): ScriptPubKey {
-		const pubkey = atomic.stores.pubkeys.get(output.scriptPubKey, Bytes);
-		const resolved = this.getTxOutputByPointer();
-		if (resolved.scriptPubKey.kind === "pointer") {
-			throw new Error([
-				`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
-				`Expected direct ScriptPubKey at that offset.`,
-			].join(" "));
-		}
-		return resolved.scriptPubKey;
-	}
-
 	getPrevOutTxId(input: StoredTxInput): Uint8Array {
 		const txId = input.prevOut.txId;
 		const { kind, value } = txId;
