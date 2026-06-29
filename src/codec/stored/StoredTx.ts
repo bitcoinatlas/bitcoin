@@ -41,14 +41,14 @@ export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
 export class StoredTxCodec extends Codec<StoredTx> {
 	public readonly stride = { kind: "variable" } as const;
 
-	async toWire(storedTx: StoredTx, chainStore: ChainStore): Promise<WireTx> {
+	toWire(storedTx: StoredTx, chainStore: ChainStore): WireTx {
 		const { txId, version, locktime } = storedTx;
 
 		const inputs: WireTxInput[] = [];
 		const witness: Uint8Array[][] = [];
 
 		for (const input of storedTx.inputs) {
-			const prevTxId = await chainStore.getPrevOutTxId(input);
+			const prevTxId = chainStore.getPrevOutTxId(input);
 			inputs.push({
 				prevOut: {
 					txId: prevTxId,
@@ -64,7 +64,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		for (const output of storedTx.outputs) {
 			const scriptPubKey = chainStore.atomic.stores.pubkeys.get(output.scriptPubKey, StoredScriptPubKey);
 			outputs.push({
-				value: BigInt(output.value), // TODO: VarInt should give bigint
+				value: output.value,
 				scriptPubKey,
 			});
 		}

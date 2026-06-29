@@ -250,9 +250,6 @@ export class ChainStore {
 	getPrevOutTxId(input: StoredTxInput): Uint8Array {
 		const txId = input.prevOut.txId;
 		const { kind, value } = txId;
-		if (kind === "raw") {
-			return value;
-		}
 
 		if (kind === "pointer") {
 			return this.getTxByPointer(value).txId;
