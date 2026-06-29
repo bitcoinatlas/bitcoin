@@ -1,45 +1,20 @@
-import { RocksDatabase, RocksDatabaseOptions } from "@harperfast/rocksdb-js";
 import { sha256 } from "@noble/hashes/sha2";
 import { delay } from "@std/async";
-import { join } from "@std/path";
-import { formatHash } from "~/app/frontend/utils/format.ts";
 import { rawScriptPubKey, ScriptPubKey } from "~/chain/ScriptPubKey.ts";
-import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { U40 } from "~/codec/primitives/U40.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
-import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_SIZE, MAX_BLOCK_WEIGHT, MAX_NON_WITNESS_BLOCK_SIZE } from "~/constants.ts";
-import { BASE_DATA_DIR } from "~/env.ts";
-import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
+import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { formatDuration } from "~/libs/formatting/mod.ts";
-import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
-import { Atomic, InferStores } from "~/libs/storage/Atomic.ts";
-import { BlobStore } from "~/libs/storage/BlobStore.ts";
-import { KvStore } from "~/libs/storage/KvStore.ts";
-
-const GiB = 1024 ** 3;
-const totalRam = Deno.systemMemoryInfo().total;
-
-// Reserve for OS + page cache + V8 + other processes. Scale the reserve with
-// total RAM (a 64 GiB box can spare proportionally more than an 8 GiB one).
-const osReserve = Math.max(2 * GiB, totalRam * 0.25);
-
-const writeBufferSize = 2 * GiB; // additive (costToCache:false)
-
-// Block cache gets a slice of what remains, clamped to a sane band.
-const available = totalRam - osReserve - writeBufferSize;
-const blockCacheSize = Math.max(
-	1 * GiB, // floor — below this rocksdb thrashes
-	Math.min(available * 0.6, 32 * GiB), // 60% of remainder, hard ceiling
-);
+import { atomic } from "~/chain/atomic.ts";
+import { Bytes } from "@nomadshiba/codec";
 
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
@@ -58,15 +33,15 @@ export class ChainStore {
 	}
 
 	static start(p2pChannel: MessagePort): ChainStore {
-		const headers = atomic.stores.header.slice(0, atomic.stores.header.length());
+		const headers = atomic.stores.headers.slice(0, atomic.stores.headers.length());
 		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
 
 		p2pChannel.addEventListener("message", (event) => self.p2pMessageQueue.enqueue(event.data));
-		const startHeaders = atomic.stores.header.slice(0, atomic.stores.header.length());
+		const startHeaders = atomic.stores.headers.slice(0, atomic.stores.headers.length());
 		console.log(`[chain] handing ${startHeaders.length} headers to worker`);
 		const startData = WireBlockHeaders.encode(startHeaders);
-		p2pChannel.postMessage({ type: "seek", data: atomic.stores.block.length() - 1 });
+		p2pChannel.postMessage({ type: "seek", data: atomic.stores.blocks.length() - 1 });
 		p2pChannel.postMessage({ type: "start", data: startData }, [startData.buffer]);
 		return self;
 	}
@@ -105,7 +80,7 @@ export class ChainStore {
 				const [txs, size] = StoredTxs.decode(buffer.subarray(offset));
 				offset += size;
 				blocks++;
-				this.appendTxs(txs, atomic.stores.block.length());
+				this.appendTxs(txs, atomic.stores.blocks.length());
 				if (this.startTime) {
 					this.totalTxs += txs.length;
 					this.totalSize += size;
@@ -113,7 +88,7 @@ export class ChainStore {
 				}
 			}
 			this.p2pChannel.postMessage({ type: "consume" });
-			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.block.length() - 1}`);
+			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.blocks.length() - 1}`);
 
 			return;
 		}
@@ -134,13 +109,13 @@ export class ChainStore {
 
 	private pushHeaders(headers: WireBlockHeader[]): { height: number } {
 		try {
-			atomic.pin();
-			let height = atomic.stores.header.length();
-			for (const header of headers) {
-				height = atomic.stores.header.push(header);
-				this.blockHashToHeightMap.set(header.hash(), height);
-			}
-			atomic.commit();
+			let height = atomic.stores.headers.length();
+			atomic.trx((stores) => {
+				for (const header of headers) {
+					height = stores.headers.push(header);
+					this.blockHashToHeightMap.set(header.hash(), height);
+				}
+			});
 			return { height };
 		} catch (reason) {
 			console.error("Failed to append block header:", reason);
@@ -149,7 +124,9 @@ export class ChainStore {
 	}
 
 	private reorg(keepHeight: number): void {
-		const blocksHeight = atomic.stores.block.length() - 1;
+		keepHeight;
+		throw new Error("Not Implemented");
+		/* const blocksHeight = atomic.stores.block.length() - 1;
 		console.log(`[chain] reorg: keepHeight=${keepHeight} currentTip=${blocksHeight}`);
 		if (keepHeight >= blocksHeight) return; // nothing to undo
 
@@ -195,11 +172,11 @@ export class ChainStore {
 		atomic.stores.block.truncate(keepHeight + 1);
 		atomic.stores.spender.truncate(spenderCut);
 		atomic.stores.tx.truncate(cutOffset);
-		console.log(`[chain] reorg complete: stores truncated to height=${keepHeight}`);
+		console.log(`[chain] reorg complete: stores truncated to height=${keepHeight}`); */
 	}
 
 	getHeaderByHeight(height: number): StoredBlockHeader | undefined {
-		const header = atomic.stores.header.get(height);
+		const header = atomic.stores.headers.get(height);
 		if (!header) return undefined;
 		return header;
 	}
@@ -208,7 +185,7 @@ export class ChainStore {
 		from: number,
 		to: number,
 	): Array<{ height: number; header: WireBlockHeader }> {
-		const headers = atomic.stores.header.slice(from, to + 1);
+		const headers = atomic.stores.headers.slice(from, to + 1);
 		return headers.map((header, i) => ({ height: from + i, header: header }));
 	}
 
@@ -218,24 +195,24 @@ export class ChainStore {
 		return this.getHeaderByHeight(height);
 	}
 
-	getTxByPointer(pointer: StoredPointer): StoredTx {
-		const storedTx = atomic.stores.tx.get(pointer, StoredTx, { readAheadSize: 400_000 });
+	getTxByPointer(pointer: StoredTxPointer): StoredTx {
+		const storedTx = atomic.stores.txs.get(pointer, StoredTx, { readAheadSize: 400_000 });
 		return storedTx;
 	}
 
 	getTxById(txId: Uint8Array): StoredTx | undefined {
 		const pointer = atomic.stores.txid.get(txId);
 		if (pointer === undefined) return undefined;
-		return this.getTxByPointer(pointer);
+		return this.getTxByPointer(pointer.pointer);
 	}
 
-	getTxsByBlockPointer(pointer: StoredPointer): StoredTx[] | undefined {
-		const storedTxs = atomic.stores.tx.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
+	getTxsByBlockPointer(pointer: StoredTxPointer): StoredTx[] | undefined {
+		const storedTxs = atomic.stores.txs.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
 		return storedTxs;
 	}
 
 	getTxsByBlockHeight(height: number): StoredTx[] | undefined {
-		const pointer = height === 0 ? 0 : atomic.stores.block.get(height);
+		const pointer = height === 0 ? 0 : atomic.stores.blocks.get(height);
 		if (pointer === undefined) return undefined;
 		return this.getTxsByBlockPointer(pointer);
 	}
@@ -256,47 +233,34 @@ export class ChainStore {
 		return header.hash();
 	}
 
-	getBlockPointerByHeight(height: number): StoredPointer | undefined {
-		return atomic.stores.block.get(height);
+	getBlockPointerByHeight(height: number): StoredTxPointer | undefined {
+		return atomic.stores.blocks.get(height);
 	}
 
-	getBlockPointerByHash(hash: Uint8Array): StoredPointer | undefined {
+	getBlockPointerByHash(hash: Uint8Array): StoredTxPointer | undefined {
 		const height = this.blockHashToHeightMap.get(hash);
 		if (height === undefined) return undefined;
 		return this.getBlockPointerByHeight(height);
 	}
 
 	getChainTip(): { height: number; header: StoredBlockHeader } | undefined {
-		const height = atomic.stores.header.length() - 1;
+		const height = atomic.stores.headers.length() - 1;
 		if (height < 0) return undefined;
 		const header = this.getHeaderByHeight(height);
 		if (!header) return undefined;
 		return { height, header };
 	}
 
-	getTxOutputByPointer(
-		pointer: number,
-		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): StoredTxOutput {
-		return (batches ?? atomic.stores).tx.get(pointer, StoredTxOutput);
-	}
-
-	getScriptPubKey(
-		output: StoredTxOutput,
-		batches?: InferBatches<typeof atomic, "tx"> | InferStores<typeof atomic, "tx">,
-	): ScriptPubKey {
-		if (output.scriptPubKey.kind === "pointer") {
-			const resolved = this.getTxOutputByPointer(output.scriptPubKey.value, batches);
-			if (resolved.scriptPubKey.kind === "pointer") {
-				throw new Error([
-					`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
-					`Expected direct ScriptPubKey at that offset.`,
-				].join(" "));
-			}
-			return resolved.scriptPubKey;
-		} else {
-			return output.scriptPubKey;
+	getScriptPubKey(output: StoredTxOutput): ScriptPubKey {
+		const pubkey = atomic.stores.pubkeys.get(output.scriptPubKey, Bytes);
+		const resolved = this.getTxOutputByPointer();
+		if (resolved.scriptPubKey.kind === "pointer") {
+			throw new Error([
+				`scriptPubKey resolution failed: pointer ${output.scriptPubKey.value} points to another pointer.`,
+				`Expected direct ScriptPubKey at that offset.`,
+			].join(" "));
 		}
+		return resolved.scriptPubKey;
 	}
 
 	getPrevOutTxId(input: StoredTxInput): Uint8Array {

@@ -9,17 +9,17 @@ import { assertEquals } from "@std/assert";
 import { RocksDatabase } from "@harperfast/rocksdb-js";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { KvStore } from "./KvStore.ts";
 
-async function withStore(fn: (store: KvStore<typeof Bytes32, typeof StoredPointer>) => Promise<void>): Promise<void> {
+async function withStore(fn: (store: KvStore<typeof Bytes32, typeof StoredTxPointer>) => Promise<void>): Promise<void> {
 	const dir = await Deno.makeTempDir({ prefix: "kvstore_bytes32_" });
 	const rocksdb = RocksDatabase.open(join(dir, "rocks"), { disableWAL: true, parallelismThreads: 1 });
 	const store = await KvStore.open({
 		rocksdb,
 		prefix: new Uint8Array([0]),
 		key: Bytes32,
-		value: StoredPointer,
+		value: StoredTxPointer,
 	});
 	try {
 		await fn(store);
@@ -113,7 +113,7 @@ Deno.test("KvStore with Bytes32 key: flush persists and survives reopen", async 
 			rocksdb,
 			prefix: new Uint8Array([0]),
 			key: Bytes32,
-			value: StoredPointer,
+			value: StoredTxPointer,
 		});
 		const b = store.batch();
 		b.set(keyA, 100);
@@ -132,7 +132,7 @@ Deno.test("KvStore with Bytes32 key: flush persists and survives reopen", async 
 			rocksdb,
 			prefix: new Uint8Array([0]),
 			key: Bytes32,
-			value: StoredPointer,
+			value: StoredTxPointer,
 		});
 		try {
 			assertEquals(await store.get(keyA), 100, "key A lost after reopen");

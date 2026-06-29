@@ -17,7 +17,7 @@ import { RocksDatabase } from "@harperfast/rocksdb-js";
 import { join } from "@std/path";
 import { U32 } from "@nomadshiba/codec";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { KvStore } from "./KvStore.ts";
 
 // ── harness ───────────────────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ Deno.test("clear: wipes staged and RocksDB; data gone after reopen", async () =>
 // ── Bytes32 key: the exact codec used in chain.ts for txid/pubkey ─────────────
 
 async function withBytes32Store(
-	fn: (store: KvStore<typeof Bytes32, typeof StoredPointer>, rocksdb: RocksDatabase) => Promise<void>,
+	fn: (store: KvStore<typeof Bytes32, typeof StoredTxPointer>, rocksdb: RocksDatabase) => Promise<void>,
 ): Promise<void> {
 	const dir = await Deno.makeTempDir({ prefix: "kvstore_bytes32_" });
 	const rocksdb = RocksDatabase.open(join(dir, "rocks"), { disableWAL: true, parallelismThreads: 1 });
@@ -285,7 +285,7 @@ async function withBytes32Store(
 		rocksdb,
 		prefix: new Uint8Array([0]),
 		key: Bytes32,
-		value: StoredPointer,
+		value: StoredTxPointer,
 	});
 	try {
 		await fn(store, rocksdb);
@@ -347,7 +347,7 @@ Deno.test("Bytes32 key: flush persists and survives reopen", async () => {
 
 		{
 			const rocksdb = RocksDatabase.open(rocksPath, { disableWAL: true, parallelismThreads: 1 });
-			const store = await KvStore.open({ rocksdb, prefix: new Uint8Array([0]), key: Bytes32, value: StoredPointer });
+			const store = await KvStore.open({ rocksdb, prefix: new Uint8Array([0]), key: Bytes32, value: StoredTxPointer });
 			const b = store.batch();
 			b.set(keyA, 100);
 			b.set(keyB, 200);
@@ -360,7 +360,7 @@ Deno.test("Bytes32 key: flush persists and survives reopen", async () => {
 		}
 		{
 			const rocksdb = RocksDatabase.open(rocksPath, { disableWAL: true, parallelismThreads: 1 });
-			const store = await KvStore.open({ rocksdb, prefix: new Uint8Array([0]), key: Bytes32, value: StoredPointer });
+			const store = await KvStore.open({ rocksdb, prefix: new Uint8Array([0]), key: Bytes32, value: StoredTxPointer });
 			assertEquals(await store.get(keyA), 100);
 			assertEquals(await store.get(keyB), 200);
 			rocksdb.close();

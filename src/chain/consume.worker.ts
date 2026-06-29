@@ -1,93 +1,126 @@
+import { sha256 } from "@noble/hashes/sha2";
 import { equals } from "@std/bytes/equals";
 import { atomic } from "~/chain/atomic.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { PrevOut, StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
-import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { PrevOut } from "~/codec/stored/StoredTxInput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
-import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
+import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
+import { Codec, VarInt } from "@nomadshiba/codec";
 
-// Consume Blocks
-const pubkey = new FastUint8ArrayMap<number>();
-let pubkeysOffset = 0;
-const pubkeys: Uint8Array[] = [];
-const parts: Uint8Array[] = [];
+const pubkey = new Uint8ArrayMap<bigint | number>();
+const pubkeyHashes: Uint8Array[] = [];
+const blocks: { tx: WireTx; spenders: { tx: StoredTxPointer; vin: Codec.InferOutput<typeof VarInt> }[] }[][] = [];
+
 self.addEventListener("message", (event) => {
-	const buffer = event.data;
+	const { stage, data } = event.data as { stage: string; data?: unknown };
 
-	parts.length = 0;
-	pubkeys.length = 0;
+	switch (stage) {
+		case "init": {
+			const buffer = data as Uint8Array;
+			const pubkeys = init(buffer);
+			self.postMessage(pubkeys, pubkeys.map((pubkey) => pubkey.buffer));
+			break;
+		}
+		case "consume": {
+			const pubkeyPointers = data as BigUint64Array;
+			const parts = consume(pubkeyPointers);
+			self.postMessage(parts, parts.map((part) => part.buffer));
+			break;
+		}
+	}
+});
+
+function init(buffer: Uint8Array): Uint8Array[] {
+	const pubkeys: Uint8Array[] = [];
+
+	blocks.length = 0;
+	pubkeyHashes.length = 0;
 	pubkey.clear();
-	pubkeysOffset = 0;
 
 	let offset = 0;
 	while (offset < buffer.length) {
 		const [txs, size] = WireTxs.decode(buffer.subarray(offset));
 		offset += size;
-		consume(txs);
+		blocks.push(txs.map((tx) => {
+			return { tx, spenders: tx.outputs.map(() => ({ tx: 0, vin: 0 })) };
+		}));
 	}
 
-	self.postMessage(parts, parts); // done
-});
-
-function consume(txs: WireTx[]): void {
-	try {
-		for (const wireTx of txs) {
-			const inputs: StoredTxInput[] = wireTx.inputs.map((wireInput, i): StoredTxInput => {
-				let txId: PrevOut["txId"];
-				if (equals(wireInput.prevOut.txId, COINBASE_TXID) && wireInput.prevOut.vout === COINBASE_VOUT) {
-					txId = { kind: "coinbase" };
+	for (const txs of blocks) {
+		for (const { tx } of txs) {
+			for (const output of tx.outputs) {
+				const pubkeyHash = sha256(output.scriptPubKey);
+				let pubkeyPointer = pubkey.get(pubkeyHash);
+				if (pubkeyPointer !== undefined) continue; // seen locally before already
+				// not seen locally, check disk
+				pubkeyPointer = atomic.stores.pubkey.get(pubkeyHash);
+				if (pubkeyPointer !== undefined) {
+					// seen on disk, set locally
+					pubkey.set(pubkeyHash, pubkeyPointer);
 				} else {
-					txId = { kind: "raw", value: wireInput.prevOut.txId };
+					// not seen anywhere, let master know
+					pubkey.set(pubkeyHash, -1);
+					pubkeys.push(output.scriptPubKey.slice());
+					pubkeyHashes.push(pubkeyHash);
 				}
-				return {
-					prevOut: { txId, vout: wireInput.prevOut.vout },
-					scriptSig: wireInput.scriptSig,
-					sequence: wireInput.sequence,
-					witness: wireTx.witness[i] ?? [],
-				};
-			});
-
-			const outputs: StoredTxOutput[] = [];
-			for (const wireOutput of wireTx.outputs) {
-				// TODO: Nothing here diffrenciates between local pointer and real disk pointer.
-				// Issue is since this is parallel other workers doing chunks before us might be appending pubkeys as well which offsets ours
-				// UPDATE: ok so i used negative numbers for local ones? should do the job??? but the issue is we also encode here.
-				// So fucked either way
-				// i think one solution would some other parallel workers indexing script pubkeys before us?
-				let scriptPubKey = atomic.stores.pubkey.get(wireOutput.scriptPubKey);
-				if (!scriptPubKey) {
-					let localPointer = pubkey.get(wireOutput.scriptPubKey);
-					if (localPointer != null) {
-						scriptPubKey = { pointer: -localPointer };
-					} else {
-						localPointer = pubkeysOffset;
-						pubkeysOffset += wireOutput.scriptPubKey.length;
-						pubkeys.push(wireOutput.scriptPubKey);
-						pubkey.set(wireOutput.scriptPubKey, localPointer);
-						scriptPubKey = { pointer: -localPointer };
-					}
-				}
-				const output: StoredTxOutput = { value: Number(wireOutput.value), scriptPubKey: scriptPubKey.pointer };
-				outputs.push(output);
 			}
+			for (const input of tx.inputs) {
+				input.prevOut.txId;
+			}
+		}
+	}
 
+	return pubkeys;
+}
+
+function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
+	const parts: Uint8Array[] = [];
+	for (let i = 0; i < pubkeyPointers.length; i++) {
+		const pubkeyHash = pubkeyHashes[i]!;
+		const pubkeyPointer = pubkeyPointers[i]!;
+		pubkey.set(pubkeyHash, pubkeyPointer);
+	}
+	for (const txs of blocks) {
+		for (const { tx } of txs) {
 			const stored: StoredTx = {
-				txId: wireTx.txId,
-				version: wireTx.version,
-				locktime: wireTx.locktime,
-				inputs: inputs,
-				outputs: outputs,
+				txId: tx.txId,
+				locktime: tx.locktime,
+				version: tx.version,
+				outputs: tx.outputs.map((output) => {
+					const pubkeyPointer = pubkey.get(sha256(output.scriptPubKey));
+					if (!pubkeyPointer) {
+						throw new Error("pubkey pointer not found, weird");
+					}
+					return {
+						value: Number(output.value),
+						scriptPubKey: Number(pubkeyPointer),
+					};
+				}),
+				inputs: tx.inputs.map((input, index) => {
+					let txId: PrevOut["txId"];
+					if (equals(input.prevOut.txId, COINBASE_TXID) && input.prevOut.vout === COINBASE_VOUT) {
+						txId = { kind: "coinbase" };
+					} else {
+						const txIndex = atomic.stores.txid.get(input.prevOut.txId);
+						if (!txIndex) {
+							throw new Error("whaaa??");
+						}
+						txId = { kind: "pointer", value: txIndex.pointer };
+					}
+					return {
+						prevOut: { txId, vout: input.prevOut.vout },
+						scriptSig: input.scriptSig,
+						sequence: input.sequence,
+						witness: tx.witness[index] ?? [],
+					};
+				}),
 			};
-
 			parts.push(StoredTx.encode(stored));
 		}
-		// parse and encode the txs and block, push the parts
-		// basic validation
-		// in memory writes, fallback reads to the disk
-	} catch (reason) {
-		console.error("Failed to append txs:", reason);
-		Deno.exit(1);
 	}
+
+	return parts;
 }

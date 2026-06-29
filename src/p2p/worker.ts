@@ -3,11 +3,10 @@ import { equals } from "@std/bytes";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER, GENESIS_WORK } from "~/chain/genesis.ts";
 import { verifyProofOfWork, workFromHeader } from "~/chain/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
+import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
@@ -533,23 +532,9 @@ function ensureBlockListener(peer: Peer): void {
 		if (height <= cursor) return;
 		if (blockPool.has(height)) return;
 
-		// Encode BEFORE mutating any state. If the codec can't represent some tx in
-		// this block, don't delete the reservation or mark the peer alive — otherwise
-		// the block vanishes (not pooled, not in-flight) and, once the look-ahead pool
-		// fills behind it, the frontier wedges with no way to re-request. Leaving the
-		// reservation in place lets the head-of-line timeout re-request it, which will
-		// log here again every ~30s — loud and obvious instead of a silent stall.
-		let stored: Uint8Array;
-		try {
-			stored = StoredTxs.encode(block.txs.map((tx) => StoredTx.fromWire(tx)));
-		} catch (e) {
-			console.error(`[p2p] store-encode failed at height=${height} txs=${block.txs.length}:`, e);
-			return;
-		}
-
 		blockInFlight.delete(height);
 		lastBlockAt.set(peer, Date.now()); // proof this peer is alive and draining its queue
-		blockPool.set(height, stored);
+		blockPool.set(height, WireTxs.encode(block.txs));
 	});
 	blockUnlisten.set(peer, off);
 }

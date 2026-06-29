@@ -1,15 +1,15 @@
+import { ArrayCodec, StructCodec } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
-import { StoredPointer } from "~/codec/stored/StoredPointer.ts";
+import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
 import { RocksDatabase } from "../../vendor/rocksdb-js/dist/index.d.cts";
-import { U40 } from "~/codec/primitives/U40.ts";
-import { StructCodec } from "@nomadshiba/codec";
 
 const ROCKS_PATH = join(BASE_DATA_DIR, "rocksdb");
 
@@ -57,7 +57,7 @@ export const atomic = Atomic.open({
 		}),
 		blocks: ArrayStore.open({
 			path: join(BASE_DATA_DIR, "blocks"),
-			codec: StoredPointer,
+			codec: StoredTxPointer,
 			itemsPerChunk: 1_000_000,
 		}),
 		txs: BlobStore.open({
@@ -68,7 +68,7 @@ export const atomic = Atomic.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { name: "pubkey" }),
 			key: Bytes32,
 			// TODO: value might also include HEAD and TAIL of the linked list of outputs or something
-			value: new StructCodec({ pointer: U40 }),
+			value: StoredPubkeyPointer,
 		}),
 		pubkeys: BlobStore.open({
 			path: join(BASE_DATA_DIR, "pubkeys"),
@@ -77,7 +77,10 @@ export const atomic = Atomic.open({
 		txid: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { name: "txid" }),
 			key: Bytes32,
-			value: StoredPointer,
+			value: new StructCodec({
+				pointer: StoredTxPointer,
+				spenders: new ArrayCodec(StoredTxPointer),
+			}),
 		}),
 	},
 });

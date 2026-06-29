@@ -24,7 +24,7 @@ export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks {
 		this.keyBuf = new Uint8Array(this.key.stride.size);
 	}
 
-	static open<K extends FixedCodec, V extends FixedCodec>(options: KvStoreOptions<K, V>): KvStore<K, V> {
+	static open<K extends FixedCodec, V extends Codec>(options: KvStoreOptions<K, V>): KvStore<K, V> {
 		const self = new KvStore(options);
 		return self;
 	}
