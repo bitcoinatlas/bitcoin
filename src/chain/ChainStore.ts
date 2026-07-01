@@ -25,7 +25,7 @@ export class ChainStore {
 	private consumerPubkeys: Uint8Array[][];
 	private consumerIndex: number;
 	private consumerInitialized: number;
-	private consumerInitilizedPromise: PromiseWithResolvers<void>;
+	private consumersInitilizedPromise: PromiseWithResolvers<void>;
 	private consumerPubkeyPointerCache: FastUint8ArrayMap<number>;
 	private consumerStoredTxs: Uint8Array[][];
 
@@ -42,7 +42,7 @@ export class ChainStore {
 		this.consumerStoredTxs = new Array(navigator.hardwareConcurrency);
 		this.consumerIndex = 0;
 		this.consumerInitialized = 0;
-		this.consumerInitilizedPromise = Promise.withResolvers();
+		this.consumersInitilizedPromise = Promise.withResolvers();
 		this.consumerPubkeyPointerCache = new FastUint8ArrayMap();
 		for (let i = 0; i < this.consumers.length; i++) {
 			const worker = new Worker(new URL("./consume.worker.ts", import.meta.url), { name: `consumer-${i}` });
@@ -89,26 +89,30 @@ export class ChainStore {
 
 			if (first) {
 				this.consumerInitialized = 0;
-				this.consumerInitilizedPromise = Promise.withResolvers<void>();
+				this.consumersInitilizedPromise = Promise.withResolvers<void>();
 				this.consumerPubkeyPointerCache.clear();
 			}
+
 			// TODO: here at first stage probably we should also handle prevOutTx
 			consumer.addEventListener("message", (event) => {
-				const pubkeys = event.data as Uint8Array[];
+				const { pubkeys, txIds } = event.data as { pubkeys: Uint8Array[]; txIds: Uint8Array[] };
 				this.consumerPubkeys[index] = pubkeys;
 				this.consumerInitialized++;
 				if (this.consumerInitialized === this.consumers.length) {
-					this.consumerInitilizedPromise.resolve();
+					this.consumersInitilizedPromise.resolve();
 				}
 			}, { once: true });
 			consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
 
 			if (last) {
 				// await first stage of all consumers to finish
-				await this.consumerInitilizedPromise.promise;
+				await this.consumersInitilizedPromise.promise;
 				await atomic.trx(async (stores, trx) => {
 					let processCount = 0;
 					const processPromise = Promise.withResolvers<void>();
+
+					for (let index = 0; index < this.consumers.length; index++) {
+					}
 
 					// start and wait next stages of all consumers here
 					for (let index = 0; index < this.consumers.length; index++) {
