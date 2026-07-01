@@ -111,7 +111,7 @@ export class ChainStore {
 							if (pubkeyPointer === undefined) {
 								pubkeyPointer = stores.pubkeys.append(pubkey);
 								stores.pubkey.set(pubkeyHash, pubkeyPointer, trx);
-								this.consumerPubkeyPointerCache.set(pubkeyHash, BigInt(pubkeyPointer));
+								this.consumerPubkeyPointerCache.put(pubkeyHash, BigInt(pubkeyPointer));
 							}
 							pubkeyPointers[index] = BigInt(pubkeyPointer);
 						}

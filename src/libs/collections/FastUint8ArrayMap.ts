@@ -62,7 +62,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	}
 
 	// Append a unique key/value. No existence check, no copy.
-	set(key: Uint8Array, value: V): void {
+	put(key: Uint8Array, value: V): void {
 		if (this.size_ >= this.threshold) this.grow();
 		const hash = hashKeyU32(key);
 		let slot = hash & this.mask;
@@ -73,10 +73,10 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		this.size_++;
 	}
 
-	// Like set, but overwrites any existing value for the same key. Falls back
-	// to append-only set if the key is not already present, so callers don't have
+	// Like put, but overwrites any existing value for the same key. Falls back
+	// to append-only put if the key is not already present, so callers don't have
 	// to know whether a key exists yet.
-	setOwned(key: Uint8Array, value: V): void {
+	set(key: Uint8Array, value: V): void {
 		const hash = hashKeyU32(key);
 		const keySlots = this.keySlots;
 		const hashes = this.hashes;
@@ -94,7 +94,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		// Not present: append-only insert (unique, no dedup scan).
 		if (this.size_ >= this.threshold) {
 			this.grow();
-			this.set(key, value);
+			this.put(key, value);
 			return;
 		}
 		keySlots[slot] = key;

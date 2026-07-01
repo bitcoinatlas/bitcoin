@@ -1,16 +1,16 @@
 import { sha256 } from "@noble/hashes/sha2";
+import { Codec, VarInt } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
 import { atomic } from "~/chain/atomic.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { PrevOut } from "~/codec/stored/StoredTxInput.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
-import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
-import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { Codec, VarInt } from "@nomadshiba/codec";
+import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 
-const pubkey = new Uint8ArrayMap<number>();
+const pubkey = new FastUint8ArrayMap<number>();
 const pubkeyHashes: Uint8Array[] = [];
 const blocks: { tx: WireTx; spenders: { tx: StoredTxPointer; vin: Codec.InferOutput<typeof VarInt> }[] }[][] = [];
 
@@ -59,10 +59,8 @@ function init(buffer: Uint8Array): Uint8Array[] {
 				pubkeyPointer = atomic.stores.pubkey.get(pubkeyHash);
 				if (pubkeyPointer !== undefined) {
 					// seen on disk, set locally
-					pubkey.set(pubkeyHash, pubkeyPointer);
+					pubkey.put(pubkeyHash, pubkeyPointer);
 				} else {
-					// not seen anywhere, let master know
-					pubkey.set(pubkeyHash, -1);
 					pubkeys.push(output.scriptPubKey.slice());
 					pubkeyHashes.push(pubkeyHash);
 				}
@@ -81,7 +79,7 @@ function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
 	for (let i = 0; i < pubkeyPointers.length; i++) {
 		const pubkeyHash = pubkeyHashes[i]!;
 		const pubkeyPointer = Number(pubkeyPointers[i]!);
-		pubkey.set(pubkeyHash, pubkeyPointer);
+		pubkey.put(pubkeyHash, pubkeyPointer);
 	}
 	for (const txs of blocks) {
 		for (const { tx } of txs) {

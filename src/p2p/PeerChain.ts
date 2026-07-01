@@ -53,7 +53,7 @@ export class PeerChain implements Iterable<PeerChainNode> {
 
 	public push(...ns: PeerChainNode[]): number {
 		for (const n of ns) {
-			this.index.set(n.header.hash(), this.nodes.length);
+			this.index.put(n.header.hash(), this.nodes.length);
 			this.nodes.push(n);
 		}
 		return this.nodes.length;
@@ -61,7 +61,7 @@ export class PeerChain implements Iterable<PeerChainNode> {
 
 	public concat(ns: PeerChainNode[]): void {
 		for (const n of ns) {
-			this.index.set(n.header.hash(), this.nodes.length);
+			this.index.put(n.header.hash(), this.nodes.length);
 			this.nodes.push(n);
 		}
 	}
@@ -79,7 +79,7 @@ export class PeerChain implements Iterable<PeerChainNode> {
 	private reindex(): void {
 		this.index.clear();
 		for (const [h, node] of this.nodes.entries()) {
-			this.index.set(node.header.hash(), h);
+			this.index.put(node.header.hash(), h);
 		}
 	}
 }
