@@ -31,7 +31,7 @@ const P2P_PORT = 8333;
 const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
-const CHUNK_BYTE_BUDGET = 16 * MAX_BLOCK_SIZE;
+const CHUNK_BYTE_BUDGET = 2 * MAX_BLOCK_SIZE;
 
 // Bitcoin Core block-download conventions (net_processing.cpp):
 //   MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16  — hard cap on outstanding getdata per peer,
@@ -67,7 +67,7 @@ let consumedChunks = 0;
 
 function keepDownloading() {
 	const notConsumed = postedChunks - consumedChunks;
-	return notConsumed < 4;
+	return notConsumed < navigator.hardwareConcurrency * 2; // keep ahead of the consumers, but not too far
 }
 
 let localChain = new PeerChain([GENESIS_NODE]);

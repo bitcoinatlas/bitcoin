@@ -5,6 +5,7 @@ import { atomic } from "~/chain/atomic.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { PrevOut } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
+import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT } from "~/constants.ts";
@@ -13,6 +14,7 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 const pubkey = new FastUint8ArrayMap<number>();
 const pubkeyHashes: Uint8Array[] = [];
 const blocks: { tx: WireTx; spenders: { tx: StoredTxPointer; vin: Codec.InferOutput<typeof VarInt> }[] }[][] = [];
+const storedTxs: StoredTxs = [];
 
 self.addEventListener("message", (event) => {
 	const { stage, data } = event.data as { stage: string; data?: unknown };
@@ -24,9 +26,9 @@ self.addEventListener("message", (event) => {
 			self.postMessage(pubkeys, pubkeys.map((pubkey) => pubkey.buffer));
 			break;
 		}
-		case "consume": {
+		case "process": {
 			const pubkeyPointers = data as BigUint64Array;
-			const parts = consume(pubkeyPointers);
+			const parts = process(pubkeyPointers);
 			self.postMessage(parts, parts.map((part) => part.buffer));
 			break;
 		}
@@ -38,6 +40,7 @@ function init(buffer: Uint8Array): Uint8Array[] {
 
 	blocks.length = 0;
 	pubkeyHashes.length = 0;
+	storedTxs.length = 0;
 	pubkey.clear();
 
 	let offset = 0;
@@ -74,15 +77,18 @@ function init(buffer: Uint8Array): Uint8Array[] {
 	return pubkeys;
 }
 
-function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
+function process(pubkeyPointers: BigUint64Array): Uint8Array[] {
 	const parts: Uint8Array[] = [];
 	for (let i = 0; i < pubkeyPointers.length; i++) {
 		const pubkeyHash = pubkeyHashes[i]!;
 		const pubkeyPointer = Number(pubkeyPointers[i]!);
 		pubkey.put(pubkeyHash, pubkeyPointer);
 	}
-	for (const txs of blocks) {
-		for (const { tx } of txs) {
+	for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+		const txs = blocks[blockIndex]!;
+		storedTxs.length = txs.length;
+		for (let txIndex = 0; txIndex < txs.length; txIndex++) {
+			const { tx } = txs[txIndex]!;
 			const stored: StoredTx = {
 				txId: tx.txId,
 				locktime: tx.locktime,
@@ -116,8 +122,9 @@ function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
 					};
 				}),
 			};
-			parts.push(StoredTx.encode(stored));
+			storedTxs[txIndex] = stored;
 		}
+		parts.push(StoredTxs.encode(storedTxs));
 	}
 
 	return parts;

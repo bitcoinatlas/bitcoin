@@ -68,10 +68,10 @@ export class Atomic<T extends AtomicStores> {
 		}
 	}
 
-	trx(call: (stores: T, trx: Transaction) => void) {
+	async trx(call: (stores: T, trx: Transaction) => Promise<void> | void) {
 		try {
 			this.pin();
-			this.rocksdb.transactionSync((trx) => call(this.stores, trx));
+			await this.rocksdb.transaction((trx) => call(this.stores, trx));
 			this.rocksdb.flushSync();
 		} catch (reason) {
 			console.error("atomic trx failed", reason);

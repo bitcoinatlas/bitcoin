@@ -26,7 +26,8 @@ export class ChainStore {
 	private consumerIndex: number;
 	private consumerInitialized: number;
 	private consumerInitilizedPromise: PromiseWithResolvers<void>;
-	private consumerPubkeyPointerCache: FastUint8ArrayMap<bigint>;
+	private consumerPubkeyPointerCache: FastUint8ArrayMap<number>;
+	private consumerStoredTxs: Uint8Array[][];
 
 	private constructor(p2pChannel: MessagePortLike, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
@@ -38,6 +39,7 @@ export class ChainStore {
 
 		this.consumers = new Array(navigator.hardwareConcurrency);
 		this.consumerPubkeys = new Array(navigator.hardwareConcurrency);
+		this.consumerStoredTxs = new Array(navigator.hardwareConcurrency);
 		this.consumerIndex = 0;
 		this.consumerInitialized = 0;
 		this.consumerInitilizedPromise = Promise.withResolvers();
@@ -70,6 +72,12 @@ export class ChainStore {
 			return;
 		}
 		if (message.type === "blocks") {
+			// TODO: Later make this easier to read and better.
+			// Maybe p2p can send all of the chunks we need at once.
+			// We can also have a single worker that handles all of the chunks that spawns its own workers.
+			// We can have an better pipelines to handle things like this in general as well, maybe?
+			// etc. think about it later. For now, this is fine.
+
 			const chunk = message.data as Uint8Array;
 			console.log(`[chain] new chunk to consume size=${chunk.length}`);
 
@@ -84,6 +92,7 @@ export class ChainStore {
 				this.consumerInitilizedPromise = Promise.withResolvers<void>();
 				this.consumerPubkeyPointerCache.clear();
 			}
+			// TODO: here at first stage probably we should also handle prevOutTx
 			consumer.addEventListener("message", (event) => {
 				const pubkeys = event.data as Uint8Array[];
 				this.consumerPubkeys[index] = pubkeys;
@@ -97,7 +106,10 @@ export class ChainStore {
 			if (last) {
 				// await first stage of all consumers to finish
 				await this.consumerInitilizedPromise.promise;
-				atomic.trx((stores, trx) => {
+				await atomic.trx(async (stores, trx) => {
+					let processCount = 0;
+					const processPromise = Promise.withResolvers<void>();
+
 					// start and wait next stages of all consumers here
 					for (let index = 0; index < this.consumers.length; index++) {
 						// make sure here we are only looking for pubkeys the worker couldn't find it self.
@@ -107,18 +119,36 @@ export class ChainStore {
 						for (let index = 0; index < pubkeys.length; index++) {
 							const pubkey = pubkeys[index]!;
 							const pubkeyHash = sha256(pubkey);
-							let pubkeyPointer = this.consumerPubkeyPointerCache.get(pubkeyHash) ?? stores.pubkey.get(pubkeyHash);
+							const memoryPubkeyPointer = this.consumerPubkeyPointerCache.get(pubkeyHash);
+							let pubkeyPointer = memoryPubkeyPointer ?? stores.pubkey.get(pubkeyHash);
 							if (pubkeyPointer === undefined) {
 								pubkeyPointer = stores.pubkeys.append(pubkey);
 								stores.pubkey.set(pubkeyHash, pubkeyPointer, trx);
-								this.consumerPubkeyPointerCache.put(pubkeyHash, BigInt(pubkeyPointer));
+								if (memoryPubkeyPointer === undefined) {
+									this.consumerPubkeyPointerCache.put(pubkeyHash, pubkeyPointer);
+								}
 							}
 							pubkeyPointers[index] = BigInt(pubkeyPointer);
 						}
-						consumer.postMessage({ stage: "consume", data: pubkeyPointers }, [pubkeyPointers.buffer]);
+
+						consumer.addEventListener("message", (event) => {
+							processCount++;
+							this.consumerStoredTxs[index] = event.data as Uint8Array[];
+							if (processCount !== this.consumers.length) return;
+							processPromise.resolve();
+						}, { once: true });
+						consumer.postMessage({ stage: "process", data: pubkeyPointers }, [pubkeyPointers.buffer]);
 					}
 
-					// TODO: next stage. also we didnt handle prevTx yet.
+					await processPromise.promise;
+
+					for (let index = 0; index < this.consumers.length; index++) {
+						const chunk = this.consumerStoredTxs[index]!;
+						for (const block of chunk) {
+							const blockPointer = stores.txs.append(block);
+							stores.blocks.push(blockPointer);
+						}
+					}
 				});
 
 				// let p2p know that we have consumed every chunk
