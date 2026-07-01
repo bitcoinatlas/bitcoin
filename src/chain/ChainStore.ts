@@ -1,4 +1,5 @@
 import { delay } from "@std/async";
+import { sha256 } from "@noble/hashes/sha2";
 import { atomic } from "~/chain/atomic.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
@@ -10,18 +11,24 @@ import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
-import { formatDuration } from "~/libs/formatting/mod.ts";
+import { MessagePortLike } from "~/libs/message/mod.ts";
+import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
 	public readonly atomic = atomic;
 
-	private p2pChannel: MessagePort;
+	private p2pChannel: MessagePortLike;
 	private p2pMessageQueue: Queue<{ type: string; data: any }>;
 
 	private consumers: Worker[];
+	private consumerPubkeys: Uint8Array[][];
+	private consumerIndex: number;
+	private consumerInitialized: number;
+	private consumerInitilizedPromise: PromiseWithResolvers<void>;
+	private consumerPubkeyPointerCache: FastUint8ArrayMap<bigint>;
 
-	private constructor(p2pChannel: MessagePort, initialHeaders: WireBlockHeader[]) {
+	private constructor(p2pChannel: MessagePortLike, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
 		this.p2pMessageQueue = new Queue(1000);
 		this.blockHashToHeightMap = new Uint8ArrayMap<number>(Math.max(256, initialHeaders.length * 2));
@@ -29,14 +36,20 @@ export class ChainStore {
 			this.blockHashToHeightMap.set(initialHeaders[i]!.hash(), i);
 		}
 
-		this.consumers = new Array<Worker>(navigator.hardwareConcurrency);
+		this.consumers = new Array(navigator.hardwareConcurrency);
+		this.consumerPubkeys = new Array(navigator.hardwareConcurrency);
+		this.consumerIndex = 0;
+		this.consumerInitialized = 0;
+		this.consumerInitilizedPromise = Promise.withResolvers();
+		this.consumerPubkeyPointerCache = new FastUint8ArrayMap();
 		for (let i = 0; i < this.consumers.length; i++) {
 			const worker = new Worker(new URL("./consume.worker.ts", import.meta.url), { name: `consumer-${i}` });
 			this.consumers[i] = worker;
+			this.consumerPubkeys[i] = [];
 		}
 	}
 
-	static start(p2pChannel: MessagePort): ChainStore {
+	static start(p2pChannel: MessagePortLike): ChainStore {
 		const headers = atomic.stores.headers.slice(0, atomic.stores.headers.length());
 		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
@@ -50,7 +63,6 @@ export class ChainStore {
 		return self;
 	}
 
-	private consumerIndex = 0;
 	async tick(): Promise<void> {
 		const message = this.p2pMessageQueue.dequeue();
 		if (!message) {
@@ -61,17 +73,58 @@ export class ChainStore {
 			const chunk = message.data as Uint8Array;
 			console.log(`[chain] new chunk to consume size=${chunk.length}`);
 
-			const pubkeys = await Promise.all(this.consumers.map((consumer) => {
-				return new Promise<Uint8Array[]>((resolve) => {
-					consumer.addEventListener("message", (event) => {
-						const pubkeys = event.data as Uint8Array[];
-						resolve(pubkeys);
-					}, { once: true });
-					consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
-				});
-			}));
+			const index = this.consumerIndex;
+			const first = index === 0;
+			this.consumerIndex = (this.consumerIndex + 1) % this.consumers.length;
+			const last = this.consumerIndex === 0;
+			const consumer = this.consumers[index]!;
 
-			this.p2pChannel.postMessage({ type: "consume" });
+			if (first) {
+				this.consumerInitialized = 0;
+				this.consumerInitilizedPromise = Promise.withResolvers<void>();
+				this.consumerPubkeyPointerCache.clear();
+			}
+			consumer.addEventListener("message", (event) => {
+				const pubkeys = event.data as Uint8Array[];
+				this.consumerPubkeys[index] = pubkeys;
+				this.consumerInitialized++;
+				if (this.consumerInitialized === this.consumers.length) {
+					this.consumerInitilizedPromise.resolve();
+				}
+			}, { once: true });
+			consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
+
+			if (last) {
+				// await first stage of all consumers to finish
+				await this.consumerInitilizedPromise.promise;
+				atomic.trx((stores, trx) => {
+					// start and wait next stages of all consumers here
+					for (let index = 0; index < this.consumers.length; index++) {
+						const consumer = this.consumers[index]!;
+						const pubkeys = this.consumerPubkeys[index]!;
+						const pubkeyPointers = new BigUint64Array(pubkeys.length);
+						for (let index = 0; index < pubkeys.length; index++) {
+							const pubkey = pubkeys[index]!;
+							const pubkeyHash = sha256(pubkey);
+							let pubkeyPointer = this.consumerPubkeyPointerCache.get(pubkeyHash) ?? stores.pubkey.get(pubkeyHash);
+							if (pubkeyPointer === undefined) {
+								pubkeyPointer = stores.pubkeys.append(pubkey);
+								stores.pubkey.set(pubkeyHash, pubkeyPointer, trx);
+								this.consumerPubkeyPointerCache.set(pubkeyHash, BigInt(pubkeyPointer));
+							}
+							pubkeyPointers[index] = BigInt(pubkeyPointer);
+						}
+						consumer.postMessage({ stage: "consume", data: pubkeyPointers }, [pubkeyPointers.buffer]);
+					}
+
+					// TODO: next stage. also we didnt handle prevTx yet.
+				});
+
+				// let p2p know that we have consumed every chunk
+				for (let index = 0; index < this.consumers.length; index++) {
+					this.p2pChannel.postMessage({ type: "consume" });
+				}
+			}
 			return;
 		}
 
