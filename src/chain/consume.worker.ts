@@ -10,7 +10,7 @@ import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { Codec, VarInt } from "@nomadshiba/codec";
 
-const pubkey = new Uint8ArrayMap<bigint | number>();
+const pubkey = new Uint8ArrayMap<number>();
 const pubkeyHashes: Uint8Array[] = [];
 const blocks: { tx: WireTx; spenders: { tx: StoredTxPointer; vin: Codec.InferOutput<typeof VarInt> }[] }[][] = [];
 
@@ -80,7 +80,7 @@ function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
 	const parts: Uint8Array[] = [];
 	for (let i = 0; i < pubkeyPointers.length; i++) {
 		const pubkeyHash = pubkeyHashes[i]!;
-		const pubkeyPointer = pubkeyPointers[i]!;
+		const pubkeyPointer = Number(pubkeyPointers[i]!);
 		pubkey.set(pubkeyHash, pubkeyPointer);
 	}
 	for (const txs of blocks) {
@@ -95,7 +95,7 @@ function consume(pubkeyPointers: BigUint64Array): Uint8Array[] {
 						throw new Error("pubkey pointer not found, weird");
 					}
 					return {
-						value: Number(output.value),
+						value: output.value,
 						scriptPubKey: Number(pubkeyPointer),
 					};
 				}),

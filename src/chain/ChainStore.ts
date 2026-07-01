@@ -19,12 +19,20 @@ export class ChainStore {
 	private p2pChannel: MessagePort;
 	private p2pMessageQueue: Queue<{ type: string; data: any }>;
 
+	private consumers: Worker[];
+
 	private constructor(p2pChannel: MessagePort, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
 		this.p2pMessageQueue = new Queue(1000);
 		this.blockHashToHeightMap = new Uint8ArrayMap<number>(Math.max(256, initialHeaders.length * 2));
 		for (let i = 0; i < initialHeaders.length; i++) {
 			this.blockHashToHeightMap.set(initialHeaders[i]!.hash(), i);
+		}
+
+		this.consumers = new Array<Worker>(navigator.hardwareConcurrency);
+		for (let i = 0; i < this.consumers.length; i++) {
+			const worker = new Worker(new URL("./consume.worker.ts", import.meta.url), { name: `consumer-${i}` });
+			this.consumers[i] = worker;
 		}
 	}
 
@@ -42,10 +50,7 @@ export class ChainStore {
 		return self;
 	}
 
-	private startTime: number | undefined;
-	private totalTxs: number = 0;
-	private totalBlocks: number = 0;
-	private totalSize: number = 0;
+	private consumerIndex = 0;
 	async tick(): Promise<void> {
 		const message = this.p2pMessageQueue.dequeue();
 		if (!message) {
@@ -53,39 +58,20 @@ export class ChainStore {
 			return;
 		}
 		if (message.type === "blocks") {
-			if (this.startTime) {
-				const passed = performance.now() - this.startTime;
-				const passedSeconds = passed / 1000;
-				const speedTxs = this.totalTxs / passedSeconds;
-				const speedSize = (this.totalSize / 1024 / 1024) / passedSeconds;
-				const speedBlocks = this.totalBlocks / passedSeconds;
-				console.log(
-					`[chain] sustained speed`,
-					`${speedBlocks.toFixed(1)}blocks/s`,
-					`${speedTxs.toFixed(0)}txs/s`,
-					`${speedSize.toFixed(2)}MiB/s`,
-					`time=${formatDuration(passed)}`,
-				);
-			}
-			this.startTime ??= performance.now();
-			const buffer = message.data as Uint8Array;
-			console.log(`[chain] new chunk to consume size=${buffer.length}`);
-			let offset = 0;
-			let blocks = 0;
-			while (offset < buffer.length) {
-				const [txs, size] = StoredTxs.decodeFrom(buffer, offset);
-				offset += size;
-				blocks++;
-				this.appendTxs(txs, atomic.stores.blocks.length());
-				if (this.startTime) {
-					this.totalTxs += txs.length;
-					this.totalSize += size;
-					this.totalBlocks++;
-				}
-			}
-			this.p2pChannel.postMessage({ type: "consume" });
-			console.log(`[chain] consumed blocks count=${blocks} bytes=${offset} height=${atomic.stores.blocks.length() - 1}`);
+			const chunk = message.data as Uint8Array;
+			console.log(`[chain] new chunk to consume size=${chunk.length}`);
 
+			const pubkeys = await Promise.all(this.consumers.map((consumer) => {
+				return new Promise<Uint8Array[]>((resolve) => {
+					consumer.addEventListener("message", (event) => {
+						const pubkeys = event.data as Uint8Array[];
+						resolve(pubkeys);
+					}, { once: true });
+					consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
+				});
+			}));
+
+			this.p2pChannel.postMessage({ type: "consume" });
 			return;
 		}
 
