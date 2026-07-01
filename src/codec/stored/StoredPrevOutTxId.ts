@@ -23,24 +23,8 @@ export type StoredPrevOutTxId =
 
 const COINBASE_SENTINEL = 0;
 
-/**
- * Placeholder for prevouts whose pointer isn't resolved yet at encode time.
- * Nonzero on purpose: a placeholder that escapes patching must never decode
- * as coinbase — it should decode as a garbage pointer and fail loudly.
- */
-export const PREVOUT_UNRESOLVED_PLACEHOLDER: StoredTxPointer = 2 ** 48 - 2;
-
 export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: StoredTxPointer.stride.size };
-
-	/**
-	 * Overwrite the pointer slot of an already-encoded StoredPrevOutTxId in
-	 * place. `offset` is the offset of the slot (= the containing input's
-	 * offset). Applies the +1 bias; pass the raw resolved pointer.
-	 */
-	static patchPointer(target: Uint8Array, offset: number, pointer: StoredTxPointer): void {
-		StoredTxPointer.encodeInto(pointer + 1, target, offset);
-	}
 
 	encode(txId: StoredPrevOutTxId): Uint8Array<ArrayBuffer> {
 		const result = new Uint8Array(this.stride.size);
