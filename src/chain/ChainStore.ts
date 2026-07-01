@@ -100,6 +100,7 @@ export class ChainStore {
 				atomic.trx((stores, trx) => {
 					// start and wait next stages of all consumers here
 					for (let index = 0; index < this.consumers.length; index++) {
+						// make sure here we are only looking for pubkeys the worker couldn't find it self.
 						const consumer = this.consumers[index]!;
 						const pubkeys = this.consumerPubkeys[index]!;
 						const pubkeyPointers = new BigUint64Array(pubkeys.length);
