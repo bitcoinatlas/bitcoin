@@ -44,6 +44,7 @@
     "jsr:@std/path@^1.1.1": "1.1.5",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/path@^1.1.5": "1.1.5",
+    "jsr:@std/streams@1.0.12": "1.0.12",
     "jsr:@std/streams@^1.1.0": "1.1.0",
     "jsr:@std/streams@^1.1.1": "1.1.1",
     "jsr:@std/testing@*": "1.0.17",
@@ -248,6 +249,12 @@
       "integrity": "ccea00982ea28c36becaf6e62f855406c76a8c32d462f66f415bbb7d83a271bc",
       "dependencies": [
         "jsr:@std/internal@^1.0.14"
+      ]
+    },
+    "@std/streams@1.0.12": {
+      "integrity": "ae925fa1dc459b1abf5cbaa28cc5c7b0485853af3b2a384b0dc22d86e59dfbf4",
+      "dependencies": [
+        "jsr:@std/bytes@^1.0.6"
       ]
     },
     "@std/streams@1.1.0": {

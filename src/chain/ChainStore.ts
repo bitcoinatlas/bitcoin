@@ -65,186 +65,6 @@ export class ChainStore {
 		return self;
 	}
 
-	async tick(): Promise<void> {
-		const message = this.p2pMessageQueue.dequeue();
-		if (!message) {
-			await delay(0);
-			return;
-		}
-		if (message.type === "blocks") {
-			// TODO: Later make this easier to read and better.
-			// Maybe p2p can send all of the chunks we need at once.
-			// We can also have a single worker that handles all of the chunks that spawns its own workers.
-			// We can have an better pipelines to handle things like this in general as well, maybe?
-			// etc. think about it later. For now, this is fine.
-
-			const chunk = message.data as Uint8Array;
-			console.log(`[chain] new chunk to consume size=${chunk.length}`);
-
-			const index = this.consumerIndex;
-			const first = index === 0;
-			this.consumerIndex = (this.consumerIndex + 1) % this.consumers.length;
-			const last = this.consumerIndex === 0;
-			const consumer = this.consumers[index]!;
-
-			if (first) {
-				this.consumerInitialized = 0;
-				this.consumersInitilizedPromise = Promise.withResolvers<void>();
-				this.consumerPubkeyPointerCache.clear();
-			}
-
-			// TODO: here at first stage probably we should also handle prevOutTx
-			consumer.addEventListener("message", (event) => {
-				const { pubkeys, txIds } = event.data as { pubkeys: Uint8Array[]; txIds: Uint8Array[] };
-				this.consumerPubkeys[index] = pubkeys;
-				this.consumerInitialized++;
-				if (this.consumerInitialized === this.consumers.length) {
-					this.consumersInitilizedPromise.resolve();
-				}
-			}, { once: true });
-			consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
-
-			if (last) {
-				// await first stage of all consumers to finish
-				await this.consumersInitilizedPromise.promise;
-				await atomic.trx(async (stores, trx) => {
-					let processCount = 0;
-					const processPromise = Promise.withResolvers<void>();
-
-					for (let index = 0; index < this.consumers.length; index++) {
-					}
-
-					// start and wait next stages of all consumers here
-					for (let index = 0; index < this.consumers.length; index++) {
-						// make sure here we are only looking for pubkeys the worker couldn't find it self.
-						const consumer = this.consumers[index]!;
-						const pubkeys = this.consumerPubkeys[index]!;
-						const pubkeyPointers = new BigUint64Array(pubkeys.length);
-						for (let index = 0; index < pubkeys.length; index++) {
-							const pubkey = pubkeys[index]!;
-							const pubkeyHash = sha256(pubkey);
-							const memoryPubkeyPointer = this.consumerPubkeyPointerCache.get(pubkeyHash);
-							let pubkeyPointer = memoryPubkeyPointer ?? stores.pubkey.get(pubkeyHash);
-							if (pubkeyPointer === undefined) {
-								pubkeyPointer = stores.pubkeys.append(pubkey);
-								stores.pubkey.set(pubkeyHash, pubkeyPointer, trx);
-								if (memoryPubkeyPointer === undefined) {
-									this.consumerPubkeyPointerCache.put(pubkeyHash, pubkeyPointer);
-								}
-							}
-							pubkeyPointers[index] = BigInt(pubkeyPointer);
-						}
-
-						consumer.addEventListener("message", (event) => {
-							processCount++;
-							this.consumerStoredTxs[index] = event.data as Uint8Array[];
-							if (processCount !== this.consumers.length) return;
-							processPromise.resolve();
-						}, { once: true });
-						consumer.postMessage({ stage: "process", data: pubkeyPointers }, [pubkeyPointers.buffer]);
-					}
-
-					await processPromise.promise;
-
-					for (let index = 0; index < this.consumers.length; index++) {
-						const chunk = this.consumerStoredTxs[index]!;
-						for (const block of chunk) {
-							const blockPointer = stores.txs.append(block);
-							stores.blocks.push(blockPointer);
-						}
-					}
-				});
-
-				// let p2p know that we have consumed every chunk
-				for (let index = 0; index < this.consumers.length; index++) {
-					this.p2pChannel.postMessage({ type: "consume" });
-				}
-			}
-			return;
-		}
-
-		if (message.type === "headers") {
-			const [headers] = WireBlockHeaders.decode(message.data);
-			const { height } = this.pushHeaders(headers);
-			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
-			return;
-		}
-
-		if (message.type === "reorg") {
-			console.log(`[chain] tick reorg keepHeight=${message.data}`);
-			this.reorg(message.data);
-			return;
-		}
-	}
-
-	private pushHeaders(headers: WireBlockHeader[]): { height: number } {
-		try {
-			let height = atomic.stores.headers.length();
-			atomic.trx((stores) => {
-				for (const header of headers) {
-					height = stores.headers.push(header);
-					this.blockHashToHeightMap.set(header.hash(), height);
-				}
-			});
-			return { height };
-		} catch (reason) {
-			console.error("Failed to append block header:", reason);
-			Deno.exit(1);
-		}
-	}
-
-	private reorg(keepHeight: number): void {
-		keepHeight;
-		throw new Error("Not Implemented");
-		/* const blocksHeight = atomic.stores.block.length() - 1;
-		console.log(`[chain] reorg: keepHeight=${keepHeight} currentTip=${blocksHeight}`);
-		if (keepHeight >= blocksHeight) return; // nothing to undo
-
-		// byte offset in the tx blob where the orphaned suffix begins
-		const cutOffset = atomic.stores.block.get(keepHeight + 1);
-		if (cutOffset === undefined) throw new Error(`reorg: no block pointer at ${keepHeight + 1}`);
-
-		// spender array cut = the spender base of the first tx of the first orphaned block
-		const firstOrphanTxs = this.getTxsByBlockHeight(keepHeight + 1);
-		if (!firstOrphanTxs?.length) throw new Error(`reorg: no txs at ${keepHeight + 1}`);
-		const spenderCut = firstOrphanTxs[0]!.spender;
-		console.log(`[chain] reorg: cutOffset=${cutOffset} spenderCut=${spenderCut}`);
-
-		const batch = atomic.batch();
-
-		// tombstone orphaned txid / pubkey entries (pointer >= cutOffset only)
-		for (let h = keepHeight + 1; h <= blocksHeight; h++) {
-			const txs = this.getTxsByBlockHeight(h);
-			if (!txs) continue;
-			for (const tx of txs) {
-				const existingTxid = batch.txid.get(tx.txId);
-				if (existingTxid !== undefined && existingTxid >= cutOffset) {
-					batch.txid.delete(tx.txId); // assumed KvStore.delete
-				}
-				for (const output of tx.outputs) {
-					if (output.scriptPubKey.kind === "pointer") continue;
-					const hash = sha256(rawScriptPubKey(output.scriptPubKey, this._rawScriptPubKeyBuffer));
-					const existingPub = batch.pubkey.get(hash);
-					if (existingPub !== undefined && existingPub >= cutOffset) {
-						batch.pubkey.delete(hash); // assumed KvStore.delete
-					}
-				}
-			}
-			const header = atomic.stores.header.get(h);
-			if (header) this.blockHashToHeightMap.delete(header.hash());
-		}
-
-		batch.txid.apply();
-		batch.pubkey.apply();
-
-		// truncate the array/blob stores down to the surviving prefix
-		atomic.stores.header.truncate(keepHeight + 1);
-		atomic.stores.block.truncate(keepHeight + 1);
-		atomic.stores.spender.truncate(spenderCut);
-		atomic.stores.tx.truncate(cutOffset);
-		console.log(`[chain] reorg complete: stores truncated to height=${keepHeight}`); */
-	}
-
 	getHeaderByHeight(height: number): StoredBlockHeader | undefined {
 		const header = atomic.stores.headers.get(height);
 		if (!header) return undefined;
@@ -334,5 +154,141 @@ export class ChainStore {
 		}
 
 		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
+	}
+
+	async tick(): Promise<void> {
+		const message = this.p2pMessageQueue.dequeue();
+		if (!message) {
+			await delay(0);
+			return;
+		}
+		if (message.type === "blocks") {
+			const chunk = message.data as Uint8Array;
+			await this.handleBlocksMessage(chunk);
+			return;
+		}
+
+		if (message.type === "headers") {
+			const [headers] = WireBlockHeaders.decode(message.data);
+			await this.handleHeadersMessage(headers);
+			return;
+		}
+
+		if (message.type === "reorg") {
+			console.log(`[chain] tick reorg keepHeight=${message.data}`);
+			const height = message.data as number;
+			this.handleReorgMesage(height);
+			return;
+		}
+	}
+
+	private handleReorgMesage(_keepHeight: number): void {
+		throw new Error("Not Implemented");
+	}
+
+	private async handleHeadersMessage(headers: WireBlockHeaders) {
+		try {
+			let height = atomic.stores.headers.length();
+			atomic.trx((stores) => {
+				for (const header of headers) {
+					height = stores.headers.push(header);
+					this.blockHashToHeightMap.set(header.hash(), height);
+				}
+			});
+			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
+			return { height };
+		} catch (reason) {
+			console.error("Failed to append block header:", reason);
+			Deno.exit(1);
+		}
+	}
+
+	private async handleBlocksMessage(chunk: Uint8Array) {
+		// TODO: Later make this easier to read and better.
+		// Maybe p2p can send all of the chunks we need at once.
+		// We can also have a single worker that handles all of the chunks that spawns its own workers.
+		// We can have an better pipelines to handle things like this in general as well, maybe?
+		// etc. think about it later. For now, this is fine.
+		console.log(`[chain] new chunk to consume size=${chunk.length}`);
+
+		const index = this.consumerIndex;
+		const first = index === 0;
+		this.consumerIndex = (this.consumerIndex + 1) % this.consumers.length;
+		const last = this.consumerIndex === 0;
+		const consumer = this.consumers[index]!;
+
+		if (first) {
+			this.consumerInitialized = 0;
+			this.consumersInitilizedPromise = Promise.withResolvers<void>();
+			this.consumerPubkeyPointerCache.clear();
+		}
+
+		// TODO: here at first stage probably we should also handle prevOutTx
+		consumer.addEventListener("message", (event) => {
+			const { pubkeys, txIds } = event.data as { pubkeys: Uint8Array[]; txIds: Uint8Array[] };
+			this.consumerPubkeys[index] = pubkeys;
+			this.consumerInitialized++;
+			if (this.consumerInitialized === this.consumers.length) {
+				this.consumersInitilizedPromise.resolve();
+			}
+		}, { once: true });
+		consumer.postMessage({ stage: "init", data: chunk }, [chunk.buffer]);
+
+		if (last) {
+			// await first stage of all consumers to finish
+			await this.consumersInitilizedPromise.promise;
+			await atomic.trx(async (stores, trx) => {
+				let processCount = 0;
+				const processPromise = Promise.withResolvers<void>();
+
+				for (let index = 0; index < this.consumers.length; index++) {
+				}
+
+				// start and wait next stages of all consumers here
+				for (let index = 0; index < this.consumers.length; index++) {
+					// make sure here we are only looking for pubkeys the worker couldn't find it self.
+					const consumer = this.consumers[index]!;
+					const pubkeys = this.consumerPubkeys[index]!;
+					const pubkeyPointers = new BigUint64Array(pubkeys.length);
+					for (let index = 0; index < pubkeys.length; index++) {
+						const pubkey = pubkeys[index]!;
+						const pubkeyHash = sha256(pubkey);
+						const memoryPubkeyPointer = this.consumerPubkeyPointerCache.get(pubkeyHash);
+						let pubkeyPointer = memoryPubkeyPointer ?? stores.pubkey.get(pubkeyHash);
+						if (pubkeyPointer === undefined) {
+							pubkeyPointer = stores.pubkeys.append(pubkey);
+							stores.pubkey.set(pubkeyHash, pubkeyPointer, trx);
+							if (memoryPubkeyPointer === undefined) {
+								this.consumerPubkeyPointerCache.put(pubkeyHash, pubkeyPointer);
+							}
+						}
+						pubkeyPointers[index] = BigInt(pubkeyPointer);
+					}
+
+					consumer.addEventListener("message", (event) => {
+						processCount++;
+						this.consumerStoredTxs[index] = event.data as Uint8Array[];
+						if (processCount !== this.consumers.length) return;
+						processPromise.resolve();
+					}, { once: true });
+					consumer.postMessage({ stage: "process", data: pubkeyPointers }, [pubkeyPointers.buffer]);
+				}
+
+				await processPromise.promise;
+
+				for (let index = 0; index < this.consumers.length; index++) {
+					const chunk = this.consumerStoredTxs[index]!;
+					for (const block of chunk) {
+						const blockPointer = stores.txs.append(block);
+						stores.blocks.push(blockPointer);
+					}
+				}
+			});
+
+			// let p2p know that we have consumed every chunk
+			for (let index = 0; index < this.consumers.length; index++) {
+				this.p2pChannel.postMessage({ type: "consume" });
+			}
+		}
 	}
 }

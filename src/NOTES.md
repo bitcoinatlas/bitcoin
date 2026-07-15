@@ -10,7 +10,7 @@ so we are not gonna race to process chunks.
 
 instead we are gonna have some workers, running in parallel then syncing in the end.
 
-so first of all we need to strip concurrent stuff from the blobstore, no freeze(), or a stage, we dont event need the batch, all we need is
+so first of all we need to strip concurrent stuff from the blobstore, no freeze(), or a stage, we dont even need the batch, all we need is
 pin() and rollback().
 
 so each worker started to work on their chunk with multiple blocks and multiple txs. chunk size might be dynamic later based on how fast we
@@ -32,7 +32,7 @@ things that might change if we find a pointer during sync time.
 
 so we can just dumb the buffer that is not gonna change directly to the disk raw, fast.
 
-so before we have a one big blob for all of the txs ever, and we had a pointer pointing at stuff on it we had a packed 3bit flag on the tx
+so before we had a one big blob for all of the txs ever, and we had a pointer pointing at stuff in it we had a packed 3bit flag on the tx
 output telling us if the script pubkey is raw, a known format, or a pointer. but thats layout shift.
 
 instead now we are gonna have a pointer always. but this pointer isnt pointing back on one big chain blob. but a blob made out of packed
@@ -43,7 +43,7 @@ we also do the same thing for prevouts.
 
 so scriptpubkey and prevout tx, if we find those during worker time we dont have to double check it sync time.
 
-but for spent pointers we have to double check them all the time. but during sync time we just double check the other workers memory
+but for spent pointers we have to double check them all the time. but during sync time we just double check the other worker's memory
 results. so it should be fast.
 
 maybe rocksdb might help us during check as well? based on the impl of bindings we have. i gotta check that. we might not even need sync
@@ -55,7 +55,7 @@ well.
 also i just realized we can open the rocksdb on different workers and can even open it with different family columns. bindings just use the
 same handle under the hood.
 
-anyway so i think that was all. hopefully it will let use consume chunks p2p worker giving use faster and will drain it all.
+anyway so i think that was all. hopefully it will let us consume chunks p2p worker giving us faster and will drain it all.
 
 ## major
 
