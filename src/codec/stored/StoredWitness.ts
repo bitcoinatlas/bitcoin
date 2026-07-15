@@ -287,16 +287,15 @@ export function reconstructWitness(pattern: WitnessPattern): Uint8Array[] {
 export class StoredWitnessPatternCodec extends Codec<WitnessPattern> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(pattern: WitnessPattern): Uint8Array<ArrayBuffer> {
-		return StoredWitnessUnion.encode(toUnion(pattern));
-	}
-
-	public override encodeInto(pattern: WitnessPattern, target: Uint8Array, offset: number = 0): number {
+	encoder(pattern: WitnessPattern, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(pattern: WitnessPattern, target: Uint8Array, offset: number): number;
+	encoder(pattern: WitnessPattern, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) return StoredWitnessUnion.encode(toUnion(pattern));
 		return StoredWitnessUnion.encodeInto(toUnion(pattern), target, offset);
 	}
 
-	decodeFrom(bytes: Uint8Array, offset: number): [WitnessPattern, number] {
-		const [stored, bytesRead] = StoredWitnessUnion.decodeFrom(bytes, offset);
+	decoder(bytes: Uint8Array, offset: number): [WitnessPattern, number] {
+		const [stored, bytesRead] = StoredWitnessUnion.decode(bytes, offset);
 		return [fromUnion(stored), bytesRead];
 	}
 }
@@ -306,16 +305,15 @@ export const StoredWitnessPattern = new StoredWitnessPatternCodec();
 export class StoredWitnessCodec extends Codec<Uint8Array[]> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(items: Uint8Array[]): Uint8Array<ArrayBuffer> {
-		return StoredWitnessPattern.encode(detectWitnessPattern(items));
-	}
-
-	public override encodeInto(items: Uint8Array[], target: Uint8Array, offset: number = 0): number {
+	encoder(items: Uint8Array[], target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(items: Uint8Array[], target: Uint8Array, offset: number): number;
+	encoder(items: Uint8Array[], target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) return StoredWitnessPattern.encode(detectWitnessPattern(items));
 		return StoredWitnessPattern.encodeInto(detectWitnessPattern(items), target, offset);
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [Uint8Array[], number] {
-		const [pattern, bytesRead] = StoredWitnessPattern.decodeFrom(bytes, offset);
+	public decoder(bytes: Uint8Array, offset: number): [Uint8Array[], number] {
+		const [pattern, bytesRead] = StoredWitnessPattern.decode(bytes, offset);
 		return [reconstructWitness(pattern), bytesRead];
 	}
 }

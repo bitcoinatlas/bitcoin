@@ -34,40 +34,42 @@ type T = {
 class WireTxCodec extends Codec<T> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(tx: T): Uint8Array<ArrayBuffer> {
+	public encoder(tx: T, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(tx: T, target: Uint8Array, offset: number): number;
+	public encoder(tx: T, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const hasWitness = tx.witness.length > 0;
 
-		const preWitnessBytes = WireTxPreWitness.encode({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs });
-		const witnessBytes = hasWitness ? encodeWitness(tx.witness) : null;
-		const postWitnessBytes = WireTxPostWitness.encode({ locktime: tx.locktime });
+		if (target === undefined) {
+			const preWitnessBytes = WireTxPreWitness.encode({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs });
+			const witnessBytes = hasWitness ? encodeWitness(tx.witness) : null;
+			const postWitnessBytes = WireTxPostWitness.encode({ locktime: tx.locktime });
 
-		const total = preWitnessBytes.length +
-			(witnessBytes ? witnessBytes.length : 0) +
-			postWitnessBytes.length;
+			const total = preWitnessBytes.length +
+				(witnessBytes ? witnessBytes.length : 0) +
+				postWitnessBytes.length;
 
-		const result = new Uint8Array(total);
-		let pos = 0;
-		result.set(preWitnessBytes, pos);
-		pos += preWitnessBytes.length;
-		if (witnessBytes) {
-			result.set(witnessBytes, pos);
-			pos += witnessBytes.length;
+			const result = new Uint8Array(total);
+			let pos = 0;
+			result.set(preWitnessBytes, pos);
+			pos += preWitnessBytes.length;
+			if (witnessBytes) {
+				result.set(witnessBytes, pos);
+				pos += witnessBytes.length;
+			}
+			result.set(postWitnessBytes, pos);
+			return result;
 		}
-		result.set(postWitnessBytes, pos);
-		return result;
-	}
 
-	public override encodeInto(tx: T, target: Uint8Array, offset: number = 0): number {
+		offset = offset!;
 		const start = offset;
-		const hasWitness = tx.witness.length > 0;
 		offset += WireTxPreWitness.encodeInto({ version: tx.version, hasWitness, inputs: tx.inputs, outputs: tx.outputs }, target, offset);
 		if (hasWitness) offset += encodeWitnessInto(tx.witness, target, offset);
 		offset += WireTxPostWitness.encodeInto({ locktime: tx.locktime }, target, offset);
 		return offset - start;
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [T, number] {
-		const [preWitness, preWitnessBytes] = WireTxPreWitness.decodeFrom(bytes, offset);
+	public decoder(bytes: Uint8Array, offset: number): [T, number] {
+		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes, offset);
 		let currentOffset = offset + preWitnessBytes;
 
 		let witness: Uint8Array[][] = [];
@@ -81,7 +83,7 @@ class WireTxCodec extends Codec<T> {
 			currentOffset += witnessBytes;
 		}
 
-		const [postWitness] = WireTxPostWitness.decodeFrom(bytes, currentOffset);
+		const [postWitness] = WireTxPostWitness.decode(bytes, currentOffset);
 		currentOffset += 4;
 
 		return [{
@@ -126,11 +128,11 @@ function decodeWitness(data: Uint8Array, offset: number, inputCount: number): [U
 	let currentOffset = offset;
 	const witness: Uint8Array[][] = [];
 	for (let i = 0; i < inputCount; i++) {
-		const [nItems, nItemsBytes] = CompactSize.decodeFrom(data, currentOffset);
+		const [nItems, nItemsBytes] = CompactSize.decode(data, currentOffset);
 		currentOffset += nItemsBytes;
 		const items: Uint8Array[] = [];
 		for (let j = 0; j < nItems; j++) {
-			const [itemLen, itemLenBytes] = CompactSize.decodeFrom(data, currentOffset);
+			const [itemLen, itemLenBytes] = CompactSize.decode(data, currentOffset);
 			currentOffset += itemLenBytes;
 			const item = data.subarray(currentOffset, currentOffset + itemLen);
 			currentOffset += itemLen;

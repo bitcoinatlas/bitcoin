@@ -26,13 +26,15 @@ const COINBASE_SENTINEL = 0;
 export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: StoredTxPointer.stride.size };
 
-	encode(txId: StoredPrevOutTxId): Uint8Array<ArrayBuffer> {
-		const result = new Uint8Array(this.stride.size);
-		this.encodeInto(txId, result, 0);
-		return result;
-	}
+	encoder(txId: StoredPrevOutTxId, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(txId: StoredPrevOutTxId, target: Uint8Array, offset: number): number;
+	encoder(txId: StoredPrevOutTxId, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			const result = new Uint8Array(this.stride.size);
+			this.encoder(txId, result, 0);
+			return result;
+		}
 
-	public override encodeInto(txId: StoredPrevOutTxId, target: Uint8Array, offset: number = 0): number {
 		const { kind } = txId;
 
 		if (kind === "pointer") {
@@ -46,8 +48,8 @@ export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 		throw new Error(`unknown txid kind, ${kind satisfies never}`);
 	}
 
-	decodeFrom(data: Uint8Array, offset: number): [StoredPrevOutTxId, number] {
-		const [rawPointer] = StoredTxPointer.decodeFrom(data, offset);
+	decoder(data: Uint8Array, offset: number): [StoredPrevOutTxId, number] {
+		const [rawPointer] = StoredTxPointer.decode(data, offset);
 
 		if (rawPointer === COINBASE_SENTINEL) {
 			return [{ kind: "coinbase" }, this.stride.size];

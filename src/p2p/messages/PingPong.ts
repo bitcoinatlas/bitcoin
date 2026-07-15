@@ -5,18 +5,19 @@ import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 class PingPongCodec extends Codec<bigint> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 8 };
 
-	public encode(nonce: bigint): Uint8Array<ArrayBuffer> {
-		const buf = new Uint8Array(8);
-		new Uint8ArrayView(buf).setBigUint64(0, nonce, true);
-		return buf;
-	}
-
-	public override encodeInto(nonce: bigint, target: Uint8Array, offset: number = 0): number {
-		new DataView(target.buffer, target.byteOffset + offset).setBigUint64(0, nonce, true);
+	public encoder(nonce: bigint, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(nonce: bigint, target: Uint8Array, offset: number): number;
+	public encoder(nonce: bigint, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			const buf = new Uint8Array(8);
+			new Uint8ArrayView(buf).setBigUint64(0, nonce, true);
+			return buf;
+		}
+		new DataView(target.buffer, target.byteOffset + offset!).setBigUint64(0, nonce, true);
 		return 8;
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [bigint, number] {
+	public decoder(bytes: Uint8Array, offset: number): [bigint, number] {
 		return [new Uint8ArrayView(bytes, offset).getBigUint64(0, true), 8];
 	}
 }

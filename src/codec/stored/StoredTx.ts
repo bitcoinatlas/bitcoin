@@ -72,28 +72,31 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return { txId, version, locktime, inputs, outputs, witness };
 	}
 
-	public encode(value: StoredTx): Uint8Array<ArrayBuffer> {
-		// Size-compute pass.
-		const txIdBytes = TXID.encode(value.txId);
-		const packBytes = PACK.encode(value);
-		const voutBytes = OUTPUTS.encode(value.outputs);
-		const vinBytes = INPUTS.encode(value.inputs);
+	public encoder(value: StoredTx, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(value: StoredTx, target: Uint8Array, offset: number): number;
+	public encoder(value: StoredTx, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			// Size-compute pass.
+			const txIdBytes = TXID.encode(value.txId);
+			const packBytes = PACK.encode(value);
+			const voutBytes = OUTPUTS.encode(value.outputs);
+			const vinBytes = INPUTS.encode(value.inputs);
 
-		const totalSize = txIdBytes.length + packBytes.length + voutBytes.length + vinBytes.length;
+			const totalSize = txIdBytes.length + packBytes.length + voutBytes.length + vinBytes.length;
 
-		const bytes = new Uint8Array(totalSize);
-		let pos = 0;
-		bytes.set(txIdBytes, pos);
-		pos += txIdBytes.length;
-		bytes.set(packBytes, pos);
-		pos += packBytes.length;
-		bytes.set(voutBytes, pos);
-		pos += voutBytes.length;
-		bytes.set(vinBytes, pos);
-		return bytes;
-	}
+			const bytes = new Uint8Array(totalSize);
+			let pos = 0;
+			bytes.set(txIdBytes, pos);
+			pos += txIdBytes.length;
+			bytes.set(packBytes, pos);
+			pos += packBytes.length;
+			bytes.set(voutBytes, pos);
+			pos += voutBytes.length;
+			bytes.set(vinBytes, pos);
+			return bytes;
+		}
 
-	public override encodeInto(value: StoredTx, target: Uint8Array, offset: number = 0): number {
+		offset = offset!;
 		const start = offset;
 		offset += TXID.encodeInto(value.txId, target, offset);
 		offset += PACK.encodeInto(value, target, offset);
@@ -102,16 +105,16 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return offset - start;
 	}
 
-	public decodeFrom(data: Uint8Array, offset: number): [StoredTx, number] {
+	public decoder(data: Uint8Array, offset: number): [StoredTx, number] {
 		let pos = offset;
 
-		const [txId, txIdSize] = TXID.decodeFrom(data, pos);
+		const [txId, txIdSize] = TXID.decode(data, pos);
 		pos += txIdSize;
-		const [{ locktime, version }, packSize] = PACK.decodeFrom(data, pos);
+		const [{ locktime, version }, packSize] = PACK.decode(data, pos);
 		pos += packSize;
-		const [vout, voutSize] = OUTPUTS.decodeFrom(data, pos);
+		const [vout, voutSize] = OUTPUTS.decode(data, pos);
 		pos += voutSize;
-		const [vin, vinSize] = INPUTS.decodeFrom(data, pos);
+		const [vin, vinSize] = INPUTS.decode(data, pos);
 		pos += vinSize;
 
 		return [{ txId, locktime, version, outputs: vout, inputs: vin }, pos - offset];

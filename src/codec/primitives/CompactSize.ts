@@ -5,27 +5,29 @@ import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 export class CompactSizeCodec extends Codec<number> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(n: number): Uint8Array<ArrayBuffer> {
-		if (n < 0xfd) return Uint8Array.of(n);
-		if (n <= 0xffff) {
-			const buffer = new Uint8Array(3);
-			buffer[0] = 0xfd;
-			new Uint8ArrayView(buffer).setUint16(1, n, true);
+	public encoder(n: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(n: number, target: Uint8Array, offset: number): number;
+	public encoder(n: number, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			if (n < 0xfd) return Uint8Array.of(n);
+			if (n <= 0xffff) {
+				const buffer = new Uint8Array(3);
+				buffer[0] = 0xfd;
+				new Uint8ArrayView(buffer).setUint16(1, n, true);
+				return buffer;
+			}
+			if (n <= 0xffffffff) {
+				const buffer = new Uint8Array(5);
+				buffer[0] = 0xfe;
+				new Uint8ArrayView(buffer).setUint32(1, n, true);
+				return buffer;
+			}
+			const buffer = new Uint8Array(9);
+			buffer[0] = 0xff;
+			new Uint8ArrayView(buffer).setBigUint64(1, BigInt(n), true);
 			return buffer;
 		}
-		if (n <= 0xffffffff) {
-			const buffer = new Uint8Array(5);
-			buffer[0] = 0xfe;
-			new Uint8ArrayView(buffer).setUint32(1, n, true);
-			return buffer;
-		}
-		const buffer = new Uint8Array(9);
-		buffer[0] = 0xff;
-		new Uint8ArrayView(buffer).setBigUint64(1, BigInt(n), true);
-		return buffer;
-	}
-
-	public override encodeInto(n: number, target: Uint8Array, offset: number = 0): number {
+		offset = offset!;
 		if (n < 0xfd) {
 			target[offset] = n;
 			return 1;
@@ -46,7 +48,7 @@ export class CompactSizeCodec extends Codec<number> {
 		return 9;
 	}
 
-	public decodeFrom(data: Uint8Array, offset: number): [number, number] {
+	public decoder(data: Uint8Array, offset: number): [number, number] {
 		const view = new Uint8ArrayView(data, offset);
 		const first = view.getUint8(0);
 		if (first < 0xfd) return [first, 1];

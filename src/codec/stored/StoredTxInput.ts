@@ -91,8 +91,9 @@ function sequenceU32ForTag(tag: number): number | null {
 export class StoredTxInputCodec extends Codec<StoredTxInput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encode(input: StoredTxInput): Uint8Array<ArrayBuffer> {
-		// Size-compute pass then single allocation.
+	encoder(input: StoredTxInput, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(input: StoredTxInput, target: Uint8Array, offset: number): number;
+	encoder(input: StoredTxInput, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
 		const seqTag = sequenceTagForU32(seqU32);
 		const seqExplicit = seqTag === SEQ_EXPLICIT;
@@ -100,24 +101,18 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		const scriptSigEncoded = scriptSigCodec.encode(input.scriptSig);
 		const witnessEncoded = StoredWitness.encode(input.witness);
 
-		const voutSize = input.prevOut.txId.kind === "pointer" ? VarInt.encode(input.prevOut.vout).length : 0;
+		if (target === undefined) {
+			// Size-compute pass then single allocation.
+			const voutSize = input.prevOut.txId.kind === "pointer" ? VarInt.encode(input.prevOut.vout).length : 0;
 
-		const totalLength = StoredPrevOutTxId.stride.size + voutSize + 1 + (seqExplicit ? 4 : 0) +
-			scriptSigEncoded.length + witnessEncoded.length;
-		const result = new Uint8Array(totalLength);
-		this.writeInto(input, result, 0, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
-		return result;
-	}
+			const totalLength = StoredPrevOutTxId.stride.size + voutSize + 1 + (seqExplicit ? 4 : 0) +
+				scriptSigEncoded.length + witnessEncoded.length;
+			const result = new Uint8Array(totalLength);
+			this.writeInto(input, result, 0, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
+			return result;
+		}
 
-	public override encodeInto(input: StoredTxInput, target: Uint8Array, offset: number = 0): number {
-		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
-		const seqTag = sequenceTagForU32(seqU32);
-		const seqExplicit = seqTag === SEQ_EXPLICIT;
-
-		const scriptSigEncoded = scriptSigCodec.encode(input.scriptSig);
-		const witnessEncoded = StoredWitness.encode(input.witness);
-
-		return this.writeInto(input, target, offset, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
+		return this.writeInto(input, target, offset!, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
 	}
 
 	private writeInto(
@@ -153,16 +148,16 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		return offset - start;
 	}
 
-	decodeFrom(data: Uint8Array, offset: number): [StoredTxInput, number] {
+	decoder(data: Uint8Array, offset: number): [StoredTxInput, number] {
 		let currentOffset = offset;
 
-		const [txId, txIdBytes] = StoredPrevOutTxId.decodeFrom(data, currentOffset);
+		const [txId, txIdBytes] = StoredPrevOutTxId.decode(data, currentOffset);
 		currentOffset += txIdBytes;
 
 		let vout: number;
 		if (txId.kind === "pointer") {
 			let voutBytes;
-			[vout, voutBytes] = VarInt.decodeFrom(data, currentOffset);
+			[vout, voutBytes] = VarInt.decode(data, currentOffset);
 			currentOffset += voutBytes;
 		} else {
 			vout = COINBASE_VOUT;
@@ -175,14 +170,14 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 
 		let seqU32 = sequenceU32ForTag(seqTag);
 		if (seqU32 === null) {
-			seqU32 = U32LE.decodeFrom(data, currentOffset)[0] >>> 0;
+			seqU32 = U32LE.decode(data, currentOffset)[0] >>> 0;
 			currentOffset += 4;
 		}
 
-		const [scriptSig, scriptSigBytes] = scriptSigCodec.decodeFrom(data, currentOffset);
+		const [scriptSig, scriptSigBytes] = scriptSigCodec.decode(data, currentOffset);
 		currentOffset += scriptSigBytes;
 
-		const [witness, witnessBytes] = StoredWitness.decodeFrom(data, currentOffset);
+		const [witness, witnessBytes] = StoredWitness.decode(data, currentOffset);
 		currentOffset += witnessBytes;
 
 		const input: StoredTxInput = {

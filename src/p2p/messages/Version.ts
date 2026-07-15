@@ -52,15 +52,18 @@ function decodeIP(bytes: Uint8Array): string {
 class VersionCodec extends Codec<VersionPayload> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(data: VersionPayload): Uint8Array<ArrayBuffer> {
+	public encoder(data: VersionPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(data: VersionPayload, target: Uint8Array, offset: number): number;
+	public encoder(data: VersionPayload, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const ua = new TextEncoder().encode(data.userAgent);
-		const out = new Uint8Array(4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + ua.length + 4 + 1);
-		this.encodeInto(data, out);
-		return out;
-	}
 
-	public override encodeInto(data: VersionPayload, target: Uint8Array, offset: number = 0): number {
-		const ua = new TextEncoder().encode(data.userAgent);
+		if (target === undefined) {
+			const out = new Uint8Array(4 + 8 + 8 + 8 + 16 + 2 + 8 + 16 + 2 + 8 + 1 + ua.length + 4 + 1);
+			this.encoder(data, out, 0);
+			return out;
+		}
+
+		offset = offset!;
 		const view = new DataView(target.buffer, target.byteOffset + offset);
 		let off = 0;
 
@@ -94,7 +97,7 @@ class VersionCodec extends Codec<VersionPayload> {
 		return off;
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [VersionPayload, number] {
+	public decoder(bytes: Uint8Array, offset: number): [VersionPayload, number] {
 		const view = new Uint8ArrayView(bytes, offset);
 		let off = 0;
 

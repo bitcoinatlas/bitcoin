@@ -243,7 +243,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		while (occupied[slot]) {
 			if (hashes[slot] === hash && this.eqAt(slot, ks)) {
 				const vo = slot * this.valLen;
-				const [value] = this.value.decodeFrom(this.valBytes, vo);
+				const [value] = this.value.decode(this.valBytes, vo);
 				return value;
 			}
 			slot = (slot + 1) & mask;

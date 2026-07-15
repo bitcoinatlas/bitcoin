@@ -20,14 +20,17 @@ export type GetDataPayload = {
 class GetDataCodec extends Codec<GetDataPayload> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(data: GetDataPayload): Uint8Array<ArrayBuffer> {
-		const count = data.inventory.length;
-		const out = new Uint8Array(CompactSize.encode(count).length + count * 36);
-		this.encodeInto(data, out);
-		return out;
-	}
+	public encoder(data: GetDataPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(data: GetDataPayload, target: Uint8Array, offset: number): number;
+	public encoder(data: GetDataPayload, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			const count = data.inventory.length;
+			const out = new Uint8Array(CompactSize.encode(count).length + count * 36);
+			this.encoder(data, out, 0);
+			return out;
+		}
 
-	public override encodeInto(data: GetDataPayload, target: Uint8Array, offset: number = 0): number {
+		offset = offset!;
 		const start = offset;
 		offset += CompactSize.encodeInto(data.inventory.length, target, offset);
 		for (const inv of data.inventory) {
@@ -41,8 +44,8 @@ class GetDataCodec extends Codec<GetDataPayload> {
 		return offset - start;
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [GetDataPayload, number] {
-		const [count, csLen] = CompactSize.decodeFrom(bytes, offset);
+	public decoder(bytes: Uint8Array, offset: number): [GetDataPayload, number] {
+		const [count, csLen] = CompactSize.decode(bytes, offset);
 		let off = offset + csLen;
 		const inventory: InvVector[] = [];
 		for (let i = 0; i < count; i++) {

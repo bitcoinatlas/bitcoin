@@ -11,13 +11,16 @@ export type GetHeadersPayload = {
 class GetHeadersCodec extends Codec<GetHeadersPayload> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encode(data: GetHeadersPayload): Uint8Array<ArrayBuffer> {
-		const out = new Uint8Array(4 + 1 + 32 * data.locators.length + 32);
-		this.encodeInto(data, out);
-		return out;
-	}
+	public encoder(data: GetHeadersPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(data: GetHeadersPayload, target: Uint8Array, offset: number): number;
+	public encoder(data: GetHeadersPayload, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (target === undefined) {
+			const out = new Uint8Array(4 + 1 + 32 * data.locators.length + 32);
+			this.encoder(data, out, 0);
+			return out;
+		}
 
-	public override encodeInto(data: GetHeadersPayload, target: Uint8Array, offset: number = 0): number {
+		offset = offset!;
 		const count = data.locators.length;
 		if (count >= 0xfd) throw new Error("too many locators");
 		const view = new Uint8ArrayView(target);
@@ -32,7 +35,7 @@ class GetHeadersCodec extends Codec<GetHeadersPayload> {
 		return 4 + 1 + 32 * count + 32;
 	}
 
-	public decodeFrom(bytes: Uint8Array, offset: number): [GetHeadersPayload, number] {
+	public decoder(bytes: Uint8Array, offset: number): [GetHeadersPayload, number] {
 		const view = new Uint8ArrayView(bytes, offset);
 		const version = view.getUint32(0, true);
 		const count = bytes[offset + 4]!;
