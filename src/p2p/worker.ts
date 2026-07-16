@@ -7,7 +7,7 @@ import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
-import { MAX_BLOCK_SIZE, MiB, PARALLELISM } from "~/constants.ts";
+import { MAX_BLOCK_SIZE, MiB } from "~/constants.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
@@ -18,6 +18,7 @@ import { Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { PeerChain } from "~/p2p/PeerChain.ts";
 import { PeerChainNode } from "~/p2p/PeerChainNode.ts";
 import { handshake } from "~/p2p/peers.ts";
+import { PARALLELISM } from "~/env.ts";
 
 const GENESIS_NODE: PeerChainNode = {
 	header: GENESIS_BLOCK_HEADER_DECODED,

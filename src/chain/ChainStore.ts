@@ -9,11 +9,12 @@ import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_WEIGHT, PARALLELISM } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
+import { PARALLELISM } from "~/env.ts";
 
 /**
  * One block as emitted by consume.worker's `process` stage: encoded StoredTxs
@@ -82,7 +83,6 @@ export class ChainStore {
 		this.batchSize = this.consumers.length;
 		this.chunkQueue = new Queue(256);
 		this.consumersReady = Promise.withResolvers<void>();
-		const tReady = performance.now();
 		for (let i = 0; i < this.consumers.length; i++) {
 			const worker = new Worker(new URL("./consume.worker.ts", import.meta.url), { type: "module", name: `consumer-${i}` });
 			// Surface worker failures loudly. A throw inside init/process must not
@@ -334,9 +334,7 @@ export class ChainStore {
 
 		// 1) init all chunks in parallel; each returns its unknown scriptPubKeys.
 		const pubkeysPerWorker = await Promise.all(
-			batch.map((chunk, i) =>
-				this.initWorker(this.consumers[i]!, chunk, i)
-			),
+			batch.map((chunk, i) => this.initWorker(this.consumers[i]!, chunk, i)),
 		);
 
 		// 2) Assign pubkey pointers WITHOUT touching disk, and build ONE blob of the
@@ -380,9 +378,7 @@ export class ChainStore {
 
 		// 3) process all chunks in parallel; each returns encoded blocks + patch meta.
 		const blocksPerWorker = await Promise.all(
-			batch.map((_, i) =>
-				this.processWorker(this.consumers[i]!, pointersPerWorker[i]!, i)
-			),
+			batch.map((_, i) => this.processWorker(this.consumers[i]!, pointersPerWorker[i]!, i)),
 		);
 
 		// 4) Prep blocks OUTSIDE the trx: assign block/tx pointers, register txids so
@@ -462,7 +458,9 @@ export class ChainStore {
 		this.totalTxs += committedTxs;
 		const elapsedSec = (performance.now() - this.startTime) / 1000;
 		const txsPerSec = elapsedSec > 0 ? (this.totalTxs / elapsedSec) | 0 : 0;
-		console.log(`[chain] round ${round}: blocks=${committedBlocks} txs=${committedTxs} cumulative=${this.totalTxs} rate=${txsPerSec} tx/s`);
+		console.log(
+			`[chain] round ${round}: blocks=${committedBlocks} txs=${committedTxs} cumulative=${this.totalTxs} rate=${txsPerSec} tx/s`,
+		);
 
 		// 6) let p2p refill: one consume per chunk we drained.
 		for (let i = 0; i < batch.length; i++) this.p2pChannel.postMessage({ type: "consume" });
