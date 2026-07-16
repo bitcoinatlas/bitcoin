@@ -132,13 +132,6 @@ implementation that can make assumptions they can't:
 Target: **600 GB or less** with the same feature set, using encoding optimizations alone. With chunk compression on cold data (e.g. LZ4),
 potentially **200–400 GB**.
 
-## Short-Term Goal
-
-- Install Termux on your phone.
-- `pkg install deno`
-- `deno run -A bitcoinatlas.ts`
-- Have a full node with full history, **running on your phone** and actually fitting in its storage.
-
 ## Long-Term Goals
 
 - Be a full node with **aggressive storage optimization**.
