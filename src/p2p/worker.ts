@@ -7,7 +7,7 @@ import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
-import { MAX_BLOCK_SIZE } from "~/constants.ts";
+import { MAX_BLOCK_SIZE, MiB, PARALLELISM } from "~/constants.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
@@ -31,23 +31,31 @@ const P2P_PORT = 8333;
 const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
-const CHUNK_BYTE_BUDGET = 2 * MAX_BLOCK_SIZE;
+// ── memory model: two knobs, everything else derived ─────────────────────────
+// 1. BYTES_PER_ROUND — block data committed per round (= PARALLELISM chunks, one
+//    commit). Bounded by COMMIT cost, so FIXED — a bigger box must not mean
+//    bigger commits.
+// 2. LOOKAHEAD_FRACTION — share of RAM the download may run ahead. The elastic
+//    part: more RAM → deeper buffer, no effect on commit size.
+const BYTES_PER_ROUND = 64 * MiB;
+const LOOKAHEAD_FRACTION = 0.10; // one slice of RAM; block cache + memtables get theirs elsewhere
 
-// Bitcoin Core block-download conventions (net_processing.cpp):
-//   MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16  — hard cap on outstanding getdata per peer,
-//     regardless of how many peers or how big the global window is. This is the key
-//     limit: it bounds a single connection's send-queue depth so bodies drain before
-//     any reasonable timeout and the head-of-line block can't sit behind hundreds of
-//     others. A local/whitelisted node tolerates more, but 16 keeps latency tight for
-//     free and removes the self-inflicted backpressure.
-//   BLOCK_DOWNLOAD_WINDOW = 1024  — global span of heights allowed in flight ahead of
-//     the pack cursor, across ALL peers. With one peer the per-peer cap (16) binds; with
-//     many peers this caps the total.
-const MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 * 16; // More for now because we have one peer in dev env.
-const BLOCK_DOWNLOAD_WINDOW = 1024;
-const DOWNLOAD_BATCH = 16; // hashes per getdata (== per-peer cap, so one full batch per peer)
-const BLOCK_TIMEOUT_MS = 30_000; // reap a peer's in-flight requests only after it has gone silent this long
-const DOWNLOAD_IDLE_MS = 50; // pause when the next block isn't here yet
+// per-worker chunk = a round split across the workers that process it.
+const CHUNK_BYTE_BUDGET = Math.ceil(BYTES_PER_ROUND / PARALLELISM);
+
+// look-ahead in blocks, bounded by MAX_BLOCK_SIZE so the raw pool can't exceed
+// the RAM slice even if every block is max-sized.
+const lookaheadBytes = Deno.systemMemoryInfo().total * LOOKAHEAD_FRACTION;
+const BLOCK_DOWNLOAD_WINDOW = Math.max(PARALLELISM, Math.floor(lookaheadBytes / MAX_BLOCK_SIZE));
+
+// keep ~2 rounds of finished chunks queued ahead of the consumers.
+const MAX_QUEUED_ROUNDS = 2;
+
+// ── p2p protocol mechanics (NOT memory — leave alone) ────────────────────────
+const DOWNLOAD_BATCH = 16; // hashes per getdata (Core's value)
+const MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 * 16; // per-peer send-queue cap (dev: 1 peer)
+const BLOCK_TIMEOUT_MS = 30_000;
+const DOWNLOAD_IDLE_MS = 50;
 
 // Peers we should keep a connection to. Reconnected automatically with backoff
 // when they drop, so a single transient disconnect never permanently stalls sync.
@@ -66,8 +74,7 @@ let postedChunks = 0;
 let consumedChunks = 0;
 
 function keepDownloading() {
-	const notConsumed = postedChunks - consumedChunks;
-	return notConsumed < navigator.hardwareConcurrency * 2; // keep ahead of the consumers, but not too far
+	return (postedChunks - consumedChunks) < PARALLELISM * MAX_QUEUED_ROUNDS;
 }
 
 let localChain = new PeerChain([GENESIS_NODE]);

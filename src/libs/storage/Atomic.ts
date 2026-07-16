@@ -32,22 +32,23 @@ export class Atomic<T extends AtomicStores> {
 		return new Atomic<T>(options);
 	}
 
+	private inTrx = false;
+
 	async trx(call: (stores: T, transaction: Transaction) => Promise<void> | void) {
+		if (this.inTrx) throw new Error("atomic.trx called re-entrantly — a caller forgot to await");
+		this.inTrx = true;
 		try {
-			const t = performance.now();
-			const tPin = performance.now();
 			await this.rocksdb.transaction((trx) => {
 				call(this.stores, trx);
-				for (const store of this.storeMap.values()) store.pin(trx);
+				for (const store of this.storeMap.values()) {
+					store.pin(trx);
+				}
 			});
-			const tTx = performance.now();
-			const tFlush = performance.now();
-			console.log(
-				`[atomic] trx: pin=${(tPin - t) | 0}ms body=${(tTx - tPin) | 0}ms flushSync=${(tFlush - tTx) | 0}ms`,
-			);
 		} catch (reason) {
 			console.error("atomic trx failed", reason);
 			Deno.exit(1);
+		} finally {
+			this.inTrx = false;
 		}
 	}
 

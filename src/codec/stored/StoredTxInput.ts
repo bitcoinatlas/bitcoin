@@ -1,4 +1,4 @@
-import { BytesCodec, Codec, Stride, U32LE, VarInt } from "@nomadshiba/codec";
+import { BytesCodec, Codec, Stride, U32, VarInt } from "@nomadshiba/codec";
 import { SequenceLock, SequenceLockCodec } from "~/codec/SequenceLock.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { StoredWitness } from "~/codec/stored/StoredWitness.ts";
@@ -136,7 +136,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		target[offset++] = tagByte;
 
 		if (seqExplicit) {
-			offset += U32LE.encodeInto(seqU32, target, offset);
+			offset += U32.encodeInto(seqU32, target, offset);
 		}
 
 		target.set(scriptSigEncoded, offset);
@@ -170,7 +170,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 
 		let seqU32 = sequenceU32ForTag(seqTag);
 		if (seqU32 === null) {
-			seqU32 = U32LE.decode(data, currentOffset)[0] >>> 0;
+			seqU32 = U32.decode(data, currentOffset)[0] >>> 0;
 			currentOffset += 4;
 		}
 

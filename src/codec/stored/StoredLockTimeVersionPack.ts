@@ -1,4 +1,4 @@
-import { Codec, type Stride, U32LE } from "@nomadshiba/codec";
+import { Codec, type Stride, U32 } from "@nomadshiba/codec";
 import { LockTime } from "~/codec/LockTime.ts";
 
 export type LockTimeVersionPack = { locktime: LockTime; version: number };
@@ -52,7 +52,7 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 			}
 			const out = new Uint8Array(1 + 4 + 4);
 			out[0] = TAG_RAW;
-			U32LE.encodeInto(version, out, 1);
+			U32.encodeInto(version, out, 1);
 			LockTime.encodeInto(locktime, out, 5);
 			return out;
 		}
@@ -72,7 +72,7 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 			return 1 + 4;
 		}
 		target[offset] = TAG_RAW;
-		U32LE.encodeInto(version, target, offset + 1);
+		U32.encodeInto(version, target, offset + 1);
 		LockTime.encodeInto(locktime, target, offset + 5);
 		return 1 + 4 + 4;
 	}
@@ -93,7 +93,7 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 				return [{ locktime, version: 0x2 }, 1 + size];
 			}
 			case TAG_RAW: {
-				const [version] = U32LE.decode(data, offset + 1);
+				const [version] = U32.decode(data, offset + 1);
 				const [locktime, ltSize] = LockTime.decode(data, offset + 5);
 				return [{ locktime, version }, 1 + 4 + ltSize];
 			}

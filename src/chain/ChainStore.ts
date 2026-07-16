@@ -9,7 +9,7 @@ import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_WEIGHT, PARALLELISM } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
@@ -67,6 +67,8 @@ export class ChainStore {
 	private readyCount = 0;
 	// [LOG] batch counter.
 	private round = 0;
+	private startTime = performance.now();
+	private totalTxs = 0;
 
 	private constructor(p2pChannel: MessagePortLike, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
@@ -76,7 +78,7 @@ export class ChainStore {
 			this.blockHashToHeightMap.set(initialHeaders[i]!.hash(), i);
 		}
 
-		this.consumers = new Array(navigator.hardwareConcurrency);
+		this.consumers = new Array(PARALLELISM);
 		this.batchSize = this.consumers.length;
 		this.chunkQueue = new Queue(256);
 		this.consumersReady = Promise.withResolvers<void>();
@@ -93,7 +95,6 @@ export class ChainStore {
 				const stage = (event.data as { stage?: string })?.stage;
 				if (stage === "ready") {
 					if (++this.readyCount === this.consumers.length) {
-						console.log(`[chain] all ${this.consumers.length} consumers ready in ${(performance.now() - tReady) | 0}ms`);
 						this.consumersReady.resolve();
 					}
 					return;
@@ -109,12 +110,10 @@ export class ChainStore {
 
 	static start(p2pChannel: MessagePortLike): ChainStore {
 		const headers = atomic.stores.headers.slice(0, atomic.stores.headers.length());
-		console.log(`[chain] loaded ${headers.length} headers from disk`);
 		const self = new ChainStore(p2pChannel, headers);
 
 		p2pChannel.addEventListener("message", (event) => self.p2pMessageQueue.enqueue(event.data));
 		const startHeaders = atomic.stores.headers.slice(0, atomic.stores.headers.length());
-		console.log(`[chain] handing ${startHeaders.length} headers to worker`);
 		const startData = WireBlockHeaders.encode(startHeaders);
 		p2pChannel.postMessage({ type: "seek", data: atomic.stores.blocks.length() - 1 });
 		p2pChannel.postMessage({ type: "start", data: startData }, [startData.buffer]);
@@ -149,7 +148,7 @@ export class ChainStore {
 	getTxById(txId: Uint8Array): StoredTx | undefined {
 		const pointer = atomic.stores.txid.get(txId);
 		if (pointer === undefined) return undefined;
-		return this.getTxByPointer(pointer.pointer);
+		return this.getTxByPointer(pointer);
 	}
 
 	getTxsByBlockPointer(pointer: StoredTxPointer): StoredTx[] | undefined {
@@ -239,7 +238,6 @@ export class ChainStore {
 		}
 
 		if (message.type === "reorg") {
-			console.log(`[chain] tick reorg keepHeight=${message.data}`);
 			const height = message.data as number;
 			this.handleReorgMesage(height);
 			return;
@@ -253,13 +251,12 @@ export class ChainStore {
 	private async handleHeadersMessage(headers: WireBlockHeaders) {
 		try {
 			let height = atomic.stores.headers.length();
-			atomic.trx((stores) => {
+			await atomic.trx((stores) => {
 				for (const header of headers) {
 					height = stores.headers.push(header);
 					this.blockHashToHeightMap.set(header.hash(), height);
 				}
 			});
-			console.log(`[chain] tick headers height=${height} count=${headers.length}`);
 			return { height };
 		} catch (reason) {
 			console.error("Failed to append block header:", reason);
@@ -334,15 +331,13 @@ export class ChainStore {
 		if (batch.length === 0) return;
 
 		const round = ++this.round;
-		const t0 = performance.now();
-		const el = () => (performance.now() - t0) | 0;
-		console.log(`[chain] round ${round}: batch=${batch.length} — init…`);
 
 		// 1) init all chunks in parallel; each returns its unknown scriptPubKeys.
 		const pubkeysPerWorker = await Promise.all(
-			batch.map((chunk, i) => this.initWorker(this.consumers[i]!, chunk, i)),
+			batch.map((chunk, i) =>
+				this.initWorker(this.consumers[i]!, chunk, i)
+			),
 		);
-		console.log(`[chain] round ${round}: inits done +${el()}ms`);
 
 		// 2) Assign pubkey pointers WITHOUT touching disk, and build ONE blob of the
 		//    genuinely-new pubkeys (deduped across workers by hash) for a single
@@ -382,13 +377,13 @@ export class ChainStore {
 			pointersPerWorker[i] = pointers;
 		}
 		const pubkeyBlob = concat(blobParts);
-		console.log(`[chain] round ${round}: pubkeys assigned new=${newHashes.length} bytes=${pubkeyBlob.length} +${el()}ms — process…`);
 
 		// 3) process all chunks in parallel; each returns encoded blocks + patch meta.
 		const blocksPerWorker = await Promise.all(
-			batch.map((_, i) => this.processWorker(this.consumers[i]!, pointersPerWorker[i]!, i)),
+			batch.map((_, i) =>
+				this.processWorker(this.consumers[i]!, pointersPerWorker[i]!, i)
+			),
 		);
-		console.log(`[chain] round ${round}: process done +${el()}ms — commit…`);
 
 		// 4) Prep blocks OUTSIDE the trx: assign block/tx pointers, register txids so
 		//    in-batch prevouts resolve, patch them, concatenate every block into ONE
@@ -399,7 +394,6 @@ export class ChainStore {
 		let committedBlocks = 0;
 		let committedTxs = 0;
 		let blockCursor = txBase;
-		let blobBytes = 0;
 
 		for (let i = 0; i < blocksPerWorker.length; i++) {
 			for (const block of blocksPerWorker[i]!) {
@@ -410,7 +404,6 @@ export class ChainStore {
 					batchTxid.set(txId, blockCursor + block.txOffsets[k]!);
 				}
 				blockCursor += block.buffer.length;
-				blobBytes += block.buffer.length;
 				committedBlocks++;
 				committedTxs += txCount;
 			}
@@ -421,7 +414,7 @@ export class ChainStore {
 				const patchCount = block.patchOffsets.length;
 				for (let p = 0; p < patchCount; p++) {
 					const prevTxId = block.patchTxids.subarray(p * 32, p * 32 + 32);
-					const pointer = batchTxid.get(prevTxId) ?? atomic.stores.txid.get(prevTxId)?.pointer;
+					const pointer = batchTxid.get(prevTxId) ?? atomic.stores.txid.get(prevTxId);
 					if (pointer === undefined) throw new Error(`unresolved prevout at commit txid=${hex(prevTxId)}`);
 					StoredPrevOutTxId.patchPointer(block.buffer, block.patchOffsets[p]!, pointer);
 					patched++;
@@ -434,21 +427,17 @@ export class ChainStore {
 		}
 		const blockBlob = concat(blockParts);
 
-		// 5) Commit: pure batched writes. Sub-phase timing to see the real cost split.
+		// 5) Commit: pure batched writes.
 		await atomic.trx((stores, trx) => {
-			const c0 = performance.now();
-			console.log(`[chain] trx ${el()}`);
 			if (pubkeyBlob.length > 0) {
 				const off = stores.pubkeys.append(pubkeyBlob);
 				if (off !== pubkeyBase) throw new Error(`pubkey blob offset mismatch: expected ${pubkeyBase} got ${off}`);
 			}
-			const c1 = performance.now();
 			const pubkeyEntries: [Uint8Array, number][] = new Array(newHashes.length);
 			for (let u = 0; u < newHashes.length; u++) pubkeyEntries[u] = [newHashes[u]!, newPointers[u]!];
 			stores.pubkey.setMany(pubkeyEntries, trx);
-			const c2 = performance.now();
 			// txid index: pointer = block base + tx offset within its block.
-			const txidEntries: [Uint8Array, { pointer: number; spenders: never[] }][] = new Array(committedTxs);
+			const txidEntries: [txid: Uint8Array, pointer: number][] = new Array(committedTxs);
 			let te = 0;
 			let bc = txBase;
 			for (let i = 0; i < blocksPerWorker.length; i++) {
@@ -456,34 +445,24 @@ export class ChainStore {
 					const txCount = block.txOffsets.length;
 					for (let k = 0; k < txCount; k++) {
 						const txId = block.txids.subarray(k * 32, k * 32 + 32);
-						txidEntries[te++] = [txId, { pointer: bc + block.txOffsets[k]!, spenders: [] }];
+						txidEntries[te++] = [txId, bc + block.txOffsets[k]!];
 					}
 					bc += block.buffer.length;
 				}
 			}
 			stores.txid.setMany(txidEntries, trx);
-			const c3 = performance.now();
 			if (blockBlob.length > 0) {
 				const off = stores.txs.append(blockBlob);
 				if (off !== txBase) throw new Error(`txs blob offset mismatch: expected ${txBase} got ${off}`);
 			}
-			const c4 = performance.now();
 			stores.blocks.pushMany(blockBases);
-			const c5 = performance.now();
-			console.log(
-				`[chain] round ${round}: commit phases pubkeyBlob=${(c1 - c0) | 0}ms pubkeySet=${
-					(c2 - c1) | 0
-				}ms(${newHashes.length}) txidSet=${(c3 - c2) | 0}ms(${committedTxs}) blockBlob=${(c4 - c3) | 0}ms blocksPush=${
-					(c5 - c4) | 0
-				}ms(${committedBlocks})`,
-			);
 		});
 
-		console.log(
-			`[chain] round ${round}: DONE blocks=${committedBlocks} txs=${committedTxs} newPubkeys=${newHashes.length} patched=${patched} total=+${el()}ms tip=${
-				atomic.stores.blocks.length() - 1
-			}`,
-		);
+		// Log throughput
+		this.totalTxs += committedTxs;
+		const elapsedSec = (performance.now() - this.startTime) / 1000;
+		const txsPerSec = elapsedSec > 0 ? (this.totalTxs / elapsedSec) | 0 : 0;
+		console.log(`[chain] round ${round}: blocks=${committedBlocks} txs=${committedTxs} cumulative=${this.totalTxs} rate=${txsPerSec} tx/s`);
 
 		// 6) let p2p refill: one consume per chunk we drained.
 		for (let i = 0; i < batch.length; i++) this.p2pChannel.postMessage({ type: "consume" });

@@ -79,7 +79,9 @@ self.addEventListener("message", (event) => {
 				const t = performance.now();
 				const encoded = process(data as BigUint64Array);
 				console.log(
-					`[${NAME}] process done ${ms(t)}ms blocks=${encoded.length} prevoutDiskHits=${prevoutDiskHits} deferred=${prevoutDeferred}`,
+					`[${NAME}] process done ${
+						ms(t)
+					}ms blocks=${encoded.length} prevoutDiskHits=${prevoutDiskHits} deferred=${prevoutDeferred}`,
 				);
 				const transfer: Transferable[] = [];
 				for (const block of encoded) {
@@ -246,10 +248,10 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 			return { prevOut: { txId: { kind: "coinbase" } as const, vout: input.prevOut.vout }, ...base };
 		}
 
-		const onDisk = atomic.stores.txid.get(input.prevOut.txId);
-		if (onDisk !== undefined) {
+		const onDiskPointer = atomic.stores.txid.get(input.prevOut.txId);
+		if (onDiskPointer !== undefined) {
 			prevoutDiskHits++;
-			return { prevOut: { txId: { kind: "pointer" as const, value: onDisk.pointer }, vout: input.prevOut.vout }, ...base };
+			return { prevOut: { txId: { kind: "pointer" as const, value: onDiskPointer }, vout: input.prevOut.vout }, ...base };
 		}
 
 		prevoutDeferred++;

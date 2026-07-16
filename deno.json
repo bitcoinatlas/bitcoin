@@ -22,8 +22,8 @@
 	"tasks": {
 		"dev": "deno task bundle && (deno run -A --watch src/main.ts --background & deno task dev:build)",
 		"dev:bundle": "deno bundle --output=src/server/frontend/dist/app.js src/server/frontend/app.ts --watch",
-		"test": "deno test -A",
-		"check": "deno check && deno lint && deno task test",
+		"test": "deno test -A src",
+		"check": "deno check src && deno lint src && deno task test",
 		"cache": "deno cache src/main.ts",
 		"bundle": "deno bundle --output=src/server/frontend/dist/app.js src/server/frontend/app.ts",
 		"start": "deno run --v8-flags=--expose-gc -A src/main.ts",
