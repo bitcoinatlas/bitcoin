@@ -1,15 +1,20 @@
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
 import { Store } from "~/libs/storage/Store.ts";
 import { BlobStore } from "./BlobStore.ts";
+import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 
 export type ArrayStoreOptions<T extends FixedCodec> = {
 	path: string;
+	rocksdb: RocksDatabase;
 	codec: T;
 	itemsPerChunk: number;
 };
 
 export class ArrayStore<T extends FixedCodec> extends Store implements Disposable {
 	public readonly path: string;
+	public get rocksdb() {
+		return this.blob.rocksdb;
+	}
 
 	public readonly blob: BlobStore;
 	public readonly codec: T;
@@ -24,6 +29,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
 		const blob = BlobStore.open({
 			path: options.path,
+			rocksdb: options.rocksdb,
 			maxChunkSize: options.itemsPerChunk * options.codec.stride.size,
 		});
 		const self = new ArrayStore(blob, options);
@@ -71,12 +77,12 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return pointer / stride;
 	}
 
-	pin(): void {
-		return this.blob.pin();
+	pin(transaction?: Transaction): void {
+		return this.blob.pin(transaction);
 	}
 
-	rollback(): void {
-		return this.blob.rollback();
+	rollback(transaction?: Transaction): void {
+		return this.blob.rollback(transaction);
 	}
 
 	truncate(length: number): void {

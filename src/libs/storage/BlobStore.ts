@@ -1,9 +1,9 @@
 import { Codec, U64 } from "@nomadshiba/codec";
-import { existsSync } from "@std/fs";
 import { join } from "@std/path";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { readFileIntoSync, writeFileSync } from "~/libs/fs/mod.ts";
 import { Store } from "~/libs/storage/Store.ts";
+import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 
 type Region = {
 	size: number;
@@ -18,19 +18,21 @@ type DiskRegionOptions = {
 
 export type BlobStoreOptions = {
 	path: string;
+	rocksdb: RocksDatabase;
 	maxChunkSize: number;
 };
 
 export class BlobStore extends Store implements Disposable {
 	public readonly path: string;
+	public override readonly rocksdb: RocksDatabase;
+
 	private disk: DiskRegion;
-	private rollbackPath: string;
 
 	private constructor(disk: DiskRegion, options: BlobStoreOptions) {
 		super();
-		this.path = options.path;
-		this.rollbackPath = join(this.path, `rollback.size`);
 		this.disk = disk;
+		this.path = options.path;
+		this.rocksdb = options.rocksdb;
 	}
 
 	static open(options: BlobStoreOptions): BlobStore {
@@ -63,17 +65,16 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	private rollbackFile: Deno.FsFile | undefined;
-	pin(): void {
+	pin(transaction?: Transaction): void {
 		this.disk.sync();
-		const rollback = this.rollbackFile ??= Deno.openSync(this.rollbackPath, { create: true, write: true });
-		writeFileSync(rollback, U64.encode(this.disk.size));
-		rollback.syncSync();
+		this.rocksdb.putSync("rollback.size", U64.encode(this.disk.size), { transaction });
 	}
 
-	rollback(): void {
+	rollback(transaction?: Transaction): void {
+		const bytes = this.rocksdb.getSync("rollback.size", { transaction }) as Uint8Array | undefined;
 		let size: number;
-		if (existsSync(this.rollbackPath)) {
-			const [decoded] = U64.decode(Deno.readFileSync(this.rollbackPath));
+		if (bytes) {
+			const [decoded] = U64.decode(bytes);
 			size = Number(decoded);
 		} else {
 			size = 0;
@@ -151,6 +152,7 @@ class DiskRegion implements Region, Disposable {
 			index: tailIndex,
 			file: Deno.openSync(self.chunkPath(tailIndex), { create: true, append: true }),
 		};
+		self.appender.file.seekSync(0, Deno.SeekMode.Start);
 		self.size = tailIndex * self.maxChunkSize + tailChunkSize;
 
 		return self;
@@ -173,10 +175,8 @@ class DiskRegion implements Region, Disposable {
 				const append = Math.min(want, available);
 
 				if (this.appender.index !== index) {
-					this.appender.file.syncSync();
-					const file = Deno.openSync(this.chunkPath(index), { create: true, append: true });
 					this.appender.file.close();
-					this.appender.file = file;
+					this.appender.file = Deno.openSync(this.chunkPath(index), { create: true, append: true });
 					this.appender.index = index;
 				}
 

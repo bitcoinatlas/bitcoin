@@ -1,17 +1,8 @@
-import { randomBytes } from "@noble/hashes/utils";
-import { BytesCodec, TupleCodec, U64 } from "@nomadshiba/codec";
-import { equals } from "@std/bytes";
-import { existsSync } from "@std/fs";
-import { join } from "@std/path";
-import { writeFileSync } from "~/libs/fs/mod.ts";
-import { Store, StoreRocks } from "~/libs/storage/Store.ts";
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
-
-const ID = new TupleCodec([U64, new BytesCodec({ size: 2 })]);
+import { Store, StoreRocks } from "~/libs/storage/Store.ts";
 
 export type AtomicStores = { readonly [name: string]: Store | StoreRocks };
 export type AtomicOptions<T extends AtomicStores> = {
-	path: string;
 	rocksdb: RocksDatabase;
 	stores: T;
 };
@@ -22,12 +13,6 @@ export class Atomic<T extends AtomicStores> {
 
 	private rockMap: ReadonlyMap<string, StoreRocks>;
 	private storeMap: ReadonlyMap<string, Store>;
-
-	private start: Uint8Array;
-	private end: Uint8Array;
-
-	private startPath: string;
-	private endPath: string;
 
 	private constructor(options: AtomicOptions<T>) {
 		this.rocksdb = options.rocksdb;
@@ -41,62 +26,32 @@ export class Atomic<T extends AtomicStores> {
 			if (this.rocksdb.path === rock.rocksdb.path) continue;
 			throw new Error("inconsistent rocksdb paths");
 		}
-
-		this.startPath = join(options.path, `start.id`);
-		this.endPath = join(options.path, "end.id");
-		this.start = new Uint8Array();
-		this.end = new Uint8Array();
 	}
 
 	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
-		const self = new Atomic<T>(options);
-		Deno.mkdirSync(options.path, { recursive: true });
-		if (existsSync(self.startPath)) self.start = Deno.readFileSync(self.startPath);
-		if (existsSync(self.endPath)) self.end = Deno.readFileSync(self.endPath);
-
-		return self;
+		return new Atomic<T>(options);
 	}
 
-	pin() {
+	async trx(call: (stores: T, transaction: Transaction) => Promise<void> | void) {
 		try {
-			this.setStart();
-			for (const store of this.storeMap.values()) store.pin();
-			this.setEnd();
-		} catch (reason) {
-			console.error("pinning failed", reason);
-			Deno.exit(1);
-		}
-	}
-
-	async trx(call: (stores: T, trx: Transaction) => Promise<void> | void) {
-		try {
-			this.pin();
-			await this.rocksdb.transaction((trx) => call(this.stores, trx));
-			this.rocksdb.flushSync();
+			const t = performance.now();
+			const tPin = performance.now();
+			await this.rocksdb.transaction((trx) => {
+				call(this.stores, trx);
+				for (const store of this.storeMap.values()) store.pin(trx);
+			});
+			const tTx = performance.now();
+			const tFlush = performance.now();
+			console.log(
+				`[atomic] trx: pin=${(tPin - t) | 0}ms body=${(tTx - tPin) | 0}ms flushSync=${(tFlush - tTx) | 0}ms`,
+			);
 		} catch (reason) {
 			console.error("atomic trx failed", reason);
 			Deno.exit(1);
 		}
 	}
 
-	recover(): void {
-		if (!equals(this.start, this.end)) return;
-		for (const store of this.storeMap.values()) store.rollback();
-	}
-
-	private setStart() {
-		const id = ID.encode([Date.now(), randomBytes(2)]);
-		using file = Deno.openSync(this.startPath, { create: true, write: true });
-		writeFileSync(file, id);
-		file.syncSync();
-		this.start = id;
-	}
-
-	private setEnd() {
-		const id = this.start;
-		using file = Deno.openSync(this.endPath, { create: true, write: true });
-		writeFileSync(file, id);
-		file.syncSync();
-		this.end = id;
+	recover(transaction?: Transaction): void {
+		for (const store of this.storeMap.values()) store.rollback(transaction);
 	}
 }

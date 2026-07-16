@@ -1,6 +1,5 @@
 import { sha256 } from "@noble/hashes/sha2";
-import { concatBytes } from "@noble/hashes/utils";
-import { equals } from "@std/bytes";
+import { concat, equals } from "@std/bytes";
 
 export function computeSatoshiMerkleRoot(txIds: ArrayIterator<Uint8Array>): Uint8Array {
 	let hashes = txIds.toArray();
@@ -20,7 +19,7 @@ export function computeSatoshiMerkleRoot(txIds: ArrayIterator<Uint8Array>): Uint
 
 		const next: Uint8Array[] = [];
 		for (let i = 0; i < hashes.length; i += 2) {
-			next.push(sha256(sha256(concatBytes(hashes.at(i)!, hashes.at(i + 1)!))));
+			next.push(sha256(sha256(concat([hashes.at(i)!, hashes.at(i + 1)!]))));
 		}
 		hashes = next;
 	}

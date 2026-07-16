@@ -8,7 +8,7 @@ if (import.meta.main) {
 
 	atomic.recover();
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
-	const chainWorker = new Worker(new URL("./chain/worker.ts", import.meta.url), { type: "module", name: "chain" });
+	const chainWorker = new Worker(new URL("./chain/chain.worker.ts", import.meta.url), { type: "module", name: "chain" });
 	const syncMessageChannel = new MessageChannel();
 	Promise.all([
 		new Promise((resolve) => chainWorker.addEventListener("message", resolve, { once: true })),

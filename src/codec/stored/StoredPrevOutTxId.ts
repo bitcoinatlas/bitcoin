@@ -57,6 +57,22 @@ export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 
 		return [{ kind: "pointer", value: rawPointer - 1 }, this.stride.size];
 	}
+
+	/**
+	 * Overwrite an already-encoded 6-byte prevout slot in-place with a resolved
+	 * tx pointer. This is the deferred half of parallel IBD: a worker encodes an
+	 * input whose prevout tx isn't on disk yet (in-batch / cross-worker) with a
+	 * placeholder pointer, records the slot offset (`input's own offset`, since
+	 * the slot is always first in the input), and the commit thread patches the
+	 * real pointer here once block ordering assigns it.
+	 *
+	 * The +1 coinbase-sentinel bias lives only in `encoder`, so reuse it rather
+	 * than writing the raw u48 by hand. Only ever patches a pointer — never a
+	 * coinbase slot (coinbase is known at encode time and never deferred).
+	 */
+	patchPointer(target: Uint8Array, offset: number, pointer: StoredTxPointer): void {
+		StoredTxPointer.encodeInto(pointer + 1, target, offset);
+	}
 }
 
 export const StoredPrevOutTxId = new StoredPrevOutTxIdCodec();
