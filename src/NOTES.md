@@ -73,6 +73,9 @@ hoped order of things:
 - maybe speed it up more on some obvious places
 - impl compression on BlobStore. enable it for txs and pubkeys, this should move us to 500GB range for everything (full chain data + full
   indexes)
+- impl script verification workers. (can be complex, or easy idk, try to just run it first, also try to convert it to wasm maybe, and stuff
+  findout what is faster, probably just running is faster), during ibd try to do it on idle times where we are not using all cores. dont
+  slow down the ibd.
 - when everything is nice, faster, clean, easy to reason, read, understand, start implimenting relay stuff and other things.
 - then impl electrum, and satoshi rpc endpoints, this one should be easy when we have everything. probably.
 - then i guess 0.0.1 is ready, probably.
