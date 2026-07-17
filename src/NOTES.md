@@ -28,6 +28,37 @@ syncing to the tip before i do anything else (syncing+indexing):
 [chain] round 254 | blocks=38 txs=66882 height=687292/958399 | overall 4536 tx/s · current 4722 tx/s · 2.5 blk/s | remaining=271107 ETA 1d5h
 ```
 
+---
+
+ok here is the idea. so we have 80-90% cpu usage spikes across cores, most heavy work is the `init` stage, but between `init` and `process`
+there is a huge gap between spikes where main-chain-thread is busy mostly, a sync point. so the spender indexing workers can work in between
+that time. so when the `init` stage ends before doing the main-chain-thread work we should spawn the spender index workers. one important
+thing is it should process the data from the previous round that is already done.
+
+---
+
+actually i dont need transaction/batch for spender index.
+
+because i can keep track of what i did last successfully.
+
+then later if it fails i would just override "put" again right?
+
+like i can have parallel rounds. and after procssing like block 10-20 successfully i would say i did up-to 20 succeesfully.
+
+then if it fails between 20-30
+
+on restart i would do 20-30 again. override the old ones.
+
+right?
+
+so it can work in parallel in rounds without huge sync points.
+
+so in parallel we can still detect double spending right?
+
+yes we can use `noOverwrite`, and if it fails (which should be rare on terminations and stuff) we can get the actual value and check if its
+already what we are trying to set it to, or if its something different and valid. so this gurantees double spend check in parallel, without
+batching(transaction) which requires a single worker.
+
 ## 2
 
 anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
