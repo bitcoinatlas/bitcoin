@@ -32,13 +32,15 @@ const P2P_PORT = 8333;
 const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
 const SYNC_POLL_INTERVAL = 10;
 
+const BYTES_PER_ROUND_MIN = MAX_BLOCK_SIZE * PARALLELISM; // at least 1 block per worker
+
 // ── memory model: two knobs, everything else derived ─────────────────────────
 // 1. BYTES_PER_ROUND — block data committed per round (= PARALLELISM chunks, one
 //    commit). Bounded by COMMIT cost, so FIXED — a bigger box must not mean
 //    bigger commits.
 // 2. LOOKAHEAD_FRACTION — share of RAM the download may run ahead. The elastic
 //    part: more RAM → deeper buffer, no effect on commit size.
-const BYTES_PER_ROUND = 64 * MiB;
+const BYTES_PER_ROUND = Math.max(64 * MiB, BYTES_PER_ROUND_MIN);
 const LOOKAHEAD_FRACTION = 0.10; // one slice of RAM; block cache + memtables get theirs elsewhere
 
 // per-worker chunk = a round split across the workers that process it.
