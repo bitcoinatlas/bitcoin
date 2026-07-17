@@ -32,7 +32,7 @@ syncing to the tip before i do anything else (syncing+indexing):
 
 ok here is the idea. so we have 80-90% cpu usage spikes across cores, most heavy work is the `init` stage, but between `init` and `process`
 there is a huge gap between spikes where main-chain-thread is busy mostly, a sync point. so the spender indexing workers can work in between
-that time. so when the `init` stage ends before doing the main-chain-thread work we should spawn the spender index workers. one important
+that time. so when the `init` stage ends before doing the main-chain-thread work we should start the spender index workers. one important
 thing is it should process the data from the previous round that is already done.
 
 ---
