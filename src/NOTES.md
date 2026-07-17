@@ -75,7 +75,9 @@ hoped order of things:
   indexes)
 - impl script verification workers. (can be complex, or easy idk, try to just run it first, also try to convert it to wasm maybe, and stuff
   findout what is faster, probably just running is faster), during ibd try to do it on idle times where we are not using all cores. dont
-  slow down the ibd.
+  slow down the ibd. (we can probably abstract this kind of work, like we can run the workers before main thread sync point work, then tell
+  it to pause before running ibd workers again, same as spender indexing workers, dont slow down the ibd, use the sync points to run things
+  that can run in parallel independtly)
 - when everything is nice, faster, clean, easy to reason, read, understand, start implimenting relay stuff and other things.
 - then impl electrum, and satoshi rpc endpoints, this one should be easy when we have everything. probably.
 - then i guess 0.0.1 is ready, probably.
