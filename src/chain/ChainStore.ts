@@ -47,6 +47,15 @@ function hex(bytes: Uint8Array): string {
 	return s;
 }
 
+/** Human-readable ETA. `—` when not yet computable (no rate, or already at tip). */
+function formatEta(seconds: number): string {
+	if (!isFinite(seconds) || seconds <= 0) return "—";
+	const h = Math.floor(seconds / 3600);
+	const m = Math.floor((seconds % 3600) / 60);
+	if (h >= 24) return `${Math.floor(h / 24)}d${h % 24}h`;
+	return h > 0 ? `${h}h${m}m` : `${m}m`;
+}
+
 export class ChainStore {
 	public readonly blockHashToHeightMap: Uint8ArrayMap<number>;
 	public readonly atomic = atomic;
@@ -70,6 +79,12 @@ export class ChainStore {
 	private round = 0;
 	private startTime = performance.now();
 	private totalTxs = 0;
+	// [LOG] instantaneous-rate state. lastRoundTime bounds the per-round Δt; the
+	// rolling window smooths the "current" rate so it tracks the density ramp
+	// without twitching on every round (single-round Δ is too jittery).
+	private lastRoundTime = performance.now();
+	private readonly rateWindow: Array<{ txs: number; blocks: number; ms: number }> = [];
+	private static readonly RATE_WINDOW_ROUNDS = 12;
 
 	private constructor(p2pChannel: MessagePortLike, initialHeaders: WireBlockHeader[]) {
 		this.p2pChannel = p2pChannel;
@@ -454,12 +469,49 @@ export class ChainStore {
 			stores.blocks.pushMany(blockBases);
 		});
 
-		// Log throughput
+		// Throughput. Three numbers:
+		//   overall  — totalTxs / totalElapsed. Lifetime mean. Drifts vs reality as
+		//              block density changes (it's what made the old `rate` field read
+		//              ~2x high — it carried genesis-era ballast). Keep it for context,
+		//              but don't extrapolate from it.
+		//   current  — Δtx/Δt over the last N rounds. Tracks the density ramp in near
+		//              real time; single-round Δ is too jittery, a short window isn't.
+		//   ETA      — remainingBlocks / current blocks-per-sec. Block-based on purpose:
+		//              tx counts of unreached blocks are unknown in-process, so a
+		//              tx-based ETA can't be computed here. OPTIMISTIC across the ramp —
+		//              blocks/s falls as you climb into denser years, so treat this as a
+		//              lower bound (esp. 2023-24). Assumes headers are fully synced ahead
+		//              (true during IBD once `top` is stable), so headers.length()-1 is
+		//              the real target.
 		this.totalTxs += committedTxs;
-		const elapsedSec = (performance.now() - this.startTime) / 1000;
-		const txsPerSec = elapsedSec > 0 ? (this.totalTxs / elapsedSec) | 0 : 0;
+		const now = performance.now();
+		const roundMs = now - this.lastRoundTime;
+		this.lastRoundTime = now;
+
+		this.rateWindow.push({ txs: committedTxs, blocks: committedBlocks, ms: roundMs });
+		if (this.rateWindow.length > ChainStore.RATE_WINDOW_ROUNDS) this.rateWindow.shift();
+		let winTxs = 0, winBlocks = 0, winMs = 0;
+		for (const s of this.rateWindow) {
+			winTxs += s.txs;
+			winBlocks += s.blocks;
+			winMs += s.ms;
+		}
+
+		const overallSec = (now - this.startTime) / 1000;
+		const overallRate = overallSec > 0 ? (this.totalTxs / overallSec) | 0 : 0;
+		const currentRate = winMs > 0 ? ((winTxs / winMs) * 1000) | 0 : 0;
+		const blocksPerSec = winMs > 0 ? (winBlocks / winMs) * 1000 : 0;
+
+		const targetHeight = atomic.stores.headers.length() - 1;
+		const currentHeight = atomic.stores.blocks.length() - 1;
+		const remainingBlocks = Math.max(0, targetHeight - currentHeight);
+		const etaSec = blocksPerSec > 0 ? remainingBlocks / blocksPerSec : 0;
+
 		console.log(
-			`[chain] round ${round}: blocks=${committedBlocks} txs=${committedTxs} cumulative=${this.totalTxs} rate=${txsPerSec} tx/s`,
+			`[chain] round ${round} | blocks=${committedBlocks} txs=${committedTxs} ` +
+				`height=${currentHeight}/${targetHeight} | ` +
+				`overall ${overallRate} tx/s · current ${currentRate} tx/s · ${blocksPerSec.toFixed(1)} blk/s | ` +
+				`remaining=${remainingBlocks} ETA ${formatEta(etaSec)}`,
 		);
 
 		// 6) let p2p refill: one consume per chunk we drained.

@@ -20,6 +20,14 @@ idk. or it can all be global including the readers/viewers. why not.
 
 then we can delete ChainStore.ts probably as well.
 
+...
+
+syncing to the tip before i do anything else:
+
+```
+[chain] round 254 | blocks=38 txs=66882 height=687292/958399 | overall 4536 tx/s · current 4722 tx/s · 2.5 blk/s | remaining=271107 ETA 1d5h
+```
+
 ## 2
 
 anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
