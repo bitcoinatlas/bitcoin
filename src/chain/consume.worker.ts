@@ -81,7 +81,7 @@ self.addEventListener("message", (event) => {
 				console.log(
 					`[${NAME}] process done ${
 						ms(t)
-					}ms blocks=${encoded.length} prevoutDiskHits=${prevoutDiskHits} deferred=${prevoutDeferred}`,
+					}ms blocks=${encoded.length} prevoutDiskHits=${prevoutDiskHits} prevoutDeferred=${prevoutDeferred}`,
 				);
 				const transfer: Transferable[] = [];
 				for (const block of encoded) {
