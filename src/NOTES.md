@@ -59,6 +59,24 @@ yes we can use `noOverwrite`, and if it fails (which should be rare on terminati
 already what we are trying to set it to, or if its something different and valid. so this gurantees double spend check in parallel, without
 batching(transaction) which requires a single worker.
 
+---
+
+hoped order of things:
+
+- impl spender indexer (index spenders + check for double spending)
+- run with indexer
+- clean up code seperate things.
+- re-enable api, frontend and gui. (look into the new deno desktop, which might simplify what we are doing)
+- impl on-demand blocks data
+- at this point work on the frontend, make it nice, easy to read etc. having a frontend also makes it easier to debug data.
+- mainly focus on frontend now. make it nice useful have some useful metrics and shit, make it a nice explorer.
+- maybe speed it up more on some obvious places
+- impl compression on BlobStore. enable it for txs and pubkeys, this should move us to 500GB range for everything (full chain data + full
+  indexes)
+- when everything is nice, faster, clean, easy to reason, read, understand, start implimenting relay stuff and other things.
+- then impl electrum, and satoshi rpc endpoints, this one should be easy when we have everything. probably.
+- then i guess 0.0.1 is ready, probably.
+
 ## 2
 
 anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
