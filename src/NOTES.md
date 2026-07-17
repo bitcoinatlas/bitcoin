@@ -22,7 +22,7 @@ then we can delete ChainStore.ts probably as well.
 
 ...
 
-syncing to the tip before i do anything else:
+syncing to the tip before i do anything else (syncing+indexing):
 
 ```
 [chain] round 254 | blocks=38 txs=66882 height=687292/958399 | overall 4536 tx/s · current 4722 tx/s · 2.5 blk/s | remaining=271107 ETA 1d5h
