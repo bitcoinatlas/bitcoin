@@ -18,6 +18,8 @@ const { constants } = zlib;
 // And also decide these based on a max memory usage, similar to p2p worker limits.
 // Probably later have a main config.ts file where you calcualte everything. based on core count and devices memory.
 
+// TODO: Probably have maximum number of inflated chunks at a time, so you can delete the oldest and stuff.
+
 const ZSTD_PARAMS = {
 	[constants.ZSTD_c_compressionLevel]: 19,
 	[constants.ZSTD_c_enableLongDistanceMatching]: 1,
