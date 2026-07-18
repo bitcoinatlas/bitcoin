@@ -19,6 +19,7 @@ import { PeerChain } from "~/p2p/PeerChain.ts";
 import { PeerChainNode } from "~/p2p/PeerChainNode.ts";
 import { handshake } from "~/p2p/peers.ts";
 import { PARALLELISM } from "~/env.ts";
+import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 
 const GENESIS_NODE: PeerChainNode = {
 	header: GENESIS_BLOCK_HEADER_DECODED,
@@ -536,6 +537,11 @@ function ensureBlockListener(peer: Peer): void {
 		} catch (e) {
 			console.error("[p2p] block decode error:", e);
 			return;
+		}
+
+		if (!verifySatoshiMerkleRoot(block.txs, block.header.merkleRoot)) {
+			// TODO: Handle this better later.
+			throw new Error("Invalid merkle root");
 		}
 
 		// O(1) hash -> height via the chain index; ignore unsolicited / out-of-range
