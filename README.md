@@ -126,10 +126,10 @@ personal devices without needing to worry about storage space.
     - Filtering plugins
     - Delayed propagation of blocks that don't fit your filters, based on the weight of "bad" transactions (e.g. delay 5–10 minutes, maybe
       up to 1 hour max depending on weight).
-- Eventually, when everything else is done, introduce a **new communication protocol WebSockets**, with optional PoW requirements for read
-  requests. So you can even impl a light node on the browser. Or as a browser extension. Also when Atlas nodes discover each-other and
+- Eventually, when everything else is done, introduce a **new communication protocol over WebSockets**, with optional PoW requirements for
+  read requests. So you can even impl a light node on the browser. Or as a browser extension. Also when Atlas nodes discover each-other and
   talking over this network, for ibd they should share compressed chunks files directly. Instead of each block one by one. This means less
-  bandwith requirement. And less of a need to compress while feeding new nodes doing IBD.
+  bandwith requirement. And less of a need to compress while feeding new nodes doing IBD. and also faster sync time.
 - Unlike Satoshi clients, this should work out of the box **without** downloading the entire chain first:
   - It behaves like a light client at the beginning and downloads missing block data on demand.
   - For example: as you scroll the explorer block list, it lazily fetches the block data you're looking at — in ranges, not single blocks,
