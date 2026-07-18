@@ -3,6 +3,7 @@ import { PingMessage, PongMessage } from "~/p2p/messages/PingPong.ts";
 import { VerackMessage } from "~/p2p/messages/Verack.ts";
 import { VersionMessage, VersionPayload } from "~/p2p/messages/Version.ts";
 import { Peer, type PeerMessage, type PeerMessageEvent } from "~/p2p/Peer.ts";
+import { SECOND } from "~/constants.ts";
 
 const USER_AGENT = "/BitcoinAtlas:0.0.1/";
 const PROTOCOL_VERSION = 70015;
@@ -205,7 +206,7 @@ export async function handshake(peer: Peer): Promise<void> {
 	const versionPayload: VersionPayload = {
 		version: PROTOCOL_VERSION,
 		services: SERVICES,
-		timestamp: BigInt(Math.floor(Date.now() / 1000)),
+		timestamp: BigInt(Math.floor(Date.now() / SECOND)),
 		recvServices: SERVICES,
 		recvIP: peer.host,
 		recvPort: peer.port,

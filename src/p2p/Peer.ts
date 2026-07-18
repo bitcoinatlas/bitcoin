@@ -1,11 +1,12 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { Codec } from "@nomadshiba/codec";
+import { KiB, SECOND } from "~/constants.ts";
 
 const MAGIC_LEN = 4;
 const CMD_LEN = 12;
 const HDR_LEN = 24; // magic(4) + cmd(12) + len(4) + checksum(4)
-const READ_CHUNK = 32 * 1024;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const READ_CHUNK = 32 * KiB;
+const DEFAULT_TIMEOUT_MS = 30 * SECOND;
 
 const ASCII = new TextDecoder("ascii");
 const ASCII_ENC = new TextEncoder();
@@ -206,7 +207,7 @@ export class Peer {
 	}
 
 	private async readLoop(conn: Deno.Conn): Promise<void> {
-		let buf = new Uint8Array(64 * 1024);
+		let buf = new Uint8Array(64 * KiB);
 		let len = 0;
 		const tmp = new Uint8Array(READ_CHUNK);
 		const magic = this.magic;

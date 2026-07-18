@@ -5,7 +5,7 @@ import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { GiB, MiB } from "~/constants.ts";
+import { GB, GiB, MiB } from "~/constants.ts";
 import { BASE_DATA_DIR, PARALLELISM } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
@@ -19,7 +19,7 @@ RocksDatabase.config({
 	writeBufferManagerSize: 1 * GiB, // global i think
 });
 
-const ROCKS_PATH = join(BASE_DATA_DIR, "rocksdb");
+const ROCKS_PATH = join(BASE_DATA_DIR, "indexes");
 const ROCKS_OPTIONS: RocksDatabaseOptions = {
 	disableWAL: true,
 	parallelismThreads: PARALLELISM,
@@ -37,22 +37,29 @@ export const atomic = Atomic.open({
 			path: join(BASE_DATA_DIR, "headers"),
 			codec: StoredBlockHeader,
 			itemsPerChunk: 1_000_000,
+			writable: self.name === "chain",
 		}),
 		blocks: ArrayStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "blocks" }),
 			path: join(BASE_DATA_DIR, "blocks"),
 			codec: StoredTxPointer,
 			itemsPerChunk: 1_000_000,
+			writable: self.name === "chain",
 		}),
 		txs: BlobStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txs" }),
 			path: join(BASE_DATA_DIR, "txs"),
-			maxChunkSize: 1 * 1000 * 1000 * 1000,
+			maxChunkSize: 1 * GB,
+			writable: self.name === "chain",
+			compression: {
+				decompressedMaxAge: 5 * 60_000,
+			},
 		}),
 		pubkeys: BlobStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkeys" }),
 			path: join(BASE_DATA_DIR, "pubkeys"),
-			maxChunkSize: 1 * 1000 * 1000 * 1000,
+			maxChunkSize: 1 * GB,
+			writable: self.name === "chain",
 		}),
 		pubkey: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkey" }),

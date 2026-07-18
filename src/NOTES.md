@@ -71,8 +71,8 @@ hoped order of things:
 - at this point work on the frontend, make it nice, easy to read etc. having a frontend also makes it easier to debug data.
 - mainly focus on frontend now. make it nice useful have some useful metrics and shit, make it a nice explorer.
 - maybe speed it up more on some obvious places
-- impl compression on BlobStore. enable it for txs and pubkeys, this should move us to 500GB range for everything (full chain data + full
-  indexes)
+- (DONE) impl compression on BlobStore. enable it for txs and pubkeys, this should move us to 500GB range for everything (full chain data +
+  full indexes)
 - impl script verification workers. (can be complex, or easy idk, try to just run it first, also try to convert it to wasm maybe, and stuff
   findout what is faster, probably just running is faster), during ibd try to do it on idle times where we are not using all cores. dont
   slow down the ibd. (we can probably abstract this kind of work, like we can run the workers before main thread sync point work, then tell

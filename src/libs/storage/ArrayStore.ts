@@ -1,6 +1,6 @@
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
 import { Store } from "~/libs/storage/Store.ts";
-import { BlobStore } from "./BlobStore.ts";
+import { BlobStore, CompressionOptions } from "./BlobStore.ts";
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 
 export type ArrayStoreOptions<T extends FixedCodec> = {
@@ -8,6 +8,8 @@ export type ArrayStoreOptions<T extends FixedCodec> = {
 	rocksdb: RocksDatabase;
 	codec: T;
 	itemsPerChunk: number;
+	writable: boolean;
+	compression?: CompressionOptions;
 };
 
 export class ArrayStore<T extends FixedCodec> extends Store implements Disposable {
@@ -31,6 +33,8 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 			path: options.path,
 			rocksdb: options.rocksdb,
 			maxChunkSize: options.itemsPerChunk * options.codec.stride.size,
+			writable: options.writable,
+			compression: options.compression,
 		});
 		const self = new ArrayStore(blob, options);
 		return self;

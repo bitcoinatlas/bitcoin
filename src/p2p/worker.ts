@@ -7,7 +7,7 @@ import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
-import { MAX_BLOCK_SIZE, MiB } from "~/constants.ts";
+import { MAX_BLOCK_SIZE, MiB, MINUTE, SECOND } from "~/constants.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
@@ -29,7 +29,7 @@ const PROTOCOL_VERSION = 70015;
 const MAGIC = new Uint8Array([0xf9, 0xbe, 0xb4, 0xd9]); // mainnet
 const P2P_PORT = 8333;
 
-const PEER_SYNC_COOLDOWN = 20 * 60 * 1000;
+const PEER_SYNC_COOLDOWN = 20 * MINUTE;
 const SYNC_POLL_INTERVAL = 10;
 
 const BYTES_PER_ROUND_MIN = MAX_BLOCK_SIZE * PARALLELISM; // at least 1 block per worker
@@ -57,7 +57,7 @@ const MAX_QUEUED_ROUNDS = 2;
 // ── p2p protocol mechanics (NOT memory — leave alone) ────────────────────────
 const DOWNLOAD_BATCH = 16; // hashes per getdata (Core's value)
 const MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 * 16; // per-peer send-queue cap (dev: 1 peer)
-const BLOCK_TIMEOUT_MS = 30_000;
+const BLOCK_TIMEOUT_MS = 30 * SECOND;
 const DOWNLOAD_IDLE_MS = 50;
 
 // Peers we should keep a connection to. Reconnected automatically with backoff
@@ -65,8 +65,8 @@ const DOWNLOAD_IDLE_MS = 50;
 const PEER_ADDRESSES: { host: string; port: number }[] = [
 	{ host: "192.168.8.10", port: P2P_PORT },
 ];
-const RECONNECT_BASE_MS = 1_000; // first retry delay
-const RECONNECT_MAX_MS = 30_000; // cap on exponential backoff
+const RECONNECT_BASE_MS = 1 * SECOND; // first retry delay
+const RECONNECT_MAX_MS = 30 * SECOND; // cap on exponential backoff
 
 const messageQueue = new Queue<{ type: string; data: any }>(1000);
 const blacklist = new FastUint8ArraySet(); // block hashes the main told us to reject
@@ -397,7 +397,7 @@ async function syncBlocks(): Promise<void> {
 		}
 
 		const now0 = Date.now();
-		if (now0 - lastSyncBlocksDiag > 10_000) {
+		if (now0 - lastSyncBlocksDiag > 10 * SECOND) {
 			lastSyncBlocksDiag = now0;
 			console.log(
 				`[p2p] syncBlocks live=${live.length} packHeight=${packHeight} top=${top} inFlight=${blockInFlight.size} pool=${blockPool.size} room=${room}`,

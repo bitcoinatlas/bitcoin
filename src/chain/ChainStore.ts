@@ -9,7 +9,7 @@ import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
-import { COINBASE_TXID, MAX_BLOCK_WEIGHT } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_WEIGHT, SECOND } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
@@ -341,7 +341,6 @@ export class ChainStore {
 	private async runBatch(): Promise<void> {
 		// Never post work to workers that haven't loaded yet (dropped-message hang).
 		await this.consumersReady.promise;
-
 		const batch = this.drainBatch();
 		if (batch.length === 0) return;
 
@@ -497,10 +496,10 @@ export class ChainStore {
 			winMs += s.ms;
 		}
 
-		const overallSec = (now - this.startTime) / 1000;
+		const overallSec = (now - this.startTime) / SECOND;
 		const overallRate = overallSec > 0 ? (this.totalTxs / overallSec) | 0 : 0;
-		const currentRate = winMs > 0 ? ((winTxs / winMs) * 1000) | 0 : 0;
-		const blocksPerSec = winMs > 0 ? (winBlocks / winMs) * 1000 : 0;
+		const currentRate = winMs > 0 ? ((winTxs / winMs) * SECOND) | 0 : 0;
+		const blocksPerSec = winMs > 0 ? (winBlocks / winMs) * SECOND : 0;
 
 		const targetHeight = atomic.stores.headers.length() - 1;
 		const currentHeight = atomic.stores.blocks.length() - 1;

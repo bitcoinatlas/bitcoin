@@ -1,6 +1,7 @@
 import { Sync } from "@purifyjs/core";
+import { SECOND } from "~/constants.ts";
 
-export function defer<T>(signal: Sync<T>, timeout_ms = 1000): Sync<T> {
+export function defer<T>(signal: Sync<T>, timeout = 1 * SECOND): Sync<T> {
 	return new Sync<T>((set) => {
 		set(signal.get());
 		let lastTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -8,7 +9,7 @@ export function defer<T>(signal: Sync<T>, timeout_ms = 1000): Sync<T> {
 			if (lastTimeout != null) {
 				clearTimeout(lastTimeout);
 			}
-			lastTimeout = setTimeout(() => set(value), timeout_ms);
+			lastTimeout = setTimeout(() => set(value), timeout);
 		});
 
 		return () => {

@@ -9,6 +9,7 @@ export function formatHash(bytes: Uint8Array): string {
 
 import type { LockTime } from "~/codec/LockTime.ts";
 import type { SequenceLock } from "~/codec/SequenceLock.ts";
+import { SECOND } from "~/constants.ts";
 
 /**
  * Format a LockTime for display.
@@ -20,7 +21,7 @@ export function formatLocktime(lock: LockTime): string {
 		case "block":
 			return `block ${lock.height}`;
 		case "time":
-			return `time ${new Date(lock.timestamp * 1000).toISOString()}`;
+			return `time ${new Date(lock.timestamp * SECOND).toISOString()}`;
 	}
 }
 
