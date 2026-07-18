@@ -106,31 +106,10 @@ personal devices without needing to worry about storage space.
   - Non-witness data is weighted 4×
 - `computeSatoshiMerkleRoot` returns **empty bytes (void)** on "mutated = true" instead of a `[hash, mutated]` pair. There is no `mutated`
   boolean.
-- I call the mempool **txpool**. "mempool" is a misnomer that stuck; txpool is more accurate.
+- I call the mempool **txpool**. "mempool" is a misnomer that stuck; txpool is more accurate. (or maybe txcache and blocktemplate, can have
+  both as seperate)
 - There is no such thing as a pruned node. Pruned nodes are not useful in a meaningful way. BitcoinAtlas is always a full node with full
   history.
-
-### Storage Philosophy
-
-A typical fully-featured node setup today requires roughly 1 TB across multiple apps:
-
-- ~855 GB — Satoshi client (Core/Knots) with full indexes
-- ~108 GB — Electrum server
-- ~40 GB — mempool.space / block explorer
-
-These tools store redundant data because they can't trust each other and must each be self-contained. BitcoinAtlas is a monolithic
-implementation that can make assumptions they can't:
-
-- Prevouts never store txid twice — they use a pointer back to the tx record.
-- Pubkeys are stored once and referenced by pointer everywhere they repeat.
-- Spent state is a single bit flag inline in the output record — no separate UTXO set.
-- No raw block storage — only structured, compact tx data.
-- Smaller integer types throughout, because domain bounds are known (e.g. 21M BTC fits in 51 bits, block height fits in u28 for centuries,
-  vout index fits in u16 for all real-world transactions).
-- Script types (P2PKH, P2WPKH, P2SH, P2WSH, P2TR) stored as type tag + hash only — no redundant script encoding.
-
-Target: **600 GB or less** with the same feature set, using encoding optimizations alone. With chunk compression on cold data (e.g. LZ4),
-potentially **200–400 GB**.
 
 ## Long-Term Goals
 
@@ -147,8 +126,10 @@ potentially **200–400 GB**.
     - Filtering plugins
     - Delayed propagation of blocks that don't fit your filters, based on the weight of "bad" transactions (e.g. delay 5–10 minutes, maybe
       up to 1 hour max depending on weight).
-- Eventually, when everything else is done, introduce a **new communication protocol over HTTP and WebSockets**, with optional PoW
-  requirements for read requests.
+- Eventually, when everything else is done, introduce a **new communication protocol WebSockets**, with optional PoW requirements for read
+  requests. So you can even impl a light node on the browser. Or as a browser extension. Also when Atlas nodes discover each-other and
+  talking over this network, for ibd they should share compressed chunks files directly. Instead of each block one by one. This means less
+  bandwith requirement. And less of a need to compress while feeding new nodes doing IBD.
 - Unlike Satoshi clients, this should work out of the box **without** downloading the entire chain first:
   - It behaves like a light client at the beginning and downloads missing block data on demand.
   - For example: as you scroll the explorer block list, it lazily fetches the block data you're looking at — in ranges, not single blocks,
