@@ -16,7 +16,7 @@ type Pending = {
  * compressed concurrently. Only the zstd + file I/O runs in the workers; the
  * caller keeps all the rename/remove/reader bookkeeping on the main thread.
  */
-export class CompressWorkerPool {
+export class CompressWorkerPool implements Disposable {
 	private readonly workers: Worker[] = [];
 	private readonly idle: Worker[] = [];
 	private readonly busy = new Map<Worker, Pending>();
@@ -96,5 +96,9 @@ export class CompressWorkerPool {
 		// Idle workers can go now; busy ones terminate when their current job posts back.
 		for (const worker of this.idle) worker.terminate();
 		this.idle.length = 0;
+	}
+
+	[Symbol.dispose]() {
+		return this.dispose();
 	}
 }
