@@ -99,13 +99,12 @@ personal devices without needing to worry about storage space.
   - Satoshi Client
   - Satoshi RPC
   - Satoshi P2P
-  - `computeSatoshiMerkleRoot`
+  - `satoshiMerkleRoot`
   - "satoshi address type"
 - Internally, I use **4 MB as max block weight**:
   - Witness is weighted 1×
   - Non-witness data is weighted 4×
-- `computeSatoshiMerkleRoot` returns **empty bytes (void)** on "mutated = true" instead of a `[hash, mutated]` pair. There is no `mutated`
-  boolean.
+- `satoshiMerkleRoot` returns **empty bytes (void)** on "mutated = true" instead of a `[hash, mutated]` pair. There is no `mutated` boolean.
 - I call the mempool **txpool**. "mempool" is a misnomer that stuck; txpool is more accurate. (or maybe txcache and blocktemplate, can have
   both as seperate)
 - There is no such thing as a pruned node. Pruned nodes are not useful in a meaningful way. BitcoinAtlas is always a full node with full

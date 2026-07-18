@@ -52,7 +52,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			inputs.push({
 				prevOut: {
 					txId: prevTxId,
-					vout: input.prevOut.vout,
+					output: input.prevOut.output,
 				},
 				scriptSig: input.scriptSig,
 				sequence: input.sequence,
@@ -79,10 +79,10 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			// Size-compute pass.
 			const txIdBytes = TXID.encode(value.txId);
 			const packBytes = PACK.encode(value);
-			const voutBytes = OUTPUTS.encode(value.outputs);
-			const vinBytes = INPUTS.encode(value.inputs);
+			const outputBytes = OUTPUTS.encode(value.outputs);
+			const inputBytes = INPUTS.encode(value.inputs);
 
-			const totalSize = txIdBytes.length + packBytes.length + voutBytes.length + vinBytes.length;
+			const totalSize = txIdBytes.length + packBytes.length + outputBytes.length + inputBytes.length;
 
 			const bytes = new Uint8Array(totalSize);
 			let pos = 0;
@@ -90,9 +90,9 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			pos += txIdBytes.length;
 			bytes.set(packBytes, pos);
 			pos += packBytes.length;
-			bytes.set(voutBytes, pos);
-			pos += voutBytes.length;
-			bytes.set(vinBytes, pos);
+			bytes.set(outputBytes, pos);
+			pos += outputBytes.length;
+			bytes.set(inputBytes, pos);
 			return bytes;
 		}
 
@@ -112,12 +112,12 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		pos += txIdSize;
 		const [{ locktime, version }, packSize] = PACK.decode(data, pos);
 		pos += packSize;
-		const [vout, voutSize] = OUTPUTS.decode(data, pos);
-		pos += voutSize;
-		const [vin, vinSize] = INPUTS.decode(data, pos);
-		pos += vinSize;
+		const [outputs, outputSize] = OUTPUTS.decode(data, pos);
+		pos += outputSize;
+		const [inputs, inputSize] = INPUTS.decode(data, pos);
+		pos += inputSize;
 
-		return [{ txId, locktime, version, outputs: vout, inputs: vin }, pos - offset];
+		return [{ txId, locktime, version, outputs, inputs }, pos - offset];
 	}
 
 	/**

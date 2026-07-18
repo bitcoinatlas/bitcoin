@@ -104,10 +104,10 @@ anyway what do these workers do?
 
 they loop blocks, txs, outputs, inputs ok.
 
-and in memory within that worker, and also on the disk they check if scriptpubkey repeats, they also search for prevout tx. if they cant
+and in memory within that worker, and also on the disk they check if scriptpubkey repeats, they also search for prevOut tx. if they cant
 find it in during the worker time, they check it in the sync time as well in the end.
 
-they also check spent status of the prevout if they can find it during worker or sync time.
+they also check spent status of the prevOut if they can find it during worker or sync time.
 
 simple.
 
@@ -123,9 +123,9 @@ instead now we are gonna have a pointer always. but this pointer isnt pointing b
 unique scriptpubkeys appended back to back. so pointer points to here. this gives us parallesim. because there is no shift in the layout
 based on back data.
 
-we also do the same thing for prevouts.
+we also do the same thing for prevOuts.
 
-so scriptpubkey and prevout tx, if we find those during worker time we dont have to double check it sync time.
+so scriptpubkey and prevOut tx, if we find those during worker time we dont have to double check it sync time.
 
 but for spent pointers we have to double check them all the time. but during sync time we just double check the other worker's memory
 results. so it should be fast.
@@ -191,7 +191,7 @@ anyway so i think that was all. hopefully it will let us consume chunks p2p work
   as well. which is good. BUT its not as small as we hoped for, so to increase the entropy of our chain we thought we might do so general
   purpose compression like zstd on the reaming data, for example on txs blob store chunks. we already optimized storage for cross chunk
   repating data, and using domain specific packing. so it seems zstd can earn like 20% more across the chunks. so we can decompress chunks
-  when they are in use and keep them on the disk as long as they are in use then delete them. but issue with that is prevouts can be
+  when they are in use and keep them on the disk as long as they are in use then delete them. but issue with that is prevOuts can be
   spending outputs from a wide range of our timechain. so then we need a second utxo storage. which we didnt wanna do before. and our
   compressed timechain would be used purely for reorgs and eletrum endpoints, and explorer. satoshi client `chainstate/` dir is 11GB atm. so
   maybe its fine? worse case someone looks at blocks from different chunks back to back, causing a lot of decompression of compressed chunks

@@ -13,7 +13,7 @@ export type WireTxInput = Codec.InferOutput<typeof WireTxInput>;
 export const WireTxInput = new StructCodec({
 	prevOut: new StructCodec({
 		txId: Bytes32,
-		vout: U32LE,
+		output: U32LE,
 	}),
 	scriptSig: new BytesCodec({ sizer: CompactSize }),
 	sequence: SequenceLock,

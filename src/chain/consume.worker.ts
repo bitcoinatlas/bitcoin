@@ -2,9 +2,9 @@ import { sha256 } from "@noble/hashes/sha2";
 import { VarInt } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
 import { atomic } from "~/chain/atomic.ts";
+import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
-import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
@@ -15,7 +15,7 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
  *
  * A round of N of these run at once, each owning one chunk (many blocks). The
  * heavy, embarrassingly-parallel work lives here: wire decode, scriptPubKey
- * dedup + disk lookups, prevout tx disk lookups, and the final StoredTx encode.
+ * dedup + disk lookups, prevOut tx disk lookups, and the final StoredTx encode.
  * The main thread only does what MUST be serial: assigning pointers (they depend
  * on global append order) and the ordered commit.
  *
@@ -25,10 +25,10 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
  *   init(chunk)              -> { pubkeys }            unknown scriptPubKeys
  *     [main thread assigns pubkey pointers across all workers, deduped]
  *   process(pubkeyPointers)  -> { blocks: EncodedBlock[] }
- *     [main thread registers txids, patches deferred prevouts, appends in order]
+ *     [main thread registers txIds, patches deferred prevOuts, appends in order]
  *
- * A prevout that resolves on disk is written straight into the encoding here (in
- * parallel — the whole point). A prevout that misses disk is deferred: for a
+ * A prevOut that resolves on disk is written straight into the encoding here (in
+ * parallel — the whole point). A prevOut that misses disk is deferred: for a
  * valid chain it's funded by a tx in this same batch (another worker, or an
  * earlier block here). We write a placeholder pointer and hand the commit thread
  * a patch entry {slotOffset, prevOutTxid}. See StoredPrevOutTxId.patchPointer.
@@ -37,13 +37,13 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 /** One block, encoded and ready for the commit thread. All offsets are block-relative. */
 type EncodedBlock = {
 	buffer: Uint8Array;
-	txids: Uint8Array;
+	txIds: Uint8Array;
 	txOffsets: Uint32Array;
 	patchOffsets: Uint32Array;
 	patchTxids: Uint8Array;
 };
 
-/** A prevout that missed disk, pending commit-thread resolution. */
+/** A prevOut that missed disk, pending commit-thread resolution. */
 type Deferred = { inputIndex: number; txid: Uint8Array };
 
 const PUBKEY_PENDING = -1;
@@ -52,9 +52,9 @@ const pubkeyPointers = new FastUint8ArrayMap<number>();
 let unknownPubkeyHashes: Uint8Array[] = [];
 let blocks: WireTx[][] = [];
 
-// [LOG] prevout resolution counters, reset each process() call.
-let prevoutDiskHits = 0;
-let prevoutDeferred = 0;
+// [LOG] prevOut resolution counters, reset each process() call.
+let prevOutDiskHits = 0;
+let prevOutDeferred = 0;
 
 const encodeScratch = new Uint8Array(MAX_BLOCK_WEIGHT * 2);
 
@@ -81,13 +81,13 @@ self.addEventListener("message", (event) => {
 				console.log(
 					`[${NAME}] process done ${
 						ms(t)
-					}ms blocks=${encoded.length} prevoutDiskHits=${prevoutDiskHits} prevoutDeferred=${prevoutDeferred}`,
+					}ms blocks=${encoded.length} prevOutDiskHits=${prevOutDiskHits} prevOutDeferred=${prevOutDeferred}`,
 				);
 				const transfer: Transferable[] = [];
 				for (const block of encoded) {
 					transfer.push(
 						block.buffer.buffer,
-						block.txids.buffer,
+						block.txIds.buffer,
 						block.txOffsets.buffer,
 						block.patchOffsets.buffer,
 						block.patchTxids.buffer,
@@ -177,8 +177,8 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 }
 
 function process(pubkeyPointerValues: BigUint64Array): EncodedBlock[] {
-	prevoutDiskHits = 0;
-	prevoutDeferred = 0;
+	prevOutDiskHits = 0;
+	prevOutDeferred = 0;
 
 	for (let i = 0; i < unknownPubkeyHashes.length; i++) {
 		pubkeyPointers.set(unknownPubkeyHashes[i]!, Number(pubkeyPointerValues[i]!));
@@ -190,7 +190,7 @@ function process(pubkeyPointerValues: BigUint64Array): EncodedBlock[] {
 		const txs = blocks[b]!;
 		const txCount = txs.length;
 
-		const txids = new Uint8Array(txCount * 32);
+		const txIds = new Uint8Array(txCount * 32);
 		const txOffsets = new Uint32Array(txCount);
 		const patchOffsets: number[] = [];
 		const patchTxids: Uint8Array[] = [];
@@ -199,7 +199,7 @@ function process(pubkeyPointerValues: BigUint64Array): EncodedBlock[] {
 
 		for (let t = 0; t < txCount; t++) {
 			const tx = txs[t]!;
-			txids.set(tx.txId, t * 32);
+			txIds.set(tx.txId, t * 32);
 
 			const { stored, deferred } = toStored(tx);
 
@@ -219,7 +219,7 @@ function process(pubkeyPointerValues: BigUint64Array): EncodedBlock[] {
 
 		encoded[b] = {
 			buffer: encodeScratch.slice(0, cursor),
-			txids,
+			txIds,
 			txOffsets,
 			patchOffsets: Uint32Array.from(patchOffsets),
 			patchTxids: packTxids(patchTxids),
@@ -240,30 +240,30 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 		return { value: output.value, scriptPubKey: pointer };
 	});
 
-	const inputs = tx.inputs.map((input, index) => {
+	const inputs = tx.inputs.map((input, index): StoredTxInput => {
 		const witness = tx.witness[index] ?? [];
 		const base = { scriptSig: input.scriptSig, sequence: input.sequence, witness };
 
-		if (equals(input.prevOut.txId, COINBASE_TXID) && input.prevOut.vout === COINBASE_VOUT) {
-			return { prevOut: { txId: { kind: "coinbase" } as const, vout: input.prevOut.vout }, ...base };
+		if (equals(input.prevOut.txId, COINBASE_TXID) && input.prevOut.output === COINBASE_VOUT) {
+			return { prevOut: { txId: { kind: "coinbase" } as const, output: input.prevOut.output }, ...base };
 		}
 
 		const onDiskPointer = atomic.stores.txid.get(input.prevOut.txId);
 		if (onDiskPointer !== undefined) {
-			prevoutDiskHits++;
-			return { prevOut: { txId: { kind: "pointer" as const, value: onDiskPointer }, vout: input.prevOut.vout }, ...base };
+			prevOutDiskHits++;
+			return { prevOut: { txId: { kind: "pointer" as const, value: onDiskPointer }, output: input.prevOut.output }, ...base };
 		}
 
-		prevoutDeferred++;
+		prevOutDeferred++;
 		deferred.push({ inputIndex: index, txid: input.prevOut.txId.slice() });
-		return { prevOut: { txId: { kind: "pointer" as const, value: 0 }, vout: input.prevOut.vout }, ...base };
+		return { prevOut: { txId: { kind: "pointer" as const, value: 0 }, output: input.prevOut.output }, ...base };
 	});
 
 	return { stored: { txId: tx.txId, locktime: tx.locktime, version: tx.version, outputs, inputs }, deferred };
 }
 
-function packTxids(txids: Uint8Array[]): Uint8Array {
-	const packed = new Uint8Array(txids.length * 32);
-	for (let i = 0; i < txids.length; i++) packed.set(txids[i]!, i * 32);
+function packTxids(txIds: Uint8Array[]): Uint8Array {
+	const packed = new Uint8Array(txIds.length * 32);
+	for (let i = 0; i < txIds.length; i++) packed.set(txIds[i]!, i * 32);
 	return packed;
 }

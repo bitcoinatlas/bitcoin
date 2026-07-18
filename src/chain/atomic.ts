@@ -74,7 +74,7 @@ export const atomic = Atomic.open({
 		}),
 		spenders: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "spenders" }),
-			key: new StructCodec({ tx: StoredTxPointer, vout: U32 }), // output
+			key: new StructCodec({ tx: StoredTxPointer, output: U32 }), // output
 			value: StoredTxPointer, // spender tx
 		}),
 	},

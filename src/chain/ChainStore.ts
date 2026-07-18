@@ -25,7 +25,7 @@ import { PARALLELISM } from "~/env.ts";
  */
 type EncodedBlock = {
 	buffer: Uint8Array;
-	txids: Uint8Array;
+	txIds: Uint8Array;
 	txOffsets: Uint32Array;
 	patchOffsets: Uint32Array;
 	patchTxids: Uint8Array;
@@ -395,8 +395,8 @@ export class ChainStore {
 			batch.map((_, i) => this.processWorker(this.consumers[i]!, pointersPerWorker[i]!, i)),
 		);
 
-		// 4) Prep blocks OUTSIDE the trx: assign block/tx pointers, register txids so
-		//    in-batch prevouts resolve, patch them, concatenate every block into ONE
+		// 4) Prep blocks OUTSIDE the trx: assign block/tx pointers, register txIds so
+		//    in-batch prevOuts resolve, patch them, concatenate every block into ONE
 		//    blob. The trx below is then pure disk writes (batched appends + puts).
 		const batchTxid = new FastUint8ArrayMap<number>();
 		const txBase = atomic.stores.txs.size();
@@ -410,7 +410,7 @@ export class ChainStore {
 				blockBases.push(blockCursor);
 				const txCount = block.txOffsets.length;
 				for (let k = 0; k < txCount; k++) {
-					const txId = block.txids.subarray(k * 32, k * 32 + 32);
+					const txId = block.txIds.subarray(k * 32, k * 32 + 32);
 					batchTxid.set(txId, blockCursor + block.txOffsets[k]!);
 				}
 				blockCursor += block.buffer.length;
@@ -425,7 +425,7 @@ export class ChainStore {
 				for (let p = 0; p < patchCount; p++) {
 					const prevTxId = block.patchTxids.subarray(p * 32, p * 32 + 32);
 					const pointer = batchTxid.get(prevTxId) ?? atomic.stores.txid.get(prevTxId);
-					if (pointer === undefined) throw new Error(`unresolved prevout at commit txid=${hex(prevTxId)}`);
+					if (pointer === undefined) throw new Error(`unresolved prevOut at commit txid=${hex(prevTxId)}`);
 					StoredPrevOutTxId.patchPointer(block.buffer, block.patchOffsets[p]!, pointer);
 					patched++;
 				}
@@ -454,7 +454,7 @@ export class ChainStore {
 				for (const block of blocksPerWorker[i]!) {
 					const txCount = block.txOffsets.length;
 					for (let k = 0; k < txCount; k++) {
-						const txId = block.txids.subarray(k * 32, k * 32 + 32);
+						const txId = block.txIds.subarray(k * 32, k * 32 + 32);
 						txidEntries[te++] = [txId, bc + block.txOffsets[k]!];
 					}
 					bc += block.buffer.length;

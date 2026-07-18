@@ -14,7 +14,7 @@ export type StoredPrevOutTxId =
  *
  * Fixed stride, always the first thing in a StoredTxInput encoding, so an
  * input's patch offset is simply the input's own offset. Use `patchPointer`
- * for deferred prevout resolution during parallel IBD — never write the slot
+ * for deferred prevOut resolution during parallel IBD — never write the slot
  * by hand, the +1 bias lives here and only here.
  *
  * Whether a VarInt vout follows (pointer) or not (coinbase) is decided by
@@ -59,9 +59,9 @@ export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 	}
 
 	/**
-	 * Overwrite an already-encoded 6-byte prevout slot in-place with a resolved
+	 * Overwrite an already-encoded 6-byte prevOut slot in-place with a resolved
 	 * tx pointer. This is the deferred half of parallel IBD: a worker encodes an
-	 * input whose prevout tx isn't on disk yet (in-batch / cross-worker) with a
+	 * input whose prevOut tx isn't on disk yet (in-batch / cross-worker) with a
 	 * placeholder pointer, records the slot offset (`input's own offset`, since
 	 * the slot is always first in the input), and the commit thread patches the
 	 * real pointer here once block ordering assigns it.

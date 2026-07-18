@@ -6,7 +6,7 @@ import { COINBASE_VOUT } from "~/constants.ts";
 
 export type PrevOut = {
 	txId: StoredPrevOutTxId;
-	vout: VarInt;
+	output: VarInt;
 };
 
 export type StoredTxInput = {
@@ -103,9 +103,9 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 
 		if (target === undefined) {
 			// Size-compute pass then single allocation.
-			const voutSize = input.prevOut.txId.kind === "pointer" ? VarInt.encode(input.prevOut.vout).length : 0;
+			const outputSize = input.prevOut.txId.kind === "pointer" ? VarInt.encode(input.prevOut.output).length : 0;
 
-			const totalLength = StoredPrevOutTxId.stride.size + voutSize + 1 + (seqExplicit ? 4 : 0) +
+			const totalLength = StoredPrevOutTxId.stride.size + outputSize + 1 + (seqExplicit ? 4 : 0) +
 				scriptSigEncoded.length + witnessEncoded.length;
 			const result = new Uint8Array(totalLength);
 			this.writeInto(input, result, 0, seqU32, seqTag, seqExplicit, scriptSigEncoded, witnessEncoded);
@@ -129,7 +129,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 
 		offset += StoredPrevOutTxId.encodeInto(input.prevOut.txId, target, offset);
 		if (input.prevOut.txId.kind === "pointer") {
-			offset += VarInt.encodeInto(input.prevOut.vout, target, offset);
+			offset += VarInt.encodeInto(input.prevOut.output, target, offset);
 		}
 
 		const tagByte = (seqTag << SEQ_SHIFT) & SEQ_MASK;
@@ -154,13 +154,13 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		const [txId, txIdBytes] = StoredPrevOutTxId.decode(data, currentOffset);
 		currentOffset += txIdBytes;
 
-		let vout: number;
+		let output: number;
 		if (txId.kind === "pointer") {
-			let voutBytes;
-			[vout, voutBytes] = VarInt.decode(data, currentOffset);
-			currentOffset += voutBytes;
+			let outputSize: number;
+			[output, outputSize] = VarInt.decode(data, currentOffset);
+			currentOffset += outputSize;
 		} else {
-			vout = COINBASE_VOUT;
+			output = COINBASE_VOUT;
 		}
 
 		const tagByte = data[currentOffset]!;
@@ -181,7 +181,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		currentOffset += witnessBytes;
 
 		const input: StoredTxInput = {
-			prevOut: { txId, vout },
+			prevOut: { txId, output: output },
 			sequence: SequenceLockCodec.fromU32(seqU32),
 			scriptSig,
 			witness,
