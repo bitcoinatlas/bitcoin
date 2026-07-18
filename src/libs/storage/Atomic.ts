@@ -1,7 +1,7 @@
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
-import { Store, StoreRocks } from "~/libs/storage/Store.ts";
+import { Store, StoreAppendOnly } from "~/libs/storage/Store.ts";
 
-export type AtomicStores = { readonly [name: string]: Store | StoreRocks };
+export type AtomicStores = { readonly [name: string]: Store };
 export type AtomicOptions<T extends AtomicStores> = {
 	rocksdb: RocksDatabase;
 	stores: T;
@@ -11,21 +11,25 @@ export class Atomic<T extends AtomicStores> {
 	public readonly stores: T;
 	private readonly rocksdb: RocksDatabase;
 
-	private rockMap: ReadonlyMap<string, StoreRocks>;
-	private storeMap: ReadonlyMap<string, Store>;
+	private appendOnlyStores: ReadonlyMap<string, StoreAppendOnly>;
 
 	private constructor(options: AtomicOptions<T>) {
 		this.rocksdb = options.rocksdb;
 		this.stores = options.stores;
 
-		const entries = Object.entries(options.stores);
-		this.rockMap = new Map(entries.filter((entry): entry is [string, StoreRocks] => entry[1] instanceof StoreRocks));
-		this.storeMap = new Map(entries.filter((entry): entry is [string, Store] => entry[1] instanceof Store));
-
-		for (const rock of this.rockMap.values()) {
-			if (this.rocksdb.path === rock.rocksdb.path) continue;
-			throw new Error("inconsistent rocksdb paths");
+		const appendOnlyStores = new Map<string, StoreAppendOnly>();
+		for (const [name, store] of Object.entries(options.stores)) {
+			if (this.rocksdb.path !== store.rocksdb.path) {
+				throw new Error([
+					"inconsistent rocksdb paths.",
+					"for state consistency use different rocksdb columns, not different rocksdb paths",
+				].join("\n"));
+			}
+			if (store instanceof StoreAppendOnly) {
+				appendOnlyStores.set(name, store);
+			}
 		}
+		this.appendOnlyStores = appendOnlyStores;
 	}
 
 	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
@@ -40,7 +44,7 @@ export class Atomic<T extends AtomicStores> {
 		try {
 			await this.rocksdb.transaction((trx) => {
 				call(this.stores, trx);
-				for (const store of this.storeMap.values()) {
+				for (const store of this.appendOnlyStores.values()) {
 					store.pin(trx);
 				}
 			});
@@ -53,6 +57,6 @@ export class Atomic<T extends AtomicStores> {
 	}
 
 	recover(transaction?: Transaction): void {
-		for (const store of this.storeMap.values()) store.rollback(transaction);
+		for (const store of this.appendOnlyStores.values()) store.rollback(transaction);
 	}
 }

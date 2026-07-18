@@ -6,9 +6,9 @@ import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { MAX_BLOCK_SIZE, SECOND } from "~/constants.ts";
 import { PARALLELISM } from "~/env.ts";
-import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 import { readFileInto, readFileIntoSync, writeFileSync } from "~/libs/fs/mod.ts";
-import { Store } from "~/libs/storage/Store.ts";
+import { StoreAppendOnly } from "~/libs/storage/Store.ts";
+import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
 const COMPRESS_PARALLELISM = Math.min(PARALLELISM, Math.max(8, Math.floor(PARALLELISM * .5)));
 
@@ -74,7 +74,7 @@ export type BlobStoreOptions = {
 	compression?: CompressionOptions;
 };
 
-export class BlobStore extends Store implements Disposable {
+export class BlobStore extends StoreAppendOnly implements Disposable {
 	public readonly path: string;
 	public override readonly rocksdb: RocksDatabase;
 

@@ -1,7 +1,7 @@
-import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
-import { Store } from "~/libs/storage/Store.ts";
-import { BlobStore, CompressionOptions } from "./BlobStore.ts";
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
+import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
+import { StoreAppendOnly } from "~/libs/storage/Store.ts";
+import { BlobStore, CompressionOptions } from "./BlobStore.ts";
 
 export type ArrayStoreOptions<T extends FixedCodec> = {
 	path: string;
@@ -12,7 +12,7 @@ export type ArrayStoreOptions<T extends FixedCodec> = {
 	compression?: CompressionOptions;
 };
 
-export class ArrayStore<T extends FixedCodec> extends Store implements Disposable {
+export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements Disposable {
 	public readonly path: string;
 	public get rocksdb() {
 		return this.blob.rocksdb;

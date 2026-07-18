@@ -1,6 +1,6 @@
 import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { Codec, FixedCodec } from "@nomadshiba/codec";
-import { StoreRocks } from "~/libs/storage/Store.ts";
+import { Store } from "~/libs/storage/Store.ts";
 
 export type KvStoreOptions<K extends FixedCodec, V extends Codec> = {
 	rocksdb: RocksDatabase;
@@ -8,7 +8,7 @@ export type KvStoreOptions<K extends FixedCodec, V extends Codec> = {
 	value: V;
 };
 
-export class KvStore<K extends FixedCodec, V extends Codec> extends StoreRocks {
+export class KvStore<K extends FixedCodec, V extends Codec> extends Store {
 	public readonly rocksdb: RocksDatabase;
 	public readonly key: K;
 	public readonly value: V;
