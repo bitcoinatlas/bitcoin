@@ -5,7 +5,7 @@ import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { GB, GiB, MiB } from "~/constants.ts";
+import { GB, GiB, MiB, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR, PARALLELISM } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
@@ -52,7 +52,7 @@ export const atomic = Atomic.open({
 			maxChunkSize: 1 * GB,
 			writable: self.name === "chain",
 			compression: {
-				decompressedMaxAge: 5 * 60_000,
+				decompressedMaxAge: 5 * MINUTE,
 			},
 		}),
 		pubkeys: BlobStore.open({
