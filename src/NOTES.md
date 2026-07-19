@@ -82,6 +82,28 @@ hoped order of things:
 - then impl electrum, and satoshi rpc endpoints, this one should be easy when we have everything. probably.
 - then i guess 0.0.1 is ready, probably.
 
+---
+
+some of my thoughts, so rn sync + indexing fully takes 2-3 days, close to my time with other satoshi clients, which is not perfect, but
+acceptable FOR NOW.
+
+so i wanna focus on making it faster in various ways and stuff. BUT i think i should now focus on the order of things. like:
+
+- what happens when sync is done? current way we are doing it is correct?
+- missing indexes, ui and shit.
+
+i dont wanna impl scripts for now, because rn, first do the thing, make sure its nice, clean etc. looking good... useful... then i should
+try to make this faster goal is making it 1 day max, somehow. i need to figure out how to do profiling on workers. try to figure out what
+else we can do in parallel, try to reduce allocations, try to see what else we can write in parallel and how. (hmm maybe we can write to
+blob store in parallel after we know the sizes, dont need to concat). idk man etc. profile it. if we can some how 2x it that means we are
+all most a day. if we can 3x it, its less than a day.
+
+then after its fast again, then look into scripts (full verification).
+
+also try to reduce size with encoding as well, but thats last probably, we dont wanna redownlaod and index the history for rn.
+
+its going good, looks good. good job.
+
 ## 2
 
 anyway so new goal, parallesim. since we dont have 300KB blocks around 500k we slowdown a lot. so we have to squize everything, cant afford
