@@ -81,25 +81,27 @@ class WireTxCodec extends Codec<WireTx, WireTxIn> {
 	public decoder(bytes: Uint8Array, offset: number): [WireTx, number] {
 		const start = offset;
 		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes, offset);
-		let cur = offset + preWitnessBytes;
+		let current = offset + preWitnessBytes;
 
 		const markerLen = preWitness.hasWitness ? 2 : 0;
 		const bodyStart = offset + 4 + markerLen; // inputs+outputs start (after version + marker)
 		const bodyEnd = offset + preWitnessBytes; // inputs+outputs end
 
-		let witness: Uint8Array[][] = [];
+		let witness: Uint8Array[][];
 		if (preWitness.hasWitness) {
-			const [w, wLen] = decodeWitness(bytes, cur, preWitness.inputs.length);
-			witness = w;
-			cur += wLen;
+			let lenght: number;
+			[witness, lenght] = decodeWitness(bytes, current, preWitness.inputs.length);
+			current += lenght;
+		} else {
+			witness = [];
 		}
 
-		const locktimeStart = cur;
-		const [postWitness] = WireTxPostWitness.decode(bytes, cur);
-		cur += 4; // locktime is always 4 bytes
+		const locktimeStart = current;
+		const [postWitness] = WireTxPostWitness.decode(bytes, current);
+		current += 4; // locktime is always 4 bytes
 
 		// wtxid: hash the full consumed range (marker + witness included)
-		const wtxId = sha256d(bytes.subarray(start, cur));
+		const wtxId = sha256d(bytes.subarray(start, current));
 
 		// txid: legacy serialization = version ++ body ++ locktime
 		let txId: Uint8Array;
@@ -122,7 +124,7 @@ class WireTxCodec extends Codec<WireTx, WireTxIn> {
 			witness,
 			txId,
 			wtxId,
-		}, cur - start];
+		}, current - start];
 	}
 }
 

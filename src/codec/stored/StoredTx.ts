@@ -41,8 +41,8 @@ export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
 export class StoredTxCodec extends Codec<StoredTx> {
 	public readonly stride = { kind: "variable" } as const;
 
-	toWire(storedTx: StoredTx, chainStore: ChainStore): WireTx {
-		const { txId, version, locktime } = storedTx;
+	toWireBytes(storedTx: StoredTx, chainStore: ChainStore): Uint8Array<ArrayBuffer> {
+		const { version, locktime } = storedTx;
 
 		const inputs: WireTxInput[] = [];
 		const witness: Uint8Array[][] = [];
@@ -69,7 +69,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			});
 		}
 
-		return { txId, version, locktime, inputs, outputs, witness };
+		return WireTx.encode({ inputs, locktime, outputs, version, witness });
 	}
 
 	public encoder(value: StoredTx, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
