@@ -1,10 +1,10 @@
 import { ArrayCodec, Codec, Stride, StructCodec, U32LE } from "@nomadshiba/codec";
-import { CompactSize } from "~/codec/primitives/CompactSize.ts";
 import { LockTime } from "~/codec/LockTime.ts";
+import { CompactSize } from "~/codec/primitives/CompactSize.ts";
+import { WireSegwitMarker } from "~/codec/wire/WireSegwitMarker.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
-import { WireSegwitMarker } from "~/codec/wire/WireSegwitMarker.ts";
-import { sha256 } from "@noble/hashes/sha2";
+import { sha256d } from "~/libs/hashes/sha256d.ts";
 
 // WireTx = version + [segwit_marker] + inputs + outputs + [witness] + locktime
 // Note: witness is NOT inside inputs in wire format, it's at tx level
@@ -23,7 +23,7 @@ const WireTxPostWitness = new StructCodec({
 	locktime: LockTime,
 });
 
-type T = {
+type WireTxIn = {
 	version: number;
 	locktime: LockTime;
 	inputs: WireTxInput[];
@@ -31,12 +31,22 @@ type T = {
 	witness: Uint8Array[][];
 };
 
-class WireTxCodec extends Codec<T> {
+export type WireTx = {
+	txId: Uint8Array;
+	wtxId: Uint8Array;
+	version: number;
+	locktime: LockTime;
+	inputs: WireTxInput[];
+	outputs: WireTxOutput[];
+	witness: Uint8Array[][];
+};
+
+class WireTxCodec extends Codec<WireTx, WireTxIn> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encoder(tx: T, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	public encoder(tx: T, target: Uint8Array, offset: number): number;
-	public encoder(tx: T, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	public encoder(tx: WireTxIn, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(tx: WireTxIn, target: Uint8Array, offset: number): number;
+	public encoder(tx: WireTxIn, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const hasWitness = tx.witness.length > 0;
 
 		if (target === undefined) {
@@ -68,23 +78,41 @@ class WireTxCodec extends Codec<T> {
 		return offset - start;
 	}
 
-	public decoder(bytes: Uint8Array, offset: number): [T, number] {
+	public decoder(bytes: Uint8Array, offset: number): [WireTx, number] {
+		const start = offset;
 		const [preWitness, preWitnessBytes] = WireTxPreWitness.decode(bytes, offset);
-		let currentOffset = offset + preWitnessBytes;
+		let cur = offset + preWitnessBytes;
+
+		const markerLen = preWitness.hasWitness ? 2 : 0;
+		const bodyStart = offset + 4 + markerLen; // inputs+outputs start (after version + marker)
+		const bodyEnd = offset + preWitnessBytes; // inputs+outputs end
 
 		let witness: Uint8Array[][] = [];
 		if (preWitness.hasWitness) {
-			const [w, witnessBytes] = decodeWitness(
-				bytes,
-				currentOffset,
-				preWitness.inputs.length,
-			);
+			const [w, wLen] = decodeWitness(bytes, cur, preWitness.inputs.length);
 			witness = w;
-			currentOffset += witnessBytes;
+			cur += wLen;
 		}
 
-		const [postWitness] = WireTxPostWitness.decode(bytes, currentOffset);
-		currentOffset += 4;
+		const locktimeStart = cur;
+		const [postWitness] = WireTxPostWitness.decode(bytes, cur);
+		cur += 4; // locktime is always 4 bytes
+
+		// wtxid: hash the full consumed range (marker + witness included)
+		const wtxId = sha256d(bytes.subarray(start, cur));
+
+		// txid: legacy serialization = version ++ body ++ locktime
+		let txId: Uint8Array;
+		if (!preWitness.hasWitness) {
+			txId = wtxId; // no marker, no witness → identical & contiguous
+		} else {
+			const bodyLen = bodyEnd - bodyStart;
+			const legacy = new Uint8Array(4 + bodyLen + 4);
+			legacy.set(bytes.subarray(offset, offset + 4), 0);
+			legacy.set(bytes.subarray(bodyStart, bodyEnd), 4);
+			legacy.set(bytes.subarray(locktimeStart, locktimeStart + 4), 4 + bodyLen);
+			txId = sha256d(legacy);
+		}
 
 		return [{
 			version: preWitness.version,
@@ -92,7 +120,9 @@ class WireTxCodec extends Codec<T> {
 			inputs: preWitness.inputs,
 			outputs: preWitness.outputs,
 			witness,
-		}, currentOffset - offset];
+			txId,
+			wtxId,
+		}, cur - start];
 	}
 }
 
@@ -143,20 +173,4 @@ function decodeWitness(data: Uint8Array, offset: number, inputCount: number): [U
 	return [witness, currentOffset - offset];
 }
 
-export type WireTx = Codec.InferOutput<typeof WireTx>;
-export const WireTx = new WireTxCodec().transform((value, bytes) => {
-	// txId must be computed from non-witness serialization (BIP141)
-	// even if the bytes include witness data (segwit tx)
-	const hasWitness = value.witness.length > 0;
-	let hashBytes: Uint8Array;
-	if (!hasWitness) {
-		hashBytes = bytes;
-	} else {
-		// Re-encode without witness to get the non-witness serialization
-		hashBytes = new WireTxCodec().encode({ ...value, witness: [] });
-	}
-	return {
-		txId: sha256(sha256(hashBytes)),
-		...value,
-	};
-});
+export const WireTx = new WireTxCodec();

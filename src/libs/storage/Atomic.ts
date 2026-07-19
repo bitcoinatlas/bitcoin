@@ -9,7 +9,7 @@ export type AtomicOptions<T extends AtomicStores> = {
 
 export class Atomic<T extends AtomicStores> {
 	public readonly stores: T;
-	private readonly rocksdb: RocksDatabase;
+	public readonly rocksdb: RocksDatabase;
 
 	private appendOnlyStores: ReadonlyMap<string, StoreAppendOnly>;
 

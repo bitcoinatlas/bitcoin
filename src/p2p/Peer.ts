@@ -1,6 +1,6 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { Codec } from "@nomadshiba/codec";
 import { KiB, SECOND } from "~/constants.ts";
+import { sha256d } from "~/libs/hashes/sha256d.ts";
 
 const MAGIC_LEN = 4;
 const CMD_LEN = 12;
@@ -137,7 +137,7 @@ export class Peer {
 		frame.set(commandBytes, 4);
 		frame.fill(0, 4 + commandBytes.length, 16);
 		putU32le(frame, 16, payload.length);
-		const cs = sha256(sha256(payload));
+		const cs = sha256d(payload);
 		frame[20] = cs[0]!;
 		frame[21] = cs[1]!;
 		frame[22] = cs[2]!;
@@ -269,7 +269,7 @@ export class Peer {
 					const recvCs = buf.subarray(off + 20, off + 24);
 					const payload = buf.subarray(off + HDR_LEN, off + frameLen);
 
-					const calc = sha256(sha256(payload));
+					const calc = sha256d(payload);
 					if (
 						calc[0] === recvCs[0] && calc[1] === recvCs[1] && calc[2] === recvCs[2] && calc[3] === recvCs[3]
 					) {

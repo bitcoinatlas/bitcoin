@@ -49,8 +49,10 @@ type Deferred = { inputIndex: number; txid: Uint8Array };
 const PUBKEY_PENDING = -1;
 
 const pubkeyPointers = new FastUint8ArrayMap<number>();
-let unknownPubkeyHashes: Uint8Array[] = [];
-let blocks: WireTx[][] = [];
+const unknownPubkeys: Uint8Array[] = [];
+const unknownPubkeyHashes: Uint8Array[] = [];
+const unknownPubkeyEncoded: Uint8Array[] = [];
+const blocks: WireTx[][] = [];
 
 // [LOG] prevOut resolution counters, reset each process() call.
 let prevOutDiskHits = 0;
@@ -117,10 +119,13 @@ self.addEventListener("error", (event) => {
 console.log(`[${NAME}] ready`);
 self.postMessage({ stage: "ready" });
 
+const pubKeyHashBuffer = new Uint8Array(32);
+
 function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; lengths: Uint32Array } {
-	blocks = [];
-	unknownPubkeyHashes = [];
-	const unknownEncoded: Uint8Array[] = [];
+	blocks.length = 0;
+	unknownPubkeys.length = 0;
+	unknownPubkeyHashes.length = 0;
+	unknownPubkeyEncoded.length = 0;
 	pubkeyPointers.clear();
 
 	const tDecode = performance.now();
@@ -136,18 +141,18 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 	for (const txs of blocks) {
 		for (const tx of txs) {
 			for (const output of tx.outputs) {
-				const hash = sha256(output.scriptPubKey);
-				if (pubkeyPointers.get(hash) !== undefined) continue;
-
-				const onDisk = atomic.stores.pubkey.get(hash);
+				if (pubkeyPointers.get(output.scriptPubKey) !== undefined) continue;
+				sha256.create().update(output.scriptPubKey).digestInto(pubKeyHashBuffer);
+				const onDisk = atomic.stores.pubkey.get(pubKeyHashBuffer);
 				if (onDisk !== undefined) {
-					pubkeyPointers.put(hash, onDisk);
+					pubkeyPointers.put(output.scriptPubKey, onDisk);
 				} else {
-					pubkeyPointers.put(hash, PUBKEY_PENDING);
-					unknownPubkeyHashes.push(hash);
+					pubkeyPointers.put(output.scriptPubKey, PUBKEY_PENDING);
+					unknownPubkeys.push(output.scriptPubKey);
+					unknownPubkeyHashes.push(pubKeyHashBuffer.slice());
 					// Encode HERE (worker), not on the chain thread — the chain thread
 					// just concatenates these into one blob and does a single append.
-					unknownEncoded.push(StoredScriptPubKey.encode(output.scriptPubKey));
+					unknownPubkeyEncoded.push(StoredScriptPubKey.encode(output.scriptPubKey));
 				}
 			}
 		}
@@ -162,26 +167,26 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 	let total = 0;
 	for (let i = 0; i < n; i++) {
 		hashes.set(unknownPubkeyHashes[i]!, i * 32);
-		lengths[i] = unknownEncoded[i]!.length;
-		total += unknownEncoded[i]!.length;
+		lengths[i] = unknownPubkeyEncoded[i]!.length;
+		total += unknownPubkeyEncoded[i]!.length;
 	}
 	const encoded = new Uint8Array(total);
 	let encOffset = 0;
 	for (let i = 0; i < n; i++) {
-		encoded.set(unknownEncoded[i]!, encOffset);
-		encOffset += unknownEncoded[i]!.length;
+		encoded.set(unknownPubkeyEncoded[i]!, encOffset);
+		encOffset += unknownPubkeyEncoded[i]!.length;
 	}
 	console.log(`[${NAME}] init: decode=${decodeMs}ms dedup=${ms(tDedup)}ms`);
 
 	return { hashes, encoded, lengths };
 }
 
-function process(pubkeyPointerValues: BigUint64Array): EncodedBlock[] {
+function process(pubkeyPointerBuffer: BigUint64Array): EncodedBlock[] {
 	prevOutDiskHits = 0;
 	prevOutDeferred = 0;
 
-	for (let i = 0; i < unknownPubkeyHashes.length; i++) {
-		pubkeyPointers.set(unknownPubkeyHashes[i]!, Number(pubkeyPointerValues[i]!));
+	for (let i = 0; i < unknownPubkeys.length; i++) {
+		pubkeyPointers.set(unknownPubkeys[i]!, Number(pubkeyPointerBuffer[i]!));
 	}
 
 	const encoded: EncodedBlock[] = new Array(blocks.length);
@@ -233,7 +238,7 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 	const deferred: Deferred[] = [];
 
 	const outputs = tx.outputs.map((output) => {
-		const pointer = pubkeyPointers.get(sha256(output.scriptPubKey));
+		const pointer = pubkeyPointers.get(output.scriptPubKey);
 		if (pointer === undefined || pointer === PUBKEY_PENDING) {
 			throw new Error("pubkey pointer missing after assignment — init/process desync");
 		}

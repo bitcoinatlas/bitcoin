@@ -1,6 +1,6 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { Codec, StructCodec, U32LE } from "@nomadshiba/codec";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+import { sha256d } from "~/libs/hashes/sha256d.ts";
 
 export type WireBlockHeader = Codec.InferOutput<typeof WireBlockHeader>;
 export const WireBlockHeader = new StructCodec({
@@ -11,11 +11,8 @@ export const WireBlockHeader = new StructCodec({
 	bits: U32LE,
 	nonce: U32LE,
 }).transform((value, bytes) => {
+	const transformed = value as typeof value & { hash(): Uint8Array };
 	let hash: Uint8Array | undefined;
-	return {
-		hash(): Uint8Array {
-			return hash ??= sha256(sha256(bytes));
-		},
-		...value,
-	};
+	transformed.hash = () => hash ??= sha256d(bytes);
+	return transformed;
 });
