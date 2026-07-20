@@ -20,36 +20,6 @@ const { constants } = zlib;
 
 // TODO: Probably have maximum number of inflated chunks at a time, so you can delete the oldest and stuff.
 
-const ZSTD_PARAMS = {
-	[constants.ZSTD_c_compressionLevel]: 19,
-	[constants.ZSTD_c_enableLongDistanceMatching]: 1,
-	[constants.ZSTD_c_windowLog]: 27, // maybe make it 24 later?
-	[constants.ZSTD_c_checksumFlag]: 1, // 4-byte frame checksum, cheap integrity guard
-	[constants.ZSTD_c_contentSizeFlag]: 1, // size in frame header — works on the sync path
-	// nbWorkers deliberately omitted: Deno's node:zlib zstd binding threw
-	// ERR_ZLIB_INITIALIZATION_FAILED ("Setting parameter failed") with it set —
-	// the CLI `zstd -T4` test earlier used a completely different binary; Deno's
-	// bundled libzstd likely wasn't built with ZSTD_MULTITHREAD. Compression is
-	// single-threaded per call, but the async paths run it through a streaming
-	// zstd transform on Deno's native binding, off the main thread, so they
-	// stay non-blocking. Sync inflate (readInto) blocks by design.
-} as const;
-
-// Decompression rejects the compression-side parameters above ("N is not a
-// valid zstd parameter"). It only takes decompress params — and it MUST be told
-// the window can be as large as the compressor's windowLog (27), otherwise
-// large frames fail to inflate.
-const ZSTD_DECOMPRESS_PARAMS = {
-	[constants.ZSTD_d_windowLogMax]: 27,
-} as const;
-
-type Region = {
-	size: number;
-	append(bytes: Uint8Array): void;
-	readInto(offset: number, length: number, target: Uint8Array): number;
-	readIntoAsync(offset: number, length: number, target: Uint8Array): Promise<number>;
-};
-
 export type CompressionOptions = {
 	/**
 	 * How long (ms) a chunk that was inflated back to its raw form on disk is
@@ -57,13 +27,10 @@ export type CompressionOptions = {
 	 * re-arms the timer.
 	 */
 	decompressedMaxAge: number;
-};
-
-type DiskRegionOptions = {
-	path: string;
-	maxChunkSize: number;
-	writable: boolean;
-	compression?: CompressionOptions;
+	zstd: {
+		compress: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
+		decompress: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
+	};
 };
 
 export type BlobStoreOptions = {
@@ -73,6 +40,17 @@ export type BlobStoreOptions = {
 	writable: boolean;
 	compression?: CompressionOptions;
 };
+
+async function deleteTmpFiles(root: string): Promise<void> {
+	for await (const entry of Deno.readDir(root)) {
+		const path = join(root, entry.name);
+		if (entry.isDirectory) {
+			await deleteTmpFiles(path);
+		} else if (entry.isFile && entry.name.endsWith(".tmp")) {
+			await Deno.remove(path);
+		}
+	}
+}
 
 export class BlobStore extends StoreAppendOnly implements Disposable {
 	public readonly path: string;
@@ -87,8 +65,9 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 		this.rocksdb = options.rocksdb;
 	}
 
-	static open(options: BlobStoreOptions): BlobStore {
+	static async open(options: BlobStoreOptions): Promise<BlobStore> {
 		const { path, maxChunkSize, writable, compression } = options;
+		await deleteTmpFiles(path);
 		const store = new BlobStore(DiskRegion.open({ path, maxChunkSize, writable, compression }), options);
 		return store;
 	}
@@ -155,11 +134,20 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 	}
 }
 
-class DiskRegion implements Region, Disposable {
+type DiskRegionOptions = {
+	path: string;
+	maxChunkSize: number;
+	writable: boolean;
+	compression?: CompressionOptions;
+};
+
+class DiskRegion implements Disposable {
 	public readonly path: string;
 	public readonly maxChunkSize: number;
 	private readonly writable: boolean;
 	private readonly compression: CompressionOptions | undefined;
+	private readonly zstdCompressOptions: Record<number, number>;
+	private readonly zstdDecompressOptions: Record<number, number>;
 
 	public size: number;
 	chunkPathCache: string[] = [];
@@ -190,6 +178,19 @@ class DiskRegion implements Region, Disposable {
 		this.maxChunkSize = options.maxChunkSize;
 		this.writable = options.writable;
 		this.compression = options.compression;
+		if (options.compression) {
+			this.zstdCompressOptions = Object.fromEntries(
+				(Object.entries(options.compression.zstd.compress) as [keyof CompressionOptions["zstd"]["compress"], number][])
+					.map(([key, value]) => [constants[`ZSTD_c_${key}`], value] as const),
+			);
+			this.zstdDecompressOptions = Object.fromEntries(
+				(Object.entries(options.compression.zstd.compress) as [keyof CompressionOptions["zstd"]["decompress"], number][])
+					.map(([key, value]) => [constants[`ZSTD_d_${key}`], value] as const),
+			);
+		} else {
+			this.zstdCompressOptions = {};
+			this.zstdDecompressOptions = {};
+		}
 		this.size = 0;
 	}
 
@@ -413,7 +414,7 @@ class DiskRegion implements Region, Disposable {
 			console.log(`[compress] inflating chunk ${index} (sync)`);
 			const started = performance.now();
 			const compressed = Deno.readFileSync(this.chunkPathZst(index));
-			const raw = zlib.zstdDecompressSync(compressed, { params: ZSTD_DECOMPRESS_PARAMS });
+			const raw = zlib.zstdDecompressSync(compressed, { params: this.zstdDecompressOptions });
 			const tmpPath = this.chunkPathRawTmp(index);
 			Deno.writeFileSync(tmpPath, raw);
 			Deno.renameSync(tmpPath, this.chunkPath(index)); // atomic swap-in
@@ -449,7 +450,7 @@ class DiskRegion implements Region, Disposable {
 				// Stream .zst -> zstd inflate transform -> raw tmp file. Bounded
 				// peak memory; runs off the main thread; never blocks the loop.
 				const source = createReadStream(this.chunkPathZst(index));
-				const transform = zlib.createZstdDecompress({ params: ZSTD_DECOMPRESS_PARAMS });
+				const transform = zlib.createZstdDecompress({ params: this.zstdDecompressOptions });
 				const sink = createWriteStream(tmpPath);
 				await pipeline(source, transform, sink);
 				await Deno.rename(tmpPath, this.chunkPath(index)); // atomic swap-in
@@ -693,7 +694,7 @@ class DiskRegion implements Region, Disposable {
 
 		// The worker streams raw -> zstd -> tmp on its own OS thread; nothing large
 		// crosses the isolate boundary and the main event loop stays free.
-		const zstSize = await pool.compress(index, rawPath, tmpPath, ZSTD_PARAMS);
+		const zstSize = await pool.compress(index, rawPath, tmpPath, this.zstdCompressOptions);
 
 		if (this.disposed) {
 			// Pool was torn down while this job ran; don't mutate reader state on a

@@ -9,7 +9,7 @@ import { GB, GiB, MiB, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR, PARALLELISM } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
-import { BlobStore } from "~/libs/storage/BlobStore.ts";
+import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
 import { KvStore } from "~/libs/storage/KvStore.ts";
 
 // TODO: Later blockCacheSize can be calculated by device memory and core count and etc. idk
@@ -27,35 +27,49 @@ const ROCKS_OPTIONS: RocksDatabaseOptions = {
 	ribbonFilter: true,
 };
 
+const COMPRESSION_OPTIONS: CompressionOptions = {
+	decompressedMaxAge: 5 * MINUTE,
+	zstd: {
+		compress: {
+			compressionLevel: 19,
+			enableLongDistanceMatching: 1,
+			windowLog: 27, // maybe make it 24 later?
+			checksumFlag: 1, // 4-byte frame checksum, cheap integrity guard
+			contentSizeFlag: 1, // size in frame header — works on the sync path
+		},
+		decompress: {
+			windowLogMax: 27,
+		},
+	},
+};
+
 const rocksdb = RocksDatabase.open(ROCKS_PATH, ROCKS_OPTIONS);
 
 export const atomic = Atomic.open({
 	rocksdb,
 	stores: {
-		headers: ArrayStore.open({
+		headers: await ArrayStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "headers" }),
 			path: join(BASE_DATA_DIR, "headers"),
 			codec: StoredBlockHeader,
 			itemsPerChunk: 1_000_000,
 			writable: self.name === "chain",
 		}),
-		blocks: ArrayStore.open({
+		blocks: await ArrayStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "blocks" }),
 			path: join(BASE_DATA_DIR, "blocks"),
 			codec: StoredTxPointer,
 			itemsPerChunk: 1_000_000,
 			writable: self.name === "chain",
 		}),
-		txs: BlobStore.open({
+		txs: await BlobStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txs" }),
 			path: join(BASE_DATA_DIR, "txs"),
 			maxChunkSize: 1 * GB,
 			writable: self.name === "chain",
-			compression: {
-				decompressedMaxAge: 5 * MINUTE,
-			},
+			compression: COMPRESSION_OPTIONS,
 		}),
-		pubkeys: BlobStore.open({
+		pubkeys: await BlobStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkeys" }),
 			path: join(BASE_DATA_DIR, "pubkeys"),
 			maxChunkSize: 1 * GB,

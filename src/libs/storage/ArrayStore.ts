@@ -28,8 +28,8 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		this.path = options.path;
 	}
 
-	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
-		const blob = BlobStore.open({
+	static async open<T extends FixedCodec>(options: ArrayStoreOptions<T>): Promise<ArrayStore<T>> {
+		const blob = await BlobStore.open({
 			path: options.path,
 			rocksdb: options.rocksdb,
 			maxChunkSize: options.itemsPerChunk * options.codec.stride.size,
