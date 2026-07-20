@@ -5,12 +5,12 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { MAX_BLOCK_SIZE, SECOND } from "~/constants.ts";
-import { PARALLELISM } from "~/env.ts";
+import { PARALLELISM_THREADS } from "~/env.ts";
 import { readFileInto, readFileIntoSync, writeFileSync } from "~/libs/fs/mod.ts";
 import { StoreAppendOnly } from "~/libs/storage/Store.ts";
 import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
-const COMPRESS_PARALLELISM = Math.min(PARALLELISM, Math.max(8, Math.floor(PARALLELISM * .5)));
+const COMPRESS_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor(PARALLELISM_THREADS * .5)));
 
 const { constants } = zlib;
 

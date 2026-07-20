@@ -6,7 +6,7 @@ import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { GB, GiB, MiB, MINUTE } from "~/constants.ts";
-import { BASE_DATA_DIR, PARALLELISM } from "~/env.ts";
+import { BASE_DATA_DIR, PARALLELISM_THREADS } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
@@ -22,7 +22,7 @@ RocksDatabase.config({
 const ROCKS_PATH = join(BASE_DATA_DIR, "indexes");
 const ROCKS_OPTIONS: RocksDatabaseOptions = {
 	disableWAL: true,
-	parallelismThreads: PARALLELISM,
+	parallelismThreads: PARALLELISM_THREADS,
 	bloomBitsPerKey: 10,
 	ribbonFilter: true,
 };

@@ -9,4 +9,4 @@ await Deno.mkdir(BASE_DATA_DIR, { recursive: true });
 
 // TODO: Later keep this inside the workers, tell it to workers while initilizing them.
 // this way we can terminate workers and restart them when settings changed.
-export const PARALLELISM = navigator.hardwareConcurrency;
+export const PARALLELISM_THREADS = navigator.hardwareConcurrency;

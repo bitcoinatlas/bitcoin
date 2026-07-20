@@ -14,7 +14,7 @@ import { Queue } from "~/libs/collections/Queue.ts";
 import { Uint8ArrayMap } from "~/libs/collections/Uint8ArrayMap.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
-import { PARALLELISM } from "~/env.ts";
+import { PARALLELISM_THREADS } from "~/env.ts";
 
 /**
  * One block as emitted by consume.worker's `process` stage: encoded StoredTxs
@@ -94,7 +94,7 @@ export class ChainStore {
 			this.blockHashToHeightMap.set(initialHeaders[i]!.hash(), i);
 		}
 
-		this.consumers = new Array(PARALLELISM);
+		this.consumers = new Array(PARALLELISM_THREADS);
 		this.batchSize = this.consumers.length;
 		this.chunkQueue = new Queue(256);
 		this.consumersReady = Promise.withResolvers<void>();
