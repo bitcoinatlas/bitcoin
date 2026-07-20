@@ -69,6 +69,11 @@ export const atomic = Atomic.open({
 			writable: self.name === "chain",
 			compression: COMPRESSION_OPTIONS,
 		}),
+		txid: KvStore.open({
+			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txid" }),
+			key: Bytes32,
+			value: StoredTxPointer,
+		}),
 		pubkeys: await BlobStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkeys" }),
 			path: join(BASE_DATA_DIR, "pubkeys"),
@@ -78,13 +83,7 @@ export const atomic = Atomic.open({
 		pubkey: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkey" }),
 			key: Bytes32,
-			// TODO: value might also include HEAD and TAIL of the linked list of outputs or something
-			value: StoredPubkeyPointer,
-		}),
-		txid: KvStore.open({
-			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txid" }),
-			key: Bytes32,
-			value: StoredTxPointer,
+			value: StoredPubkeyPointer, // TODO: value might also include HEAD and TAIL of the linked list of outputs or something
 		}),
 		spenders: KvStore.open({
 			rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "spenders" }),
