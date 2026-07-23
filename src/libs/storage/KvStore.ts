@@ -70,7 +70,7 @@ export class KvStore<K extends Codec, V extends Codec> extends Store {
 		const encoded: [Uint8Array, Uint8Array][] = new Array(n);
 		for (let i = 0; i < n; i++) {
 			const [key, value] = entries[i]!;
-			encoded[i] = [this.value.encode(key), this.value.encode(value)];
+			encoded[i] = [this.key.encode(key), this.value.encode(value)];
 		}
 
 		this.rocksdb.putManySync(encoded, { transaction });
