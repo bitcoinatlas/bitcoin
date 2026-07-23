@@ -1,0 +1,68 @@
+<svg width="512" height="512" viewBox="166 166 180 180" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="42%" r="75%">
+      <stop offset="0%" stop-color="#15110f"/>
+      <stop offset="60%" stop-color="#0c0a09"/>
+      <stop offset="100%" stop-color="#050404"/>
+    </radialGradient>
+
+    <radialGradient id="mist1" cx="50%" cy="46%" r="42%">
+      <stop offset="0%" stop-color="#ff6700" stop-opacity="0.32"/>
+      <stop offset="40%" stop-color="#ff6700" stop-opacity="0.14"/>
+      <stop offset="70%" stop-color="#ff6700" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#ff6700" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="mist2" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#ff6700" stop-opacity="0.16"/>
+      <stop offset="100%" stop-color="#ff6700" stop-opacity="0"/>
+    </radialGradient>
+
+    <filter id="blurLg" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="42"/>
+    </filter>
+    <filter id="blurMd" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
+
+    <linearGradient id="topSheen" x1="0%" y1="0%" x2="0%" y2="60%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Clip path: rounded square in the center -->
+    <clipPath id="squareClip">
+      <rect x="166" y="166" width="180" height="180" />
+    </clipPath>
+  </defs>
+
+  <!-- App icon base (iOS-style rounded square canvas) -->
+  <rect width="512" height="512" fill="url(#bg)"/>
+
+  <!-- Ambient mist layers, single hue, subtle -->
+  <circle cx="256" cy="235" r="220" fill="url(#mist1)" filter="url(#blurLg)"/>
+  <circle cx="195" cy="165" r="130" fill="url(#mist2)" filter="url(#blurLg)"/>
+  <circle cx="325" cy="320" r="140" fill="url(#mist2)" filter="url(#blurMd)" opacity="0.6"/>
+
+  <!-- Faint floating wisps -->
+  <ellipse cx="170" cy="340" rx="85" ry="46" fill="#ff6700" opacity="0.07" filter="url(#blurLg)"/>
+  <ellipse cx="340" cy="160" rx="75" ry="40" fill="#ff6700" opacity="0.06" filter="url(#blurLg)"/>
+
+  <!-- Same mist again, but clipped to a rounded square -->
+  <g clip-path="url(#squareClip)">
+    <circle cx="256" cy="235" r="220" fill="url(#mist1)" filter="url(#blurLg)"/>
+    <circle cx="195" cy="165" r="130" fill="url(#mist2)" filter="url(#blurLg)"/>
+    <circle cx="325" cy="320" r="140" fill="url(#mist2)" filter="url(#blurMd)" opacity="0.6"/>
+    <ellipse cx="170" cy="340" rx="85" ry="46" fill="#ff6700" opacity="0.07" filter="url(#blurLg)"/>
+    <ellipse cx="340" cy="160" rx="75" ry="40" fill="#ff6700" opacity="0.06" filter="url(#blurLg)"/>
+  </g>
+
+  <!-- Bitcoin logo cutout, filled with background color -->
+  <!-- glyph spans roughly x:14-30, y:11-32 (center ~22,21.5); translate to center on 256,256 at scale 2.6 -->
+  <g transform="translate(256 256) scale(5.2) translate(-21.87 -20.321)" fill="#0c0a09">
+    <path d="M29.7 18.276c.328-2.19-1.339-3.367-3.618-4.152l.74-2.967-1.806-.45-.72 2.888c-.475-.118-.962-.23-1.447-.34l.725-2.906-1.805-.45-.74 2.966c-.392-.09-.778-.178-1.152-.27l.002-.01-2.49-.622-.48 1.93s1.34.307 1.312.326c.731.183.864.667.842 1.05l-.843 3.38c.05.013.116.031.188.06l-.19-.048-1.182 4.737c-.09.222-.316.555-.827.428.018.026-1.313-.328-1.313-.328l-.897 2.067 2.35.586c.437.11.865.225 1.287.333l-.747 3.001 1.804.45.74-2.969c.493.134.971.257 1.439.374l-.737 2.953 1.806.45.747-2.995c3.08.583 5.396.348 6.37-2.437.786-2.243-.039-3.537-1.66-4.38 1.18-.272 2.07-1.049 2.307-2.651zm-4.128 5.787c-.558 2.243-4.336 1.03-5.56.727l.992-3.977c1.225.306 5.151.91 4.568 3.25zm.559-5.82c-.51 2.04-3.655.999-4.675.745l.9-3.607c1.02.254 4.307.729 3.775 2.862z"/>
+  </g>
+
+  <!-- top sheen for glass/iOS feel -->
+  <rect width="512" height="512" fill="url(#topSheen)" opacity="0.4"/>
+</svg>

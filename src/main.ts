@@ -1,15 +1,18 @@
-import { atomic } from "~/chain/atomic.ts";
 import { ARGS } from "~/env.ts";
+import { chainStorage } from "~/chain/ChainStorage.ts";
 
 if (import.meta.main) {
-	Deno.addSignalListener("SIGINT", () => Deno.exit(0));
+	Deno.addSignalListener("SIGINT", () => {
+		// Dont wait for workers, dont wait for event loop, we can recover from anything, just destory that shit
+		Deno.kill(Deno.pid, "SIGKILL");
+	});
 
-	atomic.recover();
+	chainStorage.atomic.recover();
 	const p2pWorker = new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" });
-	const chainWorker = new Worker(new URL("./chain/chain.worker.ts", import.meta.url), { type: "module", name: "chain" });
+	const chainWorker = new Worker(new URL("./chain/worker.ts", import.meta.url), { type: "module", name: "chain" });
 
 	const syncMessageChannel = new MessageChannel();
-	Promise.all([
+	await Promise.all([
 		new Promise((resolve) => chainWorker.addEventListener("message", resolve, { once: true })),
 		new Promise((resolve) => p2pWorker.addEventListener("message", resolve, { once: true })),
 	]).then(() => {
@@ -17,8 +20,8 @@ if (import.meta.main) {
 		chainWorker.postMessage(null, [syncMessageChannel.port2]);
 	});
 
-	// registerEndpoints(chainStore);
-	// serve(58333);
+	const serverWorker = new Worker(new URL("./app/app.worker.ts", import.meta.url), { type: "module", name: "server" });
+	await new Promise((resolve) => serverWorker.addEventListener("message", resolve, { once: true }));
 
 	if (!ARGS.background) {
 		new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "gui" });

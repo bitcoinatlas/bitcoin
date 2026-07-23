@@ -1,3 +1,34 @@
+## 4
+
+In my previous design i didnt have this many indexes. Indexes are taking way too much space.
+
+Either find a way to optimize it later, or try to redesign storage so we use rocksdb less for indexes.
+
+Try to be smarter maybe.
+
+But not now, we dont wanna resync rn. lets first clean this up, and work on frontend and stuff.
+
+Then redesign it and resync.
+
+---
+
+in the future maybe we can have something like relay all txs (that fits to my policy) vs have a virtual block template, and only relay txs
+in side your block template as if you are sharing your block. so if it doesnt fit in your block template dont relay it. then for example you
+can give priority to older outputs, or consilations etc in your block template. so you only relay what fits in that.
+
+this would both save badnwidth and also reduce chances of some txs to reach a miner.
+
+dont remove txs from your block template as soon as you find something better, have a few seconds grace period.
+
+in your block template and relaying, try to maximize optimization of your own chain size, and processing needs. because once it becomes a
+block you have to store it.
+
+---
+
+also later down the line when we add nostr support, we can have things like "let the people i follow discover me and connect to my node" or
+"let these npub connect to me etc" so the nodes we are connect to are not just coming from dns seeds and random only. but part of a social
+graph as well.
+
 ## 3
 
 ok so its working fast now. so few things. we need to index spenders, we are not doing that rn.

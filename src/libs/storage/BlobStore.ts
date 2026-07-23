@@ -12,13 +12,21 @@ import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
 const COMPRESS_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor(PARALLELISM_THREADS * .5)));
 
+const MiB = 1024 * 1024;
+
+// node:zlib streams default to 64 KiB reads and 16 KiB output chunks — for a
+// ~1 GiB chunk that's ~65k transform chunks, each one bounced through the
+// event loop with its own callback/promise machinery. 8 MiB buffers cut that
+// to ~130 hops while keeping peak memory bounded (a few in-flight buffers).
+const INFLATE_STREAM_BUFFER_SIZE = 8 * MiB;
+
+// The one-shot sync decode allocates an internal output buffer per chunkSize
+// and Buffer.concat()s them at the end. The concat memcpy costs the same
+// regardless of chunk count, but the allocation + list bookkeeping doesn't —
+// bigger chunks mean fewer of both. (Default is tiny.)
+const INFLATE_SYNC_CHUNK_SIZE = 64 * MiB;
+
 const { constants } = zlib;
-
-// TODO: Later keep these options inside the compression options.
-// And also decide these based on a max memory usage, similar to p2p worker limits.
-// Probably later have a main config.ts file where you calcualte everything. based on core count and devices memory.
-
-// TODO: Probably have maximum number of inflated chunks at a time, so you can delete the oldest and stuff.
 
 export type CompressionOptions = {
 	/**
@@ -26,7 +34,15 @@ export type CompressionOptions = {
 	 * kept before it's deleted again (reverting to compressed-only). Each read
 	 * re-arms the timer.
 	 */
-	decompressedMaxAge: number;
+	maxInflatedChunkAge: number;
+	/**
+	 * Hard cap on how many chunks may be inflated (raw on disk) at once. When a
+	 * new inflate would push past it, the least-recently-read inflated chunk is
+	 * reverted to compressed-only first (LRU). Set it >= the number of chunks a
+	 * single read can straddle (2 in practice) so a read never evicts a chunk
+	 * it's still walking.
+	 */
+	maxInflatedChunks: number;
 	zstd: {
 		compress: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
 		decompress: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
@@ -41,13 +57,42 @@ export type BlobStoreOptions = {
 	compression?: CompressionOptions;
 };
 
-async function deleteTmpFiles(root: string): Promise<void> {
-	for await (const entry of Deno.readDir(root)) {
+/** Remove a file, treating "already gone" as success. */
+function removeIfExistsSync(path: string): void {
+	try {
+		Deno.removeSync(path);
+	} catch (e) {
+		if (!(e instanceof Deno.errors.NotFound)) throw e;
+	}
+}
+
+function existsSync(path: string): boolean {
+	try {
+		Deno.statSync(path);
+		return true;
+	} catch (e) {
+		if (e instanceof Deno.errors.NotFound) return false;
+		throw e;
+	}
+}
+
+/** Map `{ compressionLevel: 19, ... }` -> `{ [ZSTD_c_compressionLevel]: 19 }`. */
+function mapZstdParams(params: Record<string, number | undefined>, prefix: "ZSTD_c_" | "ZSTD_d_"): Record<number, number> {
+	const out: Record<number, number> = {};
+	for (const [key, value] of Object.entries(params)) {
+		if (value === undefined) continue;
+		out[(constants as Record<string, number>)[`${prefix}${key}`]!] = value;
+	}
+	return out;
+}
+
+function deleteTmpFiles(root: string): void {
+	for (const entry of Deno.readDirSync(root)) {
 		const path = join(root, entry.name);
 		if (entry.isDirectory) {
-			await deleteTmpFiles(path);
+			deleteTmpFiles(path);
 		} else if (entry.isFile && entry.name.endsWith(".tmp")) {
-			await Deno.remove(path);
+			Deno.removeSync(path);
 		}
 	}
 }
@@ -65,11 +110,10 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 		this.rocksdb = options.rocksdb;
 	}
 
-	static async open(options: BlobStoreOptions): Promise<BlobStore> {
+	static open(options: BlobStoreOptions): BlobStore {
 		const { path, maxChunkSize, writable, compression } = options;
-		await deleteTmpFiles(path);
-		const store = new BlobStore(DiskRegion.open({ path, maxChunkSize, writable, compression }), options);
-		return store;
+		deleteTmpFiles(path);
+		return new BlobStore(DiskRegion.open({ path, maxChunkSize, writable, compression }), options);
 	}
 
 	get<T extends Codec<any>>(pointer: number, codec: T, options?: { readAheadSize?: number }): Codec.InferOutput<T> {
@@ -92,17 +136,29 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 		return decoded;
 	}
 
-	append(data: Uint8Array) {
+	append(data: Uint8Array): number {
 		const offset = this.size();
 		this.disk.append(data);
 		return offset;
 	}
 
-	size() {
+	size(): number {
 		return this.disk.size;
 	}
 
-	private rollbackFile: Deno.FsFile | undefined;
+	/**
+	 * Reader-only: advance the visible size to the latest committed pin
+	 * (`rollback.size`). A long-lived reader opened early in IBD sees ~nothing;
+	 * calling this before a read reveals everything the writer has pinned since.
+	 * `rollback.size` is monotonic and only ever names synced+committed bytes, so
+	 * a reader bounded to it never observes provisional (rollback-able) data.
+	 * No-op on the writable opener, which owns `size` directly via append().
+	 */
+	refresh(): void {
+		const bytes = this.rocksdb.getSync("rollback.size") as Uint8Array | undefined;
+		this.disk.reveal(bytes ? Number(U64.decode(bytes)[0]) : 0);
+	}
+
 	pin(transaction?: Transaction): void {
 		this.disk.sync();
 		this.rocksdb.putSync("rollback.size", U64.encode(this.disk.size), { transaction });
@@ -110,14 +166,7 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 
 	rollback(transaction?: Transaction): void {
 		const bytes = this.rocksdb.getSync("rollback.size", { transaction }) as Uint8Array | undefined;
-		let size: number;
-		if (bytes) {
-			const [decoded] = U64.decode(bytes);
-			size = Number(decoded);
-		} else {
-			size = 0;
-		}
-		this.truncate(size);
+		this.truncate(bytes ? Number(U64.decode(bytes)[0]) : 0);
 	}
 
 	truncate(size: number): void {
@@ -126,7 +175,6 @@ export class BlobStore extends StoreAppendOnly implements Disposable {
 
 	close(): void {
 		this.disk.close();
-		this.rollbackFile?.close();
 	}
 
 	[Symbol.dispose](): void {
@@ -148,9 +196,15 @@ class DiskRegion implements Disposable {
 	private readonly compression: CompressionOptions | undefined;
 	private readonly zstdCompressOptions: Record<number, number>;
 	private readonly zstdDecompressOptions: Record<number, number>;
+	// Prebuilt option objects for the two decode paths — same params, different
+	// buffer strategies. See the INFLATE_* constants at the top.
+	private readonly zstdDecompressSyncOptions: zlib.ZstdOptions;
+	private readonly zstdDecompressStreamOptions: zlib.ZstdOptions;
 
 	public size: number;
-	chunkPathCache: string[] = [];
+
+	// --- chunk paths ----------------------------------------------------------
+	private chunkPathCache: string[] = [];
 	private chunkPath(index: number) {
 		return this.chunkPathCache[index] ??= join(this.path, `chunk_${index}`);
 	}
@@ -178,18 +232,21 @@ class DiskRegion implements Disposable {
 		this.maxChunkSize = options.maxChunkSize;
 		this.writable = options.writable;
 		this.compression = options.compression;
-		if (options.compression) {
-			this.zstdCompressOptions = Object.fromEntries(
-				(Object.entries(options.compression.zstd.compress) as [keyof CompressionOptions["zstd"]["compress"], number][])
-					.map(([key, value]) => [constants[`ZSTD_c_${key}`], value] as const),
-			);
-			this.zstdDecompressOptions = Object.fromEntries(
-				(Object.entries(options.compression.zstd.compress) as [keyof CompressionOptions["zstd"]["decompress"], number][])
-					.map(([key, value]) => [constants[`ZSTD_d_${key}`], value] as const),
-			);
-		} else {
-			this.zstdCompressOptions = {};
-			this.zstdDecompressOptions = {};
+		this.zstdCompressOptions = options.compression ? mapZstdParams(options.compression.zstd.compress, "ZSTD_c_") : {};
+		this.zstdDecompressOptions = options.compression ? mapZstdParams(options.compression.zstd.decompress, "ZSTD_d_") : {};
+		this.zstdDecompressSyncOptions = {
+			chunkSize: INFLATE_SYNC_CHUNK_SIZE,
+			// Sealed raw chunks are exactly maxChunkSize — a hard output bound is
+			// free corruption detection on top of the frame checksum.
+			maxOutputLength: options.maxChunkSize,
+			params: this.zstdDecompressOptions,
+		};
+		this.zstdDecompressStreamOptions = {
+			chunkSize: INFLATE_STREAM_BUFFER_SIZE,
+			params: this.zstdDecompressOptions,
+		};
+		if (options.compression && options.compression.maxInflatedChunks < 1) {
+			throw new Error("compression.maxInflatedChunks must be >= 1");
 		}
 		this.size = 0;
 	}
@@ -198,11 +255,9 @@ class DiskRegion implements Disposable {
 		const self = new DiskRegion(options);
 		Deno.mkdirSync(self.path, { recursive: true });
 
-		const files = Deno.readDirSync(self.path);
-
 		let tailIndex = 0;
 		const indexSet = new Set<number>([0]);
-		for (const file of files) {
+		for (const file of Deno.readDirSync(self.path)) {
 			if (!file.isFile) continue;
 			if (!file.name.startsWith("chunk_")) continue;
 			if (file.name.endsWith(".tmp")) continue; // stray leftover from a crashed compression pass
@@ -215,27 +270,29 @@ class DiskRegion implements Disposable {
 		}
 
 		for (let index = 0; index < tailIndex; index++) {
-			const exist = indexSet.has(index);
-			if (!exist) {
-				throw new Error("bro your chunks are fucked, has some gaps and stuff");
+			if (!indexSet.has(index)) throw new Error("bro your chunks are fucked, has some gaps and stuff");
+
+			const hasZst = existsSync(self.chunkPathZst(index));
+			const hasRaw = existsSync(self.chunkPath(index));
+
+			// Startup eviction: a SEALED chunk present as both raw and compressed is
+			// a leftover inflation from before a restart — revert it to compressed-
+			// only so inflated chunks don't survive restarts and leak disk.
+			if (hasZst && hasRaw) {
+				self.revertToCompressed(index);
+				continue;
 			}
-			// A sealed chunk may now be raw (chunk_N) OR compressed (chunk_N.zst).
-			// Only size-check the raw form — a compressed chunk's on-disk size is
-			// expected to differ from maxChunkSize, that's the whole point of it.
-			try {
-				const chunkStat = Deno.statSync(self.chunkPath(index));
-				if (chunkStat.size !== self.maxChunkSize) {
-					throw new Error(`chunk ${index} has a weird size size=${chunkStat.size}`);
-				}
-			} catch (e) {
-				if (!(e instanceof Deno.errors.NotFound)) throw e;
-				try {
-					Deno.statSync(self.chunkPathZst(index));
-				} catch {
-					throw new Error(`chunk ${index} is missing both raw and compressed forms`);
-				}
+			// Raw-only sealed chunk must be exactly maxChunkSize; a compressed
+			// chunk's on-disk size is expected to differ, that's the whole point.
+			if (hasRaw) {
+				const size = Deno.statSync(self.chunkPath(index)).size;
+				if (size !== self.maxChunkSize) throw new Error(`chunk ${index} has a weird size size=${size}`);
+				continue;
 			}
+			if (!hasZst) throw new Error(`chunk ${index} is missing both raw and compressed forms`);
 		}
+
+		// The tail is always raw (compression never touches the active chunk).
 		let tailChunkSize = 0;
 		try {
 			const tailChunkStat = Deno.statSync(self.chunkPath(tailIndex));
@@ -281,7 +338,7 @@ class DiskRegion implements Disposable {
 			// Only the single writable opener runs compression — it deletes and
 			// rewrites chunk files, which is a write. Readers never touch it.
 			// Fire-and-forget: runs for the process lifetime, stopped via `disposed` in close().
-			self.runCompressionLoop(self.compression).catch((e) => {
+			self.runCompressionLoop().catch((e) => {
 				console.error("[compress] background loop died:", e);
 			});
 		}
@@ -325,6 +382,18 @@ class DiskRegion implements Disposable {
 		this.appender.file.syncSync();
 	}
 
+	/**
+	 * Reader-only: set the visible size to `size` (the committed pin). Writers own
+	 * `size` through append() and must not have it moved out from under them, so
+	 * this is a no-op when writable. `size` is the authoritative bound for a
+	 * reader — chunk files for the newly-revealed region are opened lazily by
+	 * getRawReader on first read.
+	 */
+	reveal(size: number): void {
+		if (this.writable) return;
+		this.size = size;
+	}
+
 	// --- raw chunk readers ---------------------------------------------------
 	// undefined = never probed / needs re-probe. null = probed, raw file absent
 	// (chunk is compressed and not yet inflated). A live fd = raw file present.
@@ -355,39 +424,67 @@ class DiskRegion implements Disposable {
 	// file through the normal raw-reader path. The transient decompressed buffer
 	// is written straight out and dropped — nothing is cached in RAM.
 	//
-	// When compression is enabled we arm a TTL timer per inflated chunk; when it
-	// fires we delete the raw file again (the .zst stays, so it re-inflates on
-	// the next read). When compression is disabled, inflating is one-way: the
-	// .zst is deleted and the raw file is permanent (no timer).
+	// `inflatedTimers` is the set of currently-inflated compressible chunks, and
+	// doubles as an LRU order: JS Maps keep insertion order, so we delete+re-set
+	// a key on touch to move it to the tail (MRU); the head is the LRU victim.
+	// Bounded two ways — a per-chunk TTL (decompressedMaxAge) and a hard count
+	// cap (maxInflatedChunks). Eviction deletes the raw file (the .zst stays, so
+	// it re-inflates on the next read). With compression disabled, inflating is
+	// one-way: the .zst is deleted and the raw file is permanent (no tracking).
 	private inflatedTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
-	private armInflatedEviction(index: number) {
-		if (!this.compression) return; // one-way inflate; nothing to evict
+	/** Mark `index` as freshly read: move it to MRU, (re)arm its TTL, cap count. */
+	private touchInflated(index: number): void {
+		if (!this.compression) return; // one-way inflate; nothing to track/evict
 		const existing = this.inflatedTimers.get(index);
-		if (existing) clearTimeout(existing);
+		if (existing !== undefined) {
+			clearTimeout(existing);
+			this.inflatedTimers.delete(index); // re-inserted below at the MRU tail
+		} else {
+			this.evictToCapacity(index); // new entry — make room first
+		}
 		const timer = setTimeout(() => {
 			this.inflatedTimers.delete(index);
 			this.evictInflatedChunk(index);
-		}, this.compression.decompressedMaxAge);
+		}, this.compression.maxInflatedChunkAge);
 		this.inflatedTimers.set(index, timer);
 	}
 
-	// Delete the raw form of a chunk that still has a .zst, reverting it to
-	// compressed-only. Safe to call even if the raw file is already gone.
-	private evictInflatedChunk(index: number) {
-		// Only evict if a compressed form actually exists to fall back to.
-		try {
-			Deno.statSync(this.chunkPathZst(index));
-		} catch {
-			return; // no .zst — this is a live raw chunk, don't touch it
+	/** Evict least-recently-read inflated chunks until a new one fits under the cap. */
+	private evictToCapacity(incoming: number): void {
+		const max = this.compression!.maxInflatedChunks;
+		while (this.inflatedTimers.size >= max) {
+			// LRU victim = first key, skipping the incoming chunk and any chunk with
+			// an inflate still in flight. If nothing is safe to drop, allow a
+			// temporary overshoot rather than spin.
+			let victim: number | undefined;
+			for (const key of this.inflatedTimers.keys()) {
+				if (key === incoming || this.inflatingInFlight.has(key)) continue;
+				victim = key;
+				break;
+			}
+			if (victim === undefined) break;
+			clearTimeout(this.inflatedTimers.get(victim)!);
+			this.inflatedTimers.delete(victim);
+			this.evictInflatedChunk(victim);
 		}
+	}
+
+	// Revert a chunk to compressed-only: drop its raw form + inflate leftovers,
+	// keeping the .zst. Safe if the raw form is already gone.
+	private revertToCompressed(index: number): void {
+		removeIfExistsSync(this.chunkPath(index));
+		removeIfExistsSync(this.chunkPathRawTmp(index));
+		removeIfExistsSync(this.chunkPathInflateLock(index));
+	}
+
+	// Runtime eviction of an inflated chunk: only if a .zst exists to fall back
+	// to, then detach the reader before deleting the raw file.
+	private evictInflatedChunk(index: number): void {
+		if (!existsSync(this.chunkPathZst(index))) return; // live raw chunk, don't touch
 		this.closeRawReader(index);
 		this.readers[index] = null;
-		try {
-			Deno.removeSync(this.chunkPath(index));
-		} catch (e) {
-			if (!(e instanceof Deno.errors.NotFound)) throw e;
-		}
+		this.revertToCompressed(index);
 	}
 
 	// If two concurrent async reads miss for the same chunk, the second one
@@ -403,8 +500,7 @@ class DiskRegion implements Disposable {
 	private inflateChunkSync(index: number): void {
 		if (this.getRawReader(index)) return; // already raw, nothing to do
 
-		const lockPath = this.chunkPathInflateLock(index);
-		const lock = Deno.openSync(lockPath, { create: true, write: true, read: true });
+		const lock = Deno.openSync(this.chunkPathInflateLock(index), { create: true, write: true, read: true });
 		try {
 			lock.lockSync(true); // blocks until the other inflater releases
 			// Re-probe: another holder may have inflated it while we waited.
@@ -414,12 +510,17 @@ class DiskRegion implements Disposable {
 			console.log(`[compress] inflating chunk ${index} (sync)`);
 			const started = performance.now();
 			const compressed = Deno.readFileSync(this.chunkPathZst(index));
-			const raw = zlib.zstdDecompressSync(compressed, { params: this.zstdDecompressOptions });
+			const readMs = performance.now() - started;
+			const raw = zlib.zstdDecompressSync(compressed, this.zstdDecompressSyncOptions);
+			const decodeMs = performance.now() - started - readMs;
 			const tmpPath = this.chunkPathRawTmp(index);
 			Deno.writeFileSync(tmpPath, raw);
 			Deno.renameSync(tmpPath, this.chunkPath(index)); // atomic swap-in
-			const ms = (performance.now() - started).toFixed(0);
-			console.log(`[compress] chunk ${index} inflated, ${raw.byteLength} bytes on disk ${ms}ms`);
+			const writeMs = performance.now() - started - readMs - decodeMs;
+			console.log(
+				`[compress] chunk ${index} inflated, ${raw.byteLength} bytes on disk ` +
+					`(read ${readMs.toFixed(0)}ms, decode ${decodeMs.toFixed(0)}ms, write ${writeMs.toFixed(0)}ms)`,
+			);
 
 			this.readers[index] = undefined; // force re-open of the new raw file
 			this.afterInflate(index);
@@ -438,23 +539,28 @@ class DiskRegion implements Disposable {
 		if (inFlight) return inFlight;
 
 		const promise = (async () => {
-			const lockPath = this.chunkPathInflateLock(index);
-			const lock = Deno.openSync(lockPath, { create: true, write: true, read: true });
+			const lock = Deno.openSync(this.chunkPathInflateLock(index), { create: true, write: true, read: true });
 			try {
 				await lock.lock(true); // blocks until the other inflater releases
 				this.readers[index] = undefined;
 				if (this.getRawReader(index)) return;
 
 				console.log(`[compress] inflating chunk ${index} (async, streaming)`);
+				const started = performance.now();
 				const tmpPath = this.chunkPathRawTmp(index);
-				// Stream .zst -> zstd inflate transform -> raw tmp file. Bounded
-				// peak memory; runs off the main thread; never blocks the loop.
-				const source = createReadStream(this.chunkPathZst(index));
-				const transform = zlib.createZstdDecompress({ params: this.zstdDecompressOptions });
-				const sink = createWriteStream(tmpPath);
+				// Stream .zst -> zstd inflate transform -> raw tmp file. Bounded peak
+				// memory (a handful of 8 MiB buffers in flight, never the whole
+				// chunk). The decode itself runs on the libuv threadpool, but every
+				// output chunk hops back through the event loop to reach the sink —
+				// which is why the buffer sizes matter: at the 16 KiB default this
+				// was ~65k hops per chunk, at 8 MiB it's ~130.
+				const source = createReadStream(this.chunkPathZst(index), { highWaterMark: INFLATE_STREAM_BUFFER_SIZE });
+				const transform = zlib.createZstdDecompress(this.zstdDecompressStreamOptions);
+				const sink = createWriteStream(tmpPath, { highWaterMark: INFLATE_STREAM_BUFFER_SIZE });
 				await pipeline(source, transform, sink);
 				await Deno.rename(tmpPath, this.chunkPath(index)); // atomic swap-in
-				console.log(`[compress] chunk ${index} inflated on disk`);
+				const ms = (performance.now() - started).toFixed(0);
+				console.log(`[compress] chunk ${index} inflated on disk ${ms}ms`);
 
 				this.readers[index] = undefined;
 				this.afterInflate(index);
@@ -474,17 +580,13 @@ class DiskRegion implements Disposable {
 	}
 
 	// Post-inflate bookkeeping shared by the sync and async paths.
-	private afterInflate(index: number) {
+	private afterInflate(index: number): void {
 		if (this.compression) {
-			// Keep the .zst; schedule the raw file for deletion after the TTL.
-			this.armInflatedEviction(index);
+			// Track it: arm the TTL and enforce the count cap (may evict an older one).
+			this.touchInflated(index);
 		} else {
 			// One-way inflate: the raw file is now the source of truth, drop .zst.
-			try {
-				Deno.removeSync(this.chunkPathZst(index));
-			} catch (e) {
-				if (!(e instanceof Deno.errors.NotFound)) throw e;
-			}
+			removeIfExistsSync(this.chunkPathZst(index));
 		}
 	}
 
@@ -508,9 +610,9 @@ class DiskRegion implements Disposable {
 				this.inflateChunkSync(index);
 				reader = this.getRawReader(index);
 				if (!reader) throw new Error(`chunk ${index} vanished after inflate`);
-			} else {
+			} else if (this.compression && this.inflatedTimers.has(index)) {
 				// Touched a raw-but-compressible chunk — push its eviction back.
-				if (this.compression && this.inflatedTimers.has(index)) this.armInflatedEviction(index);
+				this.touchInflated(index);
 			}
 			reader.seekSync(start, Deno.SeekMode.Start);
 			readFileIntoSync(reader, target.subarray(copied, copied + read));
@@ -541,8 +643,8 @@ class DiskRegion implements Disposable {
 				await this.inflateChunkAsync(index);
 				reader = this.getRawReader(index);
 				if (!reader) throw new Error(`chunk ${index} vanished after inflate`);
-			} else {
-				if (this.compression && this.inflatedTimers.has(index)) this.armInflatedEviction(index);
+			} else if (this.compression && this.inflatedTimers.has(index)) {
+				this.touchInflated(index);
 			}
 			// NOTE: concurrent async reads against the SAME chunk index race on
 			// this seek+read pair — fine while callers are single-flight per
@@ -556,6 +658,16 @@ class DiskRegion implements Disposable {
 		return copied;
 	}
 
+	// Remove every on-disk form of a chunk (raw, compressed, and any transient
+	// tmp/lock leftovers). Each is optional — missing forms are ignored.
+	private removeAllForms(index: number): void {
+		removeIfExistsSync(this.chunkPath(index));
+		removeIfExistsSync(this.chunkPathZst(index));
+		removeIfExistsSync(this.chunkPathZstTmp(index));
+		removeIfExistsSync(this.chunkPathRawTmp(index));
+		removeIfExistsSync(this.chunkPathInflateLock(index));
+	}
+
 	private truncating: boolean = false;
 	truncate(size: number): void {
 		if (this.appending) throw new Error("you cant truncate while appending");
@@ -567,28 +679,15 @@ class DiskRegion implements Disposable {
 		const newTail = Math.floor(size / this.maxChunkSize);
 		const tailEnd = size % this.maxChunkSize;
 
+		// close() tears down readers, timers, appender and the compression pool,
+		// so nothing below races a background pass on the chunks we're dropping.
 		this.close();
 
 		// FIX #5: delete high-to-low. If a crash happens mid-truncate, the
 		// surviving chunks are always a contiguous prefix [0..k], never a set
 		// with a gap. A gap would make DiskRegion.open throw ("chunks are
 		// fucked") and brick recovery. High-to-low guarantees no gap.
-		for (let index = oldTail; index > newTail; index--) {
-			this.removeChunkFile(this.chunkPath(index));
-			// The chunk might already have been compressed by the background pass —
-			// drop that form (and any inflate leftovers) too so nothing resurrects
-			// a stale chunk on reopen.
-			this.removeChunkFile(this.chunkPathZst(index));
-			this.removeChunkFile(this.chunkPathZstTmp(index));
-			this.removeChunkFile(this.chunkPathRawTmp(index));
-			this.removeChunkFile(this.chunkPathInflateLock(index));
-			const timer = this.inflatedTimers.get(index);
-			if (timer) {
-				clearTimeout(timer);
-				this.inflatedTimers.delete(index);
-			}
-			this.readers[index] = undefined;
-		}
+		for (let index = oldTail; index > newTail; index--) this.removeAllForms(index);
 
 		// FIX #1: when size lands exactly on a chunk boundary (tailEnd === 0),
 		// chunk `newTail` may not exist yet (it is only created when data first
@@ -615,7 +714,7 @@ class DiskRegion implements Disposable {
 	private disposed = false;
 	private compressPool: CompressWorkerPool | undefined;
 
-	private async runCompressionLoop(_options: CompressionOptions): Promise<void> {
+	private async runCompressionLoop(): Promise<void> {
 		const pool = new CompressWorkerPool(COMPRESS_PARALLELISM);
 		this.compressPool = pool;
 
@@ -631,15 +730,7 @@ class DiskRegion implements Disposable {
 
 				for (let index = 0; index < tailIndex && !this.disposed; index++) {
 					if (inFlight.has(index)) continue; // already being compressed
-
-					let alreadyDone: boolean;
-					try {
-						await Deno.stat(this.chunkPathZst(index));
-						alreadyDone = true;
-					} catch {
-						alreadyDone = false;
-					}
-					if (alreadyDone) continue;
+					if (existsSync(this.chunkPathZst(index))) continue; // already compressed
 
 					let rawStat: Deno.FileInfo;
 					try {
@@ -652,8 +743,7 @@ class DiskRegion implements Disposable {
 					// Dispatch to the pool. The pool queues internally and only runs
 					// PARALLELISM jobs at once, so we don't need to gate here — we just
 					// fire the job and track its completion for bookkeeping.
-					const rawSize = rawStat.size;
-					const promise = this.compressChunk(pool, index, rawSize)
+					const promise = this.compressChunk(pool, index, rawStat.size)
 						.catch((e) => {
 							// Don't let one failed chunk kill the loop; log and move on.
 							console.error(`[compress] chunk ${index} failed:`, e);
@@ -667,9 +757,7 @@ class DiskRegion implements Disposable {
 
 				// Drain outstanding work before the next scan so the "nothing to do"
 				// back-off decision sees an accurate picture.
-				if (inFlight.size > 0) {
-					await Promise.all(inFlight.values());
-				}
+				if (inFlight.size > 0) await Promise.all(inFlight.values());
 
 				// Nothing left to do this pass — back off before rescanning for newly sealed chunks.
 				if (!dispatchedSomething) {
@@ -717,24 +805,13 @@ class DiskRegion implements Disposable {
 		console.log(`[compress] chunk ${index} done: ${rawSize} -> ${zstSize} bytes (ratio=${ratio}, ${ms}ms)`);
 	}
 
-	private removeChunkFile(path: string) {
-		try {
-			Deno.removeSync(path);
-		} catch (e) {
-			if (!(e instanceof Deno.errors.NotFound)) throw e;
-		}
-	}
-
 	close() {
 		this.disposed = true;
 		// Tear down the compression worker pool. Idle workers terminate now; any
 		// worker mid-job terminates when it posts its result back.
 		this.compressPool?.dispose();
 		this.compressPool = undefined;
-		for (const reader of this.readers) {
-			if (!reader) continue;
-			reader.close();
-		}
+		for (const reader of this.readers) reader?.close();
 		this.readers.length = 0;
 		for (const timer of this.inflatedTimers.values()) clearTimeout(timer);
 		this.inflatedTimers.clear();

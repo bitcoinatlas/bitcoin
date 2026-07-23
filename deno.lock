@@ -278,6 +278,7 @@
   "redirects": {
     "https://esm.sh/@types/cuint@~0.2.4/index.d.ts": "https://esm.sh/@types/cuint@0.2.4/index.d.ts",
     "https://esm.sh/@types/xxhashjs@~0.2.4/index.d.ts": "https://esm.sh/@types/xxhashjs@0.2.4/index.d.ts",
+    "https://esm.sh/@ungap/custom-elements": "https://esm.sh/@ungap/custom-elements@1.3.0",
     "https://esm.sh/cuint@^0.2.2?target=denonext": "https://esm.sh/cuint@0.2.2?target=denonext",
     "https://esm.sh/xxhashjs@^0.2.2": "https://esm.sh/xxhashjs@0.2.2"
   },
@@ -291,6 +292,8 @@
     "https://deno.land/x/sqlite@v3.9.1/src/function.ts": "bc778cab7a6d771f690afa27264c524d22fcb96f1bb61959ade7922c15a4ab8d",
     "https://deno.land/x/sqlite@v3.9.1/src/query.ts": "d58abda928f6582d77bad685ecf551b1be8a15e8e38403e293ec38522e030cad",
     "https://deno.land/x/sqlite@v3.9.1/src/wasm.ts": "e79d0baa6e42423257fb3c7cc98091c54399254867e0f34a09b5bdef37bd9487",
+    "https://esm.sh/@ungap/custom-elements@1.3.0": "ac35df3d6c1ccffaa22677b3a2d413a160bb7d5919928cc9ac48f5eca1fb234d",
+    "https://esm.sh/@ungap/custom-elements@1.3.0/denonext/custom-elements.mjs": "60356758a5e42c20a5e7fee8a7981c845a6b7aa23088d5c54fb8f06b9830127a",
     "https://esm.sh/cuint@0.2.2/denonext/cuint.mjs": "6625127de736cdf41eaadcb18c9091a32e14582e58da6f20bd05491e10628de1",
     "https://esm.sh/cuint@0.2.2?target=denonext": "df715ef6d6e829094f363f273d607f5773628e64bd316b4e00e5d80f9b5e40b0",
     "https://esm.sh/xxhashjs@0.2.2": "f1872f4fa9dbd3157a92bd4301d7237f9f5d97ff6bec014ae8d4ba14c12cc91f",

@@ -2,10 +2,7 @@ import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { Store, StoreAppendOnly } from "~/libs/storage/Store.ts";
 
 export type AtomicStores = { readonly [name: string]: Store };
-export type AtomicOptions<T extends AtomicStores> = {
-	rocksdb: RocksDatabase;
-	stores: T;
-};
+export type AtomicOptions<T extends AtomicStores> = { rocksdb: RocksDatabase; stores: T };
 
 export class Atomic<T extends AtomicStores> {
 	public readonly stores: T;
@@ -18,7 +15,7 @@ export class Atomic<T extends AtomicStores> {
 		this.stores = options.stores;
 
 		const appendOnlyStores = new Map<string, StoreAppendOnly>();
-		for (const [name, store] of Object.entries(options.stores)) {
+		for (const [name, store] of Object.entries(this.stores)) {
 			if (this.rocksdb.path !== store.rocksdb.path) {
 				throw new Error([
 					"inconsistent rocksdb paths.",
@@ -39,7 +36,7 @@ export class Atomic<T extends AtomicStores> {
 	private inTrx = false;
 
 	async trx(call: (stores: T, transaction: Transaction) => Promise<void> | void) {
-		if (this.inTrx) throw new Error("atomic.trx called re-entrantly — a caller forgot to await");
+		if (this.inTrx) throw new Error("atomic().trx called re-entrantly — a caller forgot to await");
 		this.inTrx = true;
 		try {
 			await this.rocksdb.transaction((trx) => {

@@ -1,13 +1,12 @@
 import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
-import { ChainStore } from "~/chain/ChainStore.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
-import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
+import { ChainStorage } from "~/chain/ChainStorage.ts";
 
 // Field codecs, referenced directly by encode/decode below.
 const TXID = Bytes32;
@@ -18,9 +17,7 @@ const OUTPUTS = new ArrayCodec(StoredTxOutput, { counter: VarInt });
 // locktime/version are spread from the pack codec's output so they sit at the
 // top level of StoredTx rather than nested under a `locktimeVersionPack` key.
 export type StoredTx =
-	& {
-		txId: Codec.InferOutput<typeof TXID>;
-	}
+	& { txId: Codec.InferOutput<typeof TXID> }
 	& Codec.InferOutput<typeof PACK>
 	& {
 		inputs: Codec.InferOutput<typeof INPUTS>;
@@ -41,35 +38,38 @@ export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
 export class StoredTxCodec extends Codec<StoredTx> {
 	public readonly stride = { kind: "variable" } as const;
 
-	toWireBytes(storedTx: StoredTx, chainStore: ChainStore): Uint8Array<ArrayBuffer> {
+	/**
+	 * Reconstruct the human-readable wire transaction from stored form: substitutes
+	 * real prevout txids back in for the U48 pointers and expands pubkey pointers to
+	 * full scripts. Unlike {@link toWireBytes} this returns the decoded object (what
+	 * the API layer serializes), and only emits a segwit marker when at least one
+	 * input actually carries witness data — so legacy txs round-trip to the right txid.
+	 */
+	toWire(storedTx: StoredTx, chainStorage: ChainStorage): Codec.InferInput<typeof WireTx> {
 		const { version, locktime } = storedTx;
 
-		const inputs: WireTxInput[] = [];
-		const witness: Uint8Array[][] = [];
-
+		let anyWitness = false;
 		for (const input of storedTx.inputs) {
-			const prevTxId = chainStore.getPrevOutTxId(input);
-			inputs.push({
-				prevOut: {
-					txId: prevTxId,
-					output: input.prevOut.output,
-				},
-				scriptSig: input.scriptSig,
-				sequence: input.sequence,
-			});
-			if (input.witness) witness.push(input.witness);
+			if (input.witness.length > 0) {
+				anyWitness = true;
+				break;
+			}
 		}
 
-		const outputs: WireTxOutput[] = [];
-		for (const output of storedTx.outputs) {
-			const scriptPubKey = chainStore.atomic.stores.pubkeys.get(output.scriptPubKey, StoredScriptPubKey);
-			outputs.push({
-				value: output.value,
-				scriptPubKey,
-			});
-		}
+		const inputs: WireTxInput[] = storedTx.inputs.map((input) => ({
+			prevOut: { txId: chainStorage.getPrevOutTxId(input), output: input.prevOut.output },
+			scriptSig: input.scriptSig,
+			sequence: input.sequence,
+		}));
 
-		return WireTx.encode({ inputs, locktime, outputs, version, witness });
+		const outputs: WireTxOutput[] = storedTx.outputs.map((output) => ({
+			value: output.value,
+			scriptPubKey: chainStorage.getScriptPubKeyFromPointer(output.scriptPubKey),
+		}));
+
+		const witness: Uint8Array[][] = anyWitness ? storedTx.inputs.map((input) => input.witness) : [];
+
+		return { version, locktime, inputs, outputs, witness };
 	}
 
 	public encoder(value: StoredTx, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;

@@ -1,7 +1,6 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { VarInt } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
-import { atomic } from "~/chain/atomic.ts";
 import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
@@ -9,6 +8,7 @@ import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
+import { chainStorage } from "~/chain/ChainStorage.ts";
 
 /**
  * consume.worker — one parallel stage of the IBD pipeline.
@@ -35,7 +35,7 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
  */
 
 /** One block, encoded and ready for the commit thread. All offsets are block-relative. */
-type EncodedBlock = {
+export type EncodedBlock = {
 	buffer: Uint8Array;
 	txIds: Uint8Array;
 	txOffsets: Uint32Array;
@@ -143,7 +143,7 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 			for (const output of tx.outputs) {
 				if (pubkeyPointers.get(output.scriptPubKey) !== undefined) continue;
 				sha256.create().update(output.scriptPubKey).digestInto(pubKeyHashBuffer);
-				const onDisk = atomic.stores.pubkey.get(pubKeyHashBuffer);
+				const onDisk = chainStorage.stores.pubkey.get(pubKeyHashBuffer);
 				if (onDisk !== undefined) {
 					pubkeyPointers.put(output.scriptPubKey, onDisk);
 				} else {
@@ -253,7 +253,7 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 			return { prevOut: { txId: { kind: "coinbase" } as const, output: input.prevOut.output }, ...base };
 		}
 
-		const onDiskPointer = atomic.stores.txid.get(input.prevOut.txId);
+		const onDiskPointer = chainStorage.stores.txid.get(input.prevOut.txId);
 		if (onDiskPointer !== undefined) {
 			prevOutDiskHits++;
 			return { prevOut: { txId: { kind: "pointer" as const, value: onDiskPointer }, output: input.prevOut.output }, ...base };

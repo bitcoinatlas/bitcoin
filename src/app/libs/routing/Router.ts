@@ -1,34 +1,26 @@
 import { Codec } from "@nomadshiba/codec";
-import { EndpointResponse, EndpointResponseOptions } from "~/app/backend/utils/EndpointResponse.ts";
+import { RouteResponse, RouteResponseOptions } from "~/app/libs/routing/RouterResponse.ts";
 import { _, PromiseOrValue } from "~/types.ts";
+import { OptionalizeEmpty } from "~/app/libs/types/utils.ts";
 
 type SchemaKeyGeneric = `${string} /${string}`;
-export type EndpointSchema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };
-export type EndpointSchemaKey<TSchema extends EndpointSchema = EndpointSchema> = Extract<
-	keyof TSchema,
-	SchemaKeyGeneric
->;
+export type Schema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };
+export type SchemaKey<TSchema extends Schema = Schema> = Extract<keyof TSchema, SchemaKeyGeneric>;
 
-export namespace EndpointSchema {
-	export type InferParamsOutput<TSchemaKey extends EndpointSchemaKey> = {
+export namespace Schema {
+	export type InferParams<TSchemaKey extends SchemaKey> = OptionalizeEmpty<{
 		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], string>;
 		search:
 			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], string>
 			// deno-lint-ignore ban-types
 			& Record<string & {}, string | undefined>;
-	};
+	}>;
 
-	export type InferParamsInput<TSchemaKey extends EndpointSchemaKey> = {
-		pathname: Record<MapPathParams<InferPattern<TSchemaKey>["Path"]>[number], string | number | bigint>;
-		search:
-			& Record<MapSearchParams<InferPattern<TSchemaKey>["Search"]>[number], string | number | bigint>
-			// deno-lint-ignore ban-types
-			& Record<string & {}, string | number | bigint | undefined>;
-	};
+	export type InferResult<TSchema extends Schema, TKey extends keyof TSchema> = Codec.InferOutput<InferItem<TSchema, TKey>["output"]>;
 
 	// Internal Helpers
 	type IsParam<T extends string> = T extends `:${infer U}` ? U : never;
-	type InferPattern<K extends EndpointSchemaKey> = K extends `${string} ${infer Path}?${infer Search}` ? { Path: Path; Search: Search }
+	type InferPattern<K extends SchemaKey> = K extends `${string} ${infer Path}?${infer Search}` ? { Path: Path; Search: Search }
 		: K extends `${string} ${infer Path}` ? { Path: Path; Search: "" }
 		: never;
 	type MapPathParams<T extends string> = T extends `/${infer U}/${infer Rest}` ? [IsParam<U>, ...MapPathParams<`/${Rest}`>]
@@ -39,60 +31,61 @@ export namespace EndpointSchema {
 		: [];
 }
 
-export type EndpointEvent = { request: Request; url: URL };
+export type RouteEvent = { request: Request; url: URL };
 
-type InferItem<T extends EndpointSchema, K extends keyof T> = Extract<T[K], EndpointSchema[keyof EndpointSchema]>;
+// WTF do i have to extract that for????
+type InferItem<T extends Schema, K extends keyof T> = Extract<T[K], Schema[keyof Schema]>;
 
-export type EndpointHandler<
-	TSchema extends EndpointSchema = _,
-	TSchemaKey extends EndpointSchemaKey<TSchema> = _,
+type OmitCodec<T> = T extends { data: unknown } ? Omit<T, "codec"> : T;
+
+type RouteHandler<
+	TSchema extends Schema = _,
+	TSchemaKey extends SchemaKey<TSchema> = _,
 	TMeta = _,
 > = (
-	options: EndpointHandlerOptions<TSchema, TSchemaKey, TMeta>,
-) => PromiseOrValue<EndpointHandlerResult<TSchema, TSchemaKey>>;
+	options: RouteHandlerOptions<TSchema, TSchemaKey, TMeta>,
+) => PromiseOrValue<RouteHandlerResult<TSchema, TSchemaKey>>;
 
-export type EndpointHandlerOptions<
-	TSchema extends EndpointSchema,
-	TSchemaKey extends EndpointSchemaKey<TSchema>,
+type RouteHandlerOptions<
+	TSchema extends Schema,
+	TSchemaKey extends SchemaKey<TSchema>,
 	TMeta,
 > = {
-	event: EndpointEvent;
-	params: EndpointSchema.InferParamsOutput<TSchemaKey>;
+	event: RouteEvent;
+	params: Schema.InferParams<TSchemaKey>;
 	data: Codec.InferOutput<InferItem<TSchema, TSchemaKey>["input"]>;
 	meta: TMeta;
 };
 
-export type EndpointHandlerResult<TSchema extends EndpointSchema, TSchemaKey extends EndpointSchemaKey<TSchema>> = EndpointResponseOptions<
-	Codec.InferInput<InferItem<TSchema, TSchemaKey>["output"]>
+type RouteHandlerResult<TSchema extends Schema, TSchemaKey extends SchemaKey<TSchema>> = OmitCodec<
+	RouteResponseOptions<Codec.InferInput<InferItem<TSchema, TSchemaKey>["output"]>>
 >;
 
-export type EndpointMiddlewareOptions<TSchema extends EndpointSchema = _> = {
-	event: EndpointEvent;
-	params: EndpointSchema.InferParamsOutput<EndpointSchemaKey<TSchema>>;
-	data: Codec.InferOutput<InferItem<TSchema, EndpointSchemaKey<TSchema>>["input"]>;
+type RouteMiddlewareOptions<TSchema extends Schema = _> = {
+	event: RouteEvent;
+	params: Schema.InferParams<SchemaKey<TSchema>>;
+	data: Codec.InferOutput<InferItem<TSchema, SchemaKey<TSchema>>["input"]>;
 };
 
-export type EndpointMiddlewareResult<TMeta = _> = { meta: TMeta };
+type RouteMiddlewareResult<TMeta = _> = { meta: TMeta };
 
 type Bucket = {
 	pattern: URLPattern;
 	methods: Map<string, {
 		input: Codec<_>;
 		output: Codec<_>;
-		handler: EndpointHandler | null;
+		handler: RouteHandler | null;
 	}>;
 }[];
-export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
+export class Router<const TSchema extends Schema, TMeta> {
 	private readonly metaMiddleware?: (
-		options: EndpointMiddlewareOptions,
-	) => PromiseOrValue<EndpointMiddlewareResult>;
+		options: RouteMiddlewareOptions,
+	) => PromiseOrValue<RouteMiddlewareResult>;
 	public readonly schema: TSchema;
 	public readonly prefixBuckets: readonly (readonly [string, Bucket])[];
 
 	constructor(params: {
-		metaMiddleware?: (
-			options: EndpointMiddlewareOptions<TSchema>,
-		) => PromiseOrValue<EndpointMiddlewareResult<TMeta>>;
+		metaMiddleware?: (options: RouteMiddlewareOptions<TSchema>) => PromiseOrValue<RouteMiddlewareResult<TMeta>>;
 		schema: TSchema;
 	}) {
 		this.schema = params.schema;
@@ -100,7 +93,8 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 
 		const prefixBucketMap = new Map<string, Map<string, Bucket[number]>>();
 		for (const [key, { input, output }] of Object.entries(this.schema)) {
-			const [method, pathname] = key.split(" ") as [string, string];
+			const [method, pattern] = key.split(" ") as [string, string];
+			const [pathname, search] = pattern.split("?") as [string, string] | [string];
 			const colonIndex = pathname.indexOf(":");
 			const prefix = colonIndex === -1 ? pathname : pathname.slice(0, colonIndex);
 
@@ -109,11 +103,11 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 				bucket = new Map();
 				prefixBucketMap.set(prefix, bucket);
 			}
-			let patternMatch = bucket.get(pathname);
+			let patternMatch = bucket.get(pattern);
 			if (!patternMatch) {
-				const pattern = new URLPattern({ pathname });
-				patternMatch = { pattern, methods: new Map() };
-				bucket.set(pathname, patternMatch);
+				const patternUrl = new URLPattern({ pathname, search });
+				patternMatch = { pattern: patternUrl, methods: new Map() };
+				bucket.set(pattern, patternMatch);
 			}
 			patternMatch.methods.set(method, { input, output, handler: null });
 		}
@@ -128,15 +122,16 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 			.sort(([a], [b]) => b.split("/").length - a.split("/").length);
 	}
 
-	registerHandler<TSchemaKey extends EndpointSchemaKey<TSchema>>(
+	registerHandler<TSchemaKey extends SchemaKey<TSchema>>(
 		key: TSchemaKey,
-		handler: EndpointHandler<TSchema, TSchemaKey, TMeta>,
+		handler: RouteHandler<TSchema, TSchemaKey, TMeta>,
 	) {
-		const [method, pathname] = key.split(" ") as [string, string];
+		const [method, pattern] = key.split(" ") as [string, string];
+		const [pathname, search] = pattern.split("?") as [string, string] | [string];
 		for (const [prefix, bucket] of this.prefixBuckets) {
 			if (!pathname.startsWith(prefix)) continue;
 			for (const { pattern, methods } of bucket.values()) {
-				const match = pattern.test({ pathname });
+				const match = pattern.test({ pathname, search });
 				if (!match) continue;
 				const item = methods.get(method);
 				if (!item) continue;
@@ -167,7 +162,7 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 					continue;
 				}
 				const { handler } = item;
-				if (!handler) return new EndpointResponse({ status: "NotImplemented" });
+				if (!handler) return new RouteResponse({ status: "NotImplemented" });
 
 				const params = {
 					pathname: match.pathname.groups,
@@ -175,18 +170,16 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 				};
 
 				const contentType = request.headers.get("Content-Type");
-				if (contentType !== "application/octet-stream") {
-					return new EndpointResponse({
-						status: "UnsupportedMediaType",
-						message: "Content-Type must be application/octet-stream",
-					});
-				}
 
 				let data;
-				try {
-					[data] = item.input.decode(await request.bytes());
-				} catch (reason) {
-					return new EndpointResponse({ status: "BadRequest", message: String(reason) });
+				if (contentType === "application/octet-stream") {
+					try {
+						[data] = item.input.decode(await request.bytes());
+					} catch (reason) {
+						return new RouteResponse({ status: "BadRequest", message: String(reason) });
+					}
+				} else if (contentType !== null) {
+					return new RouteResponse({ status: "UnsupportedMediaType" });
 				}
 
 				try {
@@ -194,10 +187,9 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 					const options = await handler({ event, params, data, meta });
 
 					if ("data" in options) {
-						options.format = { kind: "application/octet-stream", codec: item.output };
-						return new EndpointResponse(options);
+						return new RouteResponse({ ...options, codec: item.output });
 					}
-					return new EndpointResponse(options);
+					return new RouteResponse(options);
 				} catch (reason) {
 					if (reason instanceof Response) {
 						return reason;
@@ -206,14 +198,14 @@ export class EndpointRouter<const TSchema extends EndpointSchema, TMeta> {
 					console.error(reason);
 
 					const message = String(reason);
-					return new EndpointResponse({ status: "InternalServerError", message });
+					return new RouteResponse({ status: "InternalServerError", message });
 				}
 			}
 		}
 
 		if (hasPatternMatch) {
-			return new EndpointResponse({ status: "MethodNotAllowed" });
+			return new RouteResponse({ status: "MethodNotAllowed" });
 		}
-		return new EndpointResponse({ status: "NotFound" });
+		return new RouteResponse({ status: "NotFound" });
 	}
 }

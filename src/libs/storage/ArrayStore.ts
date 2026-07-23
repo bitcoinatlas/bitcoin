@@ -28,8 +28,8 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		this.path = options.path;
 	}
 
-	static async open<T extends FixedCodec>(options: ArrayStoreOptions<T>): Promise<ArrayStore<T>> {
-		const blob = await BlobStore.open({
+	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
+		const blob = BlobStore.open({
 			path: options.path,
 			rocksdb: options.rocksdb,
 			maxChunkSize: options.itemsPerChunk * options.codec.stride.size,
@@ -44,6 +44,11 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		return this.blob.size() / this.codec.stride.size;
 	}
 
+	/** Reader-only: reveal items committed since open (see {@link BlobStore.refresh}). */
+	refresh(): void {
+		this.blob.refresh();
+	}
+
 	get(index: number): Codec.InferOutput<T> | undefined {
 		const length = this.length();
 		if (index < 0) {
@@ -51,6 +56,15 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		}
 		if (index >= length) return undefined;
 		return this.blob.get(index * this.codec.stride.size, this.codec);
+	}
+
+	async getAsync(index: number): Promise<Codec.InferOutput<T> | undefined> {
+		const length = this.length();
+		if (index < 0) {
+			throw new RangeError(`get out of bounds index=${index} length=${length}`);
+		}
+		if (index >= length) return undefined;
+		return this.blob.getAsync(index * this.codec.stride.size, this.codec);
 	}
 
 	slice(start: number, end: number): Codec.InferOutput<T>[] {
@@ -62,6 +76,17 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		if (start > length) start = length;
 		if (end <= start) return [];
 		return this.blob.get(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+	}
+
+	async sliceAsync(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
+		const length = this.length();
+		if (end > length) end = length;
+		if (start < 0) {
+			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
+		}
+		if (start > length) start = length;
+		if (end <= start) return [];
+		return this.blob.getAsync(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
 	}
 
 	push(item: Codec.InferInput<T>): number {

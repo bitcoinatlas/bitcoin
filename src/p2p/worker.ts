@@ -18,7 +18,7 @@ import { Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { PeerChain } from "~/p2p/PeerChain.ts";
 import { PeerChainNode } from "~/p2p/PeerChainNode.ts";
 import { handshake } from "~/p2p/peers.ts";
-import { PARALLELISM } from "~/env.ts";
+import { PARALLELISM_THREADS } from "~/env.ts";
 import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 
 const GENESIS_NODE: PeerChainNode = {
@@ -33,7 +33,7 @@ const P2P_PORT = 8333;
 const PEER_SYNC_COOLDOWN = 20 * MINUTE;
 const SYNC_POLL_INTERVAL = 10;
 
-const BYTES_PER_ROUND_MIN = MAX_BLOCK_SIZE * PARALLELISM; // at least 1 block per worker
+const BYTES_PER_ROUND_MIN = MAX_BLOCK_SIZE * PARALLELISM_THREADS; // at least 1 block per worker
 
 // ── memory model: two knobs, everything else derived ─────────────────────────
 // 1. BYTES_PER_ROUND — block data committed per round (= PARALLELISM chunks, one
@@ -45,12 +45,12 @@ const BYTES_PER_ROUND = Math.max(64 * MiB, BYTES_PER_ROUND_MIN);
 const LOOKAHEAD_FRACTION = 0.10; // one slice of RAM; block cache + memtables get theirs elsewhere
 
 // per-worker chunk = a round split across the workers that process it.
-const CHUNK_BYTE_BUDGET = Math.ceil(BYTES_PER_ROUND / PARALLELISM);
+const CHUNK_BYTE_BUDGET = Math.ceil(BYTES_PER_ROUND / PARALLELISM_THREADS);
 
 // look-ahead in blocks, bounded by MAX_BLOCK_SIZE so the raw pool can't exceed
 // the RAM slice even if every block is max-sized.
 const lookaheadBytes = Deno.systemMemoryInfo().total * LOOKAHEAD_FRACTION;
-const BLOCK_DOWNLOAD_WINDOW = Math.max(PARALLELISM, Math.floor(lookaheadBytes / MAX_BLOCK_SIZE));
+const BLOCK_DOWNLOAD_WINDOW = Math.max(PARALLELISM_THREADS, Math.floor(lookaheadBytes / MAX_BLOCK_SIZE));
 
 // keep ~2 rounds of finished chunks queued ahead of the consumers.
 const MAX_QUEUED_ROUNDS = 2;
@@ -78,7 +78,7 @@ let postedChunks = 0;
 let consumedChunks = 0;
 
 function keepDownloading() {
-	return (postedChunks - consumedChunks) < PARALLELISM * MAX_QUEUED_ROUNDS;
+	return (postedChunks - consumedChunks) < PARALLELISM_THREADS * MAX_QUEUED_ROUNDS;
 }
 
 let localChain = new PeerChain([GENESIS_NODE]);

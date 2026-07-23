@@ -9,7 +9,7 @@ export class U40Codec extends Codec<number> {
 	public encoder(value: number, target: Uint8Array, offset: number): number;
 	public encoder(value: number, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		if (value < 0 || value > MAX_U40 || !Number.isInteger(value)) {
-			throw new RangeError("Value out of range for U40");
+			throw new RangeError(`Value out of range for U40: ${value}`);
 		}
 		if (target === undefined) {
 			const arr = new Uint8Array(5);
