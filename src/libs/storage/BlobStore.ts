@@ -646,16 +646,42 @@ class DiskRegion implements Disposable {
 			} else if (this.compression && this.inflatedTimers.has(index)) {
 				this.touchInflated(index);
 			}
-			// NOTE: concurrent async reads against the SAME chunk index race on
-			// this seek+read pair — fine while callers are single-flight per
-			// pointer; add a per-index queue/mutex if that stops being true.
-			await reader.seek(start, Deno.SeekMode.Start);
-			await readFileInto(reader, target.subarray(copied, copied + read));
+			// Serialise the seek+read pair per chunk index — see readChunkCritical.
+			await this.readChunkCritical(index, reader, start, target.subarray(copied, copied + read));
 
 			copied += read;
 			offset += read;
 		}
 		return copied;
+	}
+
+	// Per-chunk async mutex: concurrent async reads against the SAME chunk
+	// index race on the seek+read pair (the second seek moves the shared fd
+	// before the first read completes, so the first read sees the wrong bytes
+	// or hits EOF). The map below chains a Promise per chunk index so the
+	// seek+read pair is serialised per index while different indices still run
+	// in parallel. Entry is cleared when the chain drains so the map doesn't
+	// grow unbounded over the chunk lifetime.
+	private readQueues = new Map<number, Promise<void>>();
+	private async readChunkCritical(
+		index: number,
+		reader: Deno.FsFile,
+		start: number,
+		target: Uint8Array,
+	): Promise<void> {
+		const prev = this.readQueues.get(index) ?? Promise.resolve();
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const next = prev.then(() => gate);
+		this.readQueues.set(index, next);
+		try {
+			await prev;
+			await reader.seek(start, Deno.SeekMode.Start);
+			await readFileInto(reader, target);
+		} finally {
+			release();
+			if (this.readQueues.get(index) === next) this.readQueues.delete(index);
+		}
 	}
 
 	// Remove every on-disk form of a chunk (raw, compressed, and any transient

@@ -1,6 +1,7 @@
 import { RocksDatabase, RocksDatabaseOptions } from "@harperfast/rocksdb-js";
 import { StructCodec, U32 } from "@nomadshiba/codec";
 import { join } from "@std/path";
+import { Block } from "~/app/routes.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
@@ -9,7 +10,6 @@ import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
-import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { COINBASE_TXID, GB, GiB, MAX_BLOCK_WEIGHT, MiB, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR, PARALLELISM_THREADS } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
@@ -105,19 +105,30 @@ export class ChainStorage {
 
 	private constructor() {
 		const length = this.stores.headers.length();
-		const index = new FastUint8ArrayMap<number>(Math.max(256, length * 2));
+		const channel = new BroadcastChannel("ChainStore.indexHeightByHash");
+		const index = new FastUint8ArrayMap<number>(Math.max(256, length));
+
 		const STEP = 100_000;
 		for (let from = 0; from < length; from += STEP) {
 			const to = Math.min(length, from + STEP);
 			const headers = this.stores.headers.slice(from, to);
-			for (let i = 0; i < headers.length; i++) index.set(headers[i]!.hash(), from + i);
+			// TODO: this takes so much time in every instance we do this.
+			// TODO: instead add a lazy memcopy option to ArrayStore, where it caches once read from disk.
+			// TODO: so we dont load everything from disk at once. and also dont have to think about memory abstraction in places.
+			// TODO: i mean both in memory headers and KvStore hash index. both should be on disk, and have lazy memcache option.
+			// TODO: tho i believe rocks already has cache, but it has to pass ffi, this way its cached in v8
+			for (let i = 0; i < headers.length; i++) {
+				index.set(headers[i]!.hash(), from + i);
+			}
 		}
-		this.hashIndex = index;
-		this.indexHeightByHashChannel = new BroadcastChannel("ChainStore.indexHeightByHash");
-		this.indexHeightByHashChannel.addEventListener("message", (event) => {
+
+		channel.addEventListener("message", (event) => {
 			const { hash, height } = event.data;
-			this.hashIndex.set(hash, height);
+			index.set(hash, height);
 		});
+
+		this.indexHeightByHashChannel = channel;
+		this.hashIndex = index;
 	}
 
 	private static main_: ChainStorage;
@@ -127,6 +138,18 @@ export class ChainStorage {
 
 	public getHeightByHash(hash: Uint8Array): number | undefined {
 		return this.hashIndex.get(hash);
+	}
+
+	/**
+	 * Reader-only: pull in everything the writer has pinned since the last call.
+	 * On the writable opener this is a no-op (it owns `size` directly). The API
+	 * worker is a reader, so without this its stores are stuck at whatever was
+	 * visible at startup — `getChainTipAsync` would return null mid-IBD.
+	 */
+	public refresh(): void {
+		this.stores.headers.refresh();
+		this.stores.blocks.refresh();
+		this.stores.txs.refresh();
 	}
 
 	public indexHeightByHash(hash: Uint8Array, height: number) {
@@ -139,43 +162,73 @@ export class ChainStorage {
 		return this.stores.headers.get(height);
 	}
 
-	public async getHeaderByHeightAsync(height: number): Promise<StoredBlockHeader | undefined> {
+	public async getHeaderByHeightAsync(height: number): Promise<Block | undefined> {
 		if (height < 0 || height >= this.stores.headers.length()) return undefined;
-		return this.stores.headers.getAsync(height);
+		const header = await this.stores.headers.getAsync(height);
+		if (!header) return undefined;
+		const [current, next] = await Promise.all([
+			this.stores.blocks.getAsync(height).then((n) => n ?? 0),
+			this.stores.blocks.getAsync(height + 1).then((n) => n ?? this.stores.txs.size()),
+		]);
+		const size = next - current;
+		return { height, header, size };
 	}
 
-	public getHeaderByRange(from: number, to: number): Array<{ height: number; header: WireBlockHeader }> {
+	public getHeaderByRange(from: number, to: number): Array<Block> {
 		const length = this.stores.headers.length();
-		const lo = Math.max(0, from);
-		const hi = Math.min(length - 1, to);
-		if (hi < lo) return [];
-		const headers = this.stores.headers.slice(lo, hi + 1);
-		return headers.map((header, i) => ({ height: lo + i, header }));
+		from = Math.max(0, from);
+		to = Math.min(length - 1, to);
+		if (to < from) return [];
+		const headers = this.stores.headers.slice(from, to + 1);
+		let next = this.stores.blocks.get(from) ?? 0;
+		return headers.map((header, i) => {
+			const height = from + i;
+			const current = next;
+			// TODO: This excludes the pubkeys and header, later store wire size on the stored blocks. shouldnt take much space anyway, because its per block
+			next = this.stores.blocks.get(height + 1) ?? this.stores.txs.size();
+			const size = next - current;
+			return { height, header, size };
+		});
 	}
 
-	public async getHeaderByRangeAsync(from: number, to: number): Promise<Array<{ height: number; header: WireBlockHeader }>> {
+	public async getHeaderByRangeAsync(from: number, to: number): Promise<Array<Block>> {
 		const length = this.stores.headers.length();
 		const lo = Math.max(0, from);
 		const hi = Math.min(length - 1, to);
 		if (hi < lo) return [];
 		const headers = await this.stores.headers.sliceAsync(lo, hi + 1);
-		return headers.map((header, i) => ({ height: lo + i, header }));
+		// Fetch every block pointer in [lo, hi+1] up front in parallel. The sync
+		// version threads `next` through the loop, but doing that with `await`
+		// inside Promise.all races the shared variable — each closure reads the
+		// same initial `next` as its `current` before any reassignment lands, so
+		// every size ends up measured from the `lo` baseline. Pulling them all
+		// into an array first keeps the reads parallel and the sizes correct.
+		const pointers = await Promise.all(
+			Array.from({ length: headers.length + 1 }, (_, i) =>
+				this.stores.blocks.getAsync(lo + i).then((p) => p ?? (i === 0 ? 0 : this.stores.txs.size()))),
+		);
+		return headers.map((header, i) => {
+			const height = lo + i;
+			const current = pointers[i]!;
+			const next = pointers[i + 1]!;
+			const size = next - current;
+			return { height, header, size };
+		});
 	}
 
 	public getChainTip(): { height: number; header: StoredBlockHeader } | undefined {
-		const height = this.stores.headers.length() - 1;
-		if (height < 0) return undefined;
+		const height = this.hashIndex.size() - 1;
 		const header = this.getHeaderByHeight(height);
 		if (!header) return undefined;
 		return { height, header };
 	}
 
-	public async getChainTipAsync(): Promise<{ height: number; header: StoredBlockHeader } | undefined> {
-		const height = this.stores.headers.length() - 1;
+	public async getChainTipAsync(): Promise<Block | undefined> {
+		const height = this.hashIndex.size() - 1;
 		if (height < 0) return undefined;
 		const header = await this.getHeaderByHeightAsync(height);
-		if (!header) return undefined;
-		return { height, header };
+
+		return header;
 	}
 
 	public getTxsByBlockHeight(height: number): StoredTx[] | undefined {

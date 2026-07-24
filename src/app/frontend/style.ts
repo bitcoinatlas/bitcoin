@@ -72,4 +72,10 @@ export const GlobalStyle = css`
 			text-decoration: underline;
 		}
 	}
+
+	ol,
+	ul {
+		list-style: none;
+		padding: 0;
+	}
 `;

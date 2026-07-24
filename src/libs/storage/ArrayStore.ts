@@ -64,7 +64,10 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		return this.blob.getAsync(index * this.codec.stride.size, this.codec);
+		return this.blob.getAsync(index * this.codec.stride.size, this.codec).catch((reason) => {
+			console.log(index, length);
+			throw reason;
+		});
 	}
 
 	slice(start: number, end: number): Codec.InferOutput<T>[] {

@@ -1,28 +1,29 @@
 {
 	"name": "Deno",
-	"build": {
-		"dockerfile": "Dockerfile"
-	},
-
-	// Features to add to the dev container. More info: https://containers.dev/features.
-	// "features": {},
-
-	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	// "forwardPorts": [],
-
-	// Use 'postCreateCommand' to run commands after the container is created.
+	"image": "ghcr.io/bare-devcontainer/deno:2-trixie",
+	"remoteUser": "dev",
+	"runArgs": ["--cap-drop=ALL"],
+	"securityOpt": ["no-new-privileges"],
+	"init": true,
+	"mounts": [
+		{
+			"source": "${devcontainerId}-deno-cache",
+			"target": "/home/dev/.cache/deno",
+			"type": "volume"
+		}
+	],
 	"postCreateCommand": "deno install && deno task vendor",
-
-	// Configure tool-specific properties.
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"justjavac.vscode-deno-extensionpack",
+				"denoland.vscode-deno",
 				"pushqrdx.inline-html",
 				"ms-vscode.vscode-js-profile-flame"
-			]
+			],
+			"settings": {
+				"deno.enable": true,
+				"deno.path": "/usr/local/bin/deno"
+			}
 		}
 	}
-	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
-	// "remoteUser": "root"
 }

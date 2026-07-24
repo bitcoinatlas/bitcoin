@@ -1,4 +1,4 @@
-import { computed, ref, Sync } from "@purifyjs/core";
+import { ref, Sync } from "@purifyjs/core";
 
 export function awaited<T, const U = null>(
 	promise: Promise<T>,
@@ -11,5 +11,5 @@ export function awaited(
 	const state = ref(until);
 	promise.then((value) => state.set(value));
 	promise.catch(console.error);
-	return computed(() => state.get());
+	return state;
 }

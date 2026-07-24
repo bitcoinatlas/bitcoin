@@ -1,20 +1,16 @@
-import { Codec } from "@nomadshiba/codec";
-import { Schema, SchemaKey } from "~/app/libs/routing/Router.ts";
-import { _ } from "~/types.ts";
+import { Schema } from "~/app/libs/routing/Router.ts";
 import { OptionalizeEmpty } from "~/app/libs/types/utils.ts";
 
-type InferItem<T extends Schema, K extends keyof T> = Extract<T[K], Schema[keyof Schema]>;
-
-export type ClientRequestOptions<
+export type RouterClientRequestOptions<
 	TSchema extends Schema,
-	TSchemaKey extends SchemaKey<TSchema>,
+	TKey extends Schema.Key<TSchema>,
 > = OptionalizeEmpty<{
-	params: Schema.InferParams<TSchemaKey>;
-	data?: Codec.InferInput<InferItem<TSchema, TSchemaKey>["input"]>;
+	params: Schema.InferParamsInput<TKey>;
+	data: Schema.InferDataInput<TSchema, TKey>;
 	request?: RequestInit;
 }>;
 
-export class ClientError extends Error {
+export class RouterClientError extends Error {
 	constructor(public readonly response: Response, message: string) {
 		super(`${response.status} ${response.statusText}: ${message}`);
 		this.name = "ClientError";
@@ -40,10 +36,10 @@ export class RouterClient<const TSchema extends Schema> {
 		);
 	}
 
-	async fetch<TSchemaKey extends SchemaKey<TSchema>>(
-		key: TSchemaKey,
-		options: ClientRequestOptions<TSchema, TSchemaKey>,
-	): Promise<Codec.InferOutput<InferItem<TSchema, TSchemaKey>["output"]>> {
+	async fetch<TKey extends Schema.Key<TSchema>>(
+		key: TKey,
+		options: RouterClientRequestOptions<TSchema, TKey>,
+	): Promise<Schema.InferResultOutput<TSchema, TKey>> {
 		const item = this.schema[key] as Schema[keyof Schema];
 		const [method, pattern] = key.split(" ") as [string, string];
 		const [pathnameTemplate] = pattern.split("?") as [string, string] | [string];
@@ -76,10 +72,10 @@ export class RouterClient<const TSchema extends Schema> {
 		const response = await this.fetchFn(url, { ...options.request, method, headers, body });
 
 		if (!response.ok) {
-			throw new ClientError(response, await response.text());
+			throw new RouterClientError(response, await response.text());
 		}
 
 		const [data] = item.output.decode(new Uint8Array(await response.arrayBuffer()));
-		return data as Codec.InferOutput<InferItem<TSchema, TSchemaKey>["output"]>;
+		return data;
 	}
 }

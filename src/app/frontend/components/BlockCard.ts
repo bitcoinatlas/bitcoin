@@ -1,10 +1,9 @@
 import { tags } from "@purifyjs/core";
-import { formatBlockHeight, formatHash } from "~/app/frontend/utils/format.ts";
-import { Schema } from "~/app/libs/routing/Router.ts";
-import { RoutesSchema } from "~/app/routes.ts";
 import { css } from "~/app/frontend/utils/css.ts";
+import { formatBlockHeight, formatBytes, formatHash } from "~/app/frontend/utils/format.ts";
+import { Block } from "~/app/routes.ts";
 
-export function BlockCard(tip: number, block: Schema.InferResult<RoutesSchema, "GET /v1/block">[number]) {
+export function BlockCard(tip: number, block: Block) {
 	const { article, dl, dt, dd, div } = tags;
 
 	const self = article().$bind(BlockCardStyle.useScope());
@@ -22,6 +21,10 @@ export function BlockCard(tip: number, block: Schema.InferResult<RoutesSchema, "
 			div({ class: "confirmations" }).append$(
 				dt().textContent("Confirmations"),
 				dd().textContent(formatBlockHeight(tip - block.height + 1)),
+			),
+			div({ class: "size" }).append$(
+				dt().textContent("Size"),
+				dd().textContent(block.size ? formatBytes(block.size) : "unknown"),
 			),
 		),
 	);
