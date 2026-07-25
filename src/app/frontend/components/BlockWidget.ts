@@ -26,6 +26,7 @@ export function BlockWidget(block: Block) {
 				dt().textContent("Size"),
 				dd().textContent(block.size ? formatBytes(block.size) : "unknown"),
 			),
+			// TODO: maybe remove this in favor of "n blocks ago"
 			div({ class: "timestamp" }).append$(
 				dt().textContent("Timestamp"),
 				dd().textContent(getRelativeDate(new Date(block.header.timestamp * 1000))),
