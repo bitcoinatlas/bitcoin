@@ -118,11 +118,11 @@ export function useStyleProperty(
 	if (value instanceof Sync) {
 		return (element) =>
 			value.follow((val) => {
-				element.style.setProperty(`--${name}`, val);
+				element.style.setProperty(name, val);
 			}, true);
 	} else {
 		return (element) => {
-			element.style.setProperty(`--${name}`, value);
+			element.style.setProperty(name, value);
 		};
 	}
 }

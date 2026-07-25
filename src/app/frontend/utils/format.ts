@@ -1,5 +1,4 @@
 import { encodeHex } from "@std/encoding";
-import { HexEncoderStream } from "@std/encoding/unstable-hex-stream";
 import type { LockTime } from "~/codec/LockTime.ts";
 import type { SequenceLock } from "~/codec/SequenceLock.ts";
 import { SECOND } from "~/constants.ts";
