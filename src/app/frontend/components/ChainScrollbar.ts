@@ -1,4 +1,4 @@
-import { Builder, combine, ref, Sync, tags } from "@purifyjs/core";
+import { combine, ref, Sync, tags } from "@purifyjs/core";
 import { css } from "~/app/frontend/utils/css.ts";
 import { HALVING_BLOCKS } from "~/constants.ts";
 
@@ -8,13 +8,6 @@ const MINOR = HALVING_BLOCKS * 0.05;
 const MAJOR = HALVING_BLOCKS;
 
 const { div, span, input } = tags;
-
-// A single ruler label. --mark-at is fixed at build, straight into the style attribute: 0 sits
-// at the axis top (the tip), 1 at the bottom (genesis).
-function mark(height: number, tip: number) {
-	return div({ class: "mark", style: `--mark-at:${(tip - height) / tip}` })
-		.append$(span().textContent(height === 0 ? "0" : `${Math.round(height / 1000)}k`));
-}
 
 // A purely VISUAL scrollbar: aria-hidden and out of the tab order, because the section it rides
 // on is a real, natively scrollable region and is already the accessible surface (keyboard,
@@ -42,10 +35,6 @@ export function ChainScrollbar(props: {
 		clearTimeout(idle);
 		idle = setTimeout(() => active.set(false), 700);
 	};
-
-	const marks: Builder<HTMLElement>[] = [];
-	for (let h = 0; h < props.tip; h += MAJOR) marks.push(mark(h, props.tip));
-	marks.push(mark(props.tip, props.tip)); // the tip itself isn't a round number
 
 	const slider = input({ type: "range" })
 		.tabIndex(-1) // aria-hidden, so keep it out of the tab order too
@@ -83,14 +72,14 @@ export function ChainScrollbar(props: {
 			slider,
 			div({ class: "ruler" })
 				.$bind((element) => at.follow((value) => element.style.setProperty("--at", String(value)), true))
-				.append$(marks, div({ class: "readout" }).append$(span().textContent(height.derive((h) => h.toLocaleString())))),
+				.append$(div({ class: "readout" }).append$(span().textContent(height.derive((h) => h.toLocaleString())))),
 		);
 }
 
 const ChainScrollbarStyle = css`
 	:scope {
-		--thumb-inline-size: 1em;
-		--thumb-block-size: 1em;
+		--thumb-inline-size: 1.25em;
+		--thumb-block-size: .75em;
 		--thumb-wall-gap: 0.1em;
 		--track-pad: calc(var(--thumb-block-size) * 0.5);
 
@@ -126,7 +115,7 @@ const ChainScrollbarStyle = css`
 		appearance: none;
 		block-size: var(--thumb-inline-size);
 		inline-size: var(--thumb-block-size);
-		border-radius: 50%;
+		border-radius: .5em;
 		background-color: currentcolor;
 		opacity: 0.55;
 		box-shadow: 0 0.0625em 4px color-mix(in srgb, currentcolor 35%, transparent);
@@ -137,7 +126,7 @@ const ChainScrollbarStyle = css`
 		block-size: var(--thumb-inline-size);
 		inline-size: var(--thumb-block-size);
 		border: none;
-		border-radius: 50%;
+		border-radius: .5em;
 		background-color: currentcolor;
 		opacity: 0.55;
 		box-shadow: 0 0.0625em 4px color-mix(in srgb, currentcolor 35%, transparent);

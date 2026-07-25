@@ -270,8 +270,8 @@ const ChainTimelineStyle = css`
 		inset-block-start: 0;
 		block-size: 0;
 		margin-block: 0;
-		padding-inline-start: 0;
-		padding-inline-end: 3em;
+		padding-inline-start: .5em;
+		padding-inline-end: 1.25em;
 		list-style: none;
 		will-change: transform;
 	}
@@ -280,7 +280,7 @@ const ChainTimelineStyle = css`
 		position: relative;
 		box-sizing: border-box;
 		block-size: var(--row-size);
-		padding-block-end: var(--row-gap);
+		padding-block: var(--row-gap);
 		overflow: clip; /* a card outgrowing its track is a bug, not a reflow */
 	}
 
@@ -308,8 +308,7 @@ const ChainTimelineStyle = css`
 	li::before {
 		content: "";
 		position: absolute;
-		inset-block-start: 0;
-		inset-block-end: var(--row-gap);
+		inset-block: var(--row-gap);
 		inset-inline: 0;
 		border-radius: var(--row-radius);
 		background-color: var(--row-placeholder);

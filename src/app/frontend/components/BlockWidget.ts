@@ -213,5 +213,9 @@ const BlockWidgetStyle = css`
 			justify-self: start;
 			text-align: start;
 		}
+
+		dd {
+			font-size: .9em;
+		}
 	}
 `;
