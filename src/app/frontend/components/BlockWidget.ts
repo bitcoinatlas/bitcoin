@@ -7,11 +7,13 @@ import { Block } from "~/app/routes.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 
 export function BlockWidget(block: Block) {
-	const { article, dl, dt, dd, div } = tags;
+	const { article, dl, dt, dd, div, time } = tags;
 
 	const self = article().$bind(BlockWidgetStyle.useScope());
 	// TODO: maybe make this based on weight
 	self.$bind(useStyleProperty("--filled", `${(block.size ?? 0) / MAX_BLOCK_SIZE}`));
+
+	const date = new Date(block.header.timestamp * 1000);
 
 	self.append$(
 		div({ class: "stripe" }).append$(
@@ -29,7 +31,7 @@ export function BlockWidget(block: Block) {
 			// TODO: maybe remove this in favor of "n blocks ago"
 			div({ class: "timestamp" }).append$(
 				dt().textContent("Timestamp"),
-				dd().textContent(getRelativeDate(new Date(block.header.timestamp * 1000))),
+				dd().append$(time().dateTime(date.toISOString()).textContent(getRelativeDate(date))),
 			),
 			div({ class: "bits" }).append$(
 				dt().textContent("Bits"),
