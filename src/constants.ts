@@ -35,3 +35,6 @@ export const MAX_SCRIPT_SIZE = 10 * KB; // look into it SCRIPT_ERR_SCRIPT_SIZE
 
 export const COINBASE_TXID = new Uint8Array(32);
 export const COINBASE_VOUT = 0xFFFFFFFF;
+
+export const HALVING_BLOCKS = 210_000;
+export const DIFFICULTY_ADJUSTMENT_BLOCKS = 2016;

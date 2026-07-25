@@ -111,7 +111,7 @@ export function useClassToggle(
 	};
 }
 
-export function useCssVar(
+export function useStyleProperty(
 	name: string,
 	value: SyncOrValue<string>,
 ): Lifecycle.OnConnected<HTMLElement> {
