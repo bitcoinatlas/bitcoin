@@ -10,6 +10,7 @@ export function BlockWidget(block: Block) {
 	const { article, dl, dt, dd, div } = tags;
 
 	const self = article().$bind(BlockWidgetStyle.useScope());
+	// TODO: maybe make this based on weight
 	self.$bind(useStyleProperty("--filled", `${(block.size ?? 0) / MAX_BLOCK_SIZE}`));
 
 	self.append$(
