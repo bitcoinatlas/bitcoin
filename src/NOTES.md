@@ -1,3 +1,9 @@
+## 5
+
+- bring frontend to a good state
+- change neccery storage changes that you mention as TODO
+- speed up sync more, if posibble get rid of rocksdb, we dont want external binaries, we want native deno codebase fully, so it can easily work anywhere. 
+
 ## 4
 
 In my previous design i didnt have this many indexes. Indexes are taking way too much space.
