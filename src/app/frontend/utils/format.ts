@@ -61,17 +61,13 @@ export function formatNumber(n: number | bigint): string {
 	return n.toLocaleString("en-US");
 }
 
-/**
- * Format a byte count using binary (1024-base) units — KiB/MiB/GiB, never SI.
- * BitcoinAtlas measures everything in IEC units.
- */
-export function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const units = ["KiB", "MiB", "GiB", "TiB"];
-	let value = bytes / 1024;
+export function formatBlockSize(bytes: number): string {
+	if (bytes < 1000) return `${bytes} B`;
+	const units = ["KB", "MB"];
+	let value = bytes / 1000;
 	let unit = 0;
-	while (value >= 1024 && unit < units.length - 1) {
-		value /= 1024;
+	while (value >= 1000 && unit < units.length - 1) {
+		value /= 1000;
 		unit++;
 	}
 	const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
