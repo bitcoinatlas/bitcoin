@@ -59,7 +59,7 @@ export async function ChainTimeline() {
 	// --- scroll model, in fractional rows --------------------------------
 	const position = ref(0);
 	const maxFirst = combine({ rowSize, viewport, total })
-		.derive(({ rowSize, viewport, total }) => (tip && rowSize > 0 ? Math.max(0, total - viewport / rowSize) : 0));
+		.derive(({ rowSize, viewport, total }) => (rowSize > 0 ? Math.max(0, total - viewport / rowSize) : 0));
 
 	// --- the live window (quantised to PAGE with overscan) ---------------
 	// take/start only change on a page crossing, so the row set rebuilds rarely; `offset` slides
@@ -216,6 +216,7 @@ export async function ChainTimeline() {
 		spacer.append$(
 			list,
 			ChainScrollbar({
+				controls: self,
 				value: position,
 				max: maxFirst,
 				tipHeight: tipHeight,

@@ -1,4 +1,4 @@
-import { combine, ref, Sync, tags } from "@purifyjs/core";
+import { Builder, combine, ref, Sync, tags } from "@purifyjs/core";
 import { css } from "~/app/frontend/utils/css.ts";
 import { HALVING_BLOCKS } from "~/constants.ts";
 import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
@@ -10,16 +10,18 @@ const MAJOR = HALVING_BLOCKS;
 
 const { div, span, input } = tags;
 
-// A purely VISUAL scrollbar: aria-hidden and out of the tab order, because the section it rides
-// on is a real, natively scrollable region and is already the accessible surface (keyboard,
-// screen reader, touch all go through the native scroll). This is a sighted-pointer affordance
-// only — a draggable thumb, a halving/epoch ruler and a height readout. It reflects `value` and,
-// when dragged, asks the timeline to re-anchor the native scroll through `onScrub`.
+// A real, exposed scrollbar. The native range carries `role="scrollbar"` and points at the
+// scrollable region it drives via `aria-controls`, so it's a labelled, announced affordance
+// rather than a hidden one. Keyboard (arrow keys → onScrub) and pointer drag both operate it;
+// the ruler and readout are sighted-only chrome and stay decorative (aria-hidden). The
+// underlying section is still natively scrollable, so this is an *additional* scroll control on
+// the a11y tree, not the only one.
 export function ChainScrollbar(props: {
 	value: Sync.Ref<number>; // position, fractional rows; reflected onto the thumb
 	max: Sync<number>; // maxFirst — the deepest the viewport can scroll
 	tipHeight: Sync<number>; // tip height, for the ruler fractions and labels
 	onScrub: (value: number) => void; // user dragged the thumb
+	controls: Builder<HTMLElement>; // the scrollable region(s) this scrollbar drives (for aria-controls)
 }) {
 	// Fraction of the axis the thumb sits at, for the readout that rides it.
 	const at = combine({ value: props.value, max: props.max })
@@ -37,11 +39,24 @@ export function ChainScrollbar(props: {
 		idle = setTimeout(() => active.set(false), 700);
 	};
 
+	const maxAttr = props.max.derive((value) => `${Math.max(0, Math.ceil(value))}` as const);
+
 	const slider = input({ type: "range" })
-		.tabIndex(-1) // aria-hidden, so keep it out of the tab order too
 		.min("0")
-		.max(props.max.derive((value) => String(Math.max(0, Math.ceil(value)))))
+		.max(maxAttr)
 		.step("any")
+		// Re-role the native range as a scrollbar: it *is* one. role + aria-controls must live on
+		// the same (focusable) element, which is why controls comes in as a prop and is applied
+		// here rather than on the wrapper.
+		.role("scrollbar")
+		.ariaControlsElements([props.controls.$node])
+		.ariaOrientation("vertical")
+		.ariaLabel("Chain height")
+		.ariaValueMin("0")
+		.ariaValueMax(maxAttr)
+		.ariaValueNow(props.value.derive((value) => `${Math.round(value)}` as const))
+		// Announce the meaningful number (block height) instead of the raw row index.
+		.ariaValueText(height.derive((h) => `${h.toLocaleString()} blocks`))
 		.$bind((element) => {
 			const aborter = new AbortController();
 			element.addEventListener("input", () => props.onScrub(element.valueAsNumber), { signal: aborter.signal });
@@ -62,14 +77,17 @@ export function ChainScrollbar(props: {
 		});
 
 	return div({ class: "scrollbar" })
-		.ariaHidden("true")
 		.$bind(ChainScrollbarStyle.useScope())
 		.$bind(useStyleProperty("--minor", props.tipHeight.derive((tip) => `${(MINOR / tip) * 100}%`)))
-		.$bind(useStyleProperty("--majormajor", props.tipHeight.derive((tip) => `${(MAJOR / tip) * 100}%`)))
+		.$bind(useStyleProperty("--major", props.tipHeight.derive((tip) => `${(MAJOR / tip) * 100}%`)))
 		.$bind((element) => active.follow((on) => element.classList.toggle("active", on), true))
 		.append$(
 			slider,
+			// Purely decorative: the ruler bands + the height readout duplicate what the slider's
+			// aria-valuetext already announces, so hide this branch from AT. Nothing focusable lives
+			// inside it, so aria-hidden here is legal and warning-free.
 			div({ class: "ruler" })
+				.ariaHidden("true")
 				.$bind((element) => at.follow((value) => element.style.setProperty("--at", String(value)), true))
 				.append$(div({ class: "readout" }).append$(span().textContent(height.derive((h) => h.toLocaleString())))),
 		);
@@ -90,8 +108,8 @@ const ChainScrollbarStyle = css`
 	}
 
 	/* The native range: fills the box, runs vertically, its own track invisible so the ruler
-	   shows through. It keeps the thumb and pointer behaviour; keyboard/a11y live on the native
-	   scroll region, not here. */
+	   shows through. It keeps the thumb and pointer behaviour, and now also carries the
+	   scrollbar role/value semantics. */
 	[type="range"] {
 		position: absolute;
 		writing-mode: vertical-lr;
