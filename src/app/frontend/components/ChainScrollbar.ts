@@ -44,10 +44,7 @@ export function ChainScrollbar(props: {
 	const slider = input({ type: "range" })
 		.min("0")
 		.max(maxAttr)
-		.step("any")
-		// Re-role the native range as a scrollbar: it *is* one. role + aria-controls must live on
-		// the same (focusable) element, which is why controls comes in as a prop and is applied
-		// here rather than on the wrapper.
+		.step(`${1}`)
 		.role("scrollbar")
 		.ariaControlsElements([props.controls.$node])
 		.ariaOrientation("vertical")
