@@ -16,7 +16,6 @@ export function BlockWidget(props: {
 	const { article, dl, dt, dd, div } = tags;
 
 	const self = article().$bind(BlockWidgetStyle.useScope());
-	// TODO: maybe make this based on weight
 	self.$bind(useStyleProperty("--filled", `${(block.size ?? 0) / MAX_BLOCK_SIZE}`));
 
 	const confirmations = tipHeight.derive((tip) => tip - block.height + 1);
