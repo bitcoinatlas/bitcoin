@@ -61,17 +61,21 @@ export function formatNumber(n: number | bigint): string {
 	return n.toLocaleString("en-US");
 }
 
-export function formatBlockSize(bytes: number): string {
-	if (bytes < 1000) return `${bytes} B`;
-	const units = ["KB", "MB"];
-	let value = bytes / 1000;
-	let unit = 0;
-	while (value >= 1000 && unit < units.length - 1) {
-		value /= 1000;
-		unit++;
-	}
-	const digits = value >= 100 ? 0 : value >= 10 ? 1 : 2;
-	return `${value.toFixed(digits)} ${units[unit]}`;
+export function formatBytes(bytes: number, base: number, units: string[]): string {
+	if (bytes === 0) return `0 ${units[0]}`;
+	const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(base));
+	const value = bytes / base ** i;
+	return `${value.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+/** Binary — MiB, KiB, etc. (1024-base). */
+export function formatBytesBinary(bytes: number): string {
+	return formatBytes(bytes, 1024, ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]);
+}
+
+/** Decimal — MB, KB, etc. (1000-base). */
+export function formatBytesDecimal(bytes: number): string {
+	return formatBytes(bytes, 1000, ["B", "KB", "MB", "GB", "TB", "PB"]);
 }
 
 /** Format a satoshi amount as a plain BTC number (no unit suffix), trimming trailing zeros. */

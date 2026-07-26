@@ -2,7 +2,7 @@ import { tags } from "@purifyjs/core";
 import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
 import { css } from "~/app/frontend/utils/css.ts";
 import { getRelativeDate } from "~/app/frontend/utils/date.ts";
-import { formatBlockHeight, formatBlockSize } from "~/app/frontend/utils/format.ts";
+import { formatBlockHeight, formatBytesDecimal } from "~/app/frontend/utils/format.ts";
 import { Block } from "~/app/routes.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 
@@ -26,7 +26,7 @@ export function BlockWidget(block: Block) {
 			),
 			div({ class: "size" }).append$(
 				dt().textContent("Size"),
-				dd().textContent(block.size ? formatBlockSize(block.size) : "unknown"),
+				dd().textContent(block.size ? formatBytesDecimal(block.size) : "unknown"),
 			),
 			// TODO: maybe remove this in favor of "n blocks ago"
 			div({ class: "timestamp" }).append$(
