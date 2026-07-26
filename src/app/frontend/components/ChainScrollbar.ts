@@ -44,7 +44,7 @@ export function ChainScrollbar(props: {
 	const slider = input({ type: "range" })
 		.min("0")
 		.max(maxAttr)
-		.step(`${1}`)
+		.step(`${.25}`)
 		.role("scrollbar")
 		.ariaControlsElements([props.controls.$node])
 		.ariaOrientation("vertical")
