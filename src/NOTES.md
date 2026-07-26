@@ -4,6 +4,14 @@
 - change neccery storage changes that you mention as TODO
 - speed up sync more, if posibble get rid of rocksdb, we dont want external binaries, we want native deno codebase fully, so it can easily work anywhere. 
 
+---
+
+another important future thing is when we add our own p2p protocol over websockets.
+
+we can make it sync with already compressed chunks directly. this should reduce the bandwith a lot.
+
+of course there need to be a handshake about what is the chunk size, what is the compression algo options etc.
+
 ## 4
 
 In my previous design i didnt have this many indexes. Indexes are taking way too much space.
