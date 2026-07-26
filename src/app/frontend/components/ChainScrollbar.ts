@@ -2,6 +2,7 @@ import { Builder, combine, ref, Sync, tags } from "@purifyjs/core";
 import { css } from "~/app/frontend/utils/css.ts";
 import { HALVING_BLOCKS } from "~/constants.ts";
 import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
+import { formatBlockHeight } from "~/app/frontend/utils/format.ts";
 
 // Ruler gradations, in blocks: halvings are the major bands, a twentieth of a halving the minor
 // ticks (difficulty epochs are too dense and drift, so they're deferred to a zoom level).
@@ -86,7 +87,7 @@ export function ChainScrollbar(props: {
 			div({ class: "ruler" })
 				.ariaHidden("true")
 				.$bind((element) => at.follow((value) => element.style.setProperty("--at", String(value)), true))
-				.append$(div({ class: "readout" }).append$(span().textContent(height.derive((h) => h.toLocaleString())))),
+				.append$(div({ class: "readout" }).append$(span().textContent(height.derive(formatBlockHeight)))),
 		);
 }
 
