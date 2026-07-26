@@ -1,6 +1,7 @@
 import { combine, ref, Sync, tags } from "@purifyjs/core";
 import { css } from "~/app/frontend/utils/css.ts";
 import { HALVING_BLOCKS } from "~/constants.ts";
+import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
 
 // Ruler gradations, in blocks: halvings are the major bands, a twentieth of a halving the minor
 // ticks (difficulty epochs are too dense and drift, so they're deferred to a zoom level).
@@ -17,14 +18,14 @@ const { div, span, input } = tags;
 export function ChainScrollbar(props: {
 	value: Sync.Ref<number>; // position, fractional rows; reflected onto the thumb
 	max: Sync<number>; // maxFirst — the deepest the viewport can scroll
-	tip: number; // tip height, for the ruler fractions and labels
+	tipHeight: Sync<number>; // tip height, for the ruler fractions and labels
 	onScrub: (value: number) => void; // user dragged the thumb
 }) {
 	// Fraction of the axis the thumb sits at, for the readout that rides it.
 	const at = combine({ value: props.value, max: props.max })
 		.derive(({ value, max }) => (max > 0 ? Math.min(1, Math.max(0, value / max)) : 0));
 	// Block height under the thumb, for the readout.
-	const height = props.value.derive((value) => props.tip - Math.round(value));
+	const height = combine({ value: props.value, tip: props.tipHeight }).derive(({ tip, value }) => tip - Math.round(value));
 
 	// Surface the ruler + readout while the value is moving (scroll or scrub), then fade — so
 	// scrolling gets the same affordance as hovering, without a hover.
@@ -60,13 +61,11 @@ export function ChainScrollbar(props: {
 			};
 		});
 
-	return div({
-		class: "scrollbar",
-		// Static gradations, as a fraction of the axis — they never change, so no binding.
-		style: `--minor:${(MINOR / props.tip) * 100}%; --major:${(MAJOR / props.tip) * 100}%`,
-	})
+	return div({ class: "scrollbar" })
 		.ariaHidden("true")
 		.$bind(ChainScrollbarStyle.useScope())
+		.$bind(useStyleProperty("--minor", props.tipHeight.derive((tip) => `${(MINOR / tip) * 100}%`)))
+		.$bind(useStyleProperty("--majormajor", props.tipHeight.derive((tip) => `${(MAJOR / tip) * 100}%`)))
 		.$bind((element) => active.follow((on) => element.classList.toggle("active", on), true))
 		.append$(
 			slider,

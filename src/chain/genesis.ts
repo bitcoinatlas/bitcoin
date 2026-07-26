@@ -1,4 +1,4 @@
-import { workFromHeader } from "~/chain/pow.ts";
+import { workFromHeader } from "~/libs/bitcoin/pow.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { sha256d } from "~/libs/hashes/sha256d.ts";
 

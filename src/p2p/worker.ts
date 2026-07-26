@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED, GENESIS_WORK } from "~/chain/genesis.ts";
-import { verifyProofOfWork, workFromHeader } from "~/chain/pow.ts";
+import { verifyProofOfWork, workFromHeader } from "~/libs/bitcoin/pow.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";

@@ -87,16 +87,6 @@ export function formatBtcValue(satoshis: bigint): string {
 	return `${neg ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
 
-/** Turn an nBits compact target into a difficulty relative to difficulty-1 (0x1d00ffff). */
-export function difficultyFromBits(bits: number): number {
-	const exponent = bits >>> 24;
-	const mantissa = bits & 0x00ffffff;
-	// difficulty_1 = 0xffff * 2^(8*(0x1d-3)); current = mantissa * 2^(8*(exp-3))
-	const current = mantissa * Math.pow(2, 8 * (exponent - 3));
-	const diff1 = 0xffff * Math.pow(2, 8 * (0x1d - 3));
-	return diff1 / current;
-}
-
 /** Human-readable large number with metric suffix (for difficulty / hashrate). */
 export function formatBig(n: number): string {
 	if (!isFinite(n)) return "—";

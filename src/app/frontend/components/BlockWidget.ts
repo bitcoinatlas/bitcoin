@@ -1,19 +1,25 @@
-import { tags } from "@purifyjs/core";
+import { U32 } from "@nomadshiba/codec";
+import { Sync, tags } from "@purifyjs/core";
+import { encodeHex } from "@std/encoding";
 import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
 import { css } from "~/app/frontend/utils/css.ts";
-import { getRelativeDate } from "~/app/frontend/utils/date.ts";
-import { formatBlockHeight, formatBytesDecimal } from "~/app/frontend/utils/format.ts";
+import { formatBig, formatBlockHeight, formatBytesDecimal } from "~/app/frontend/utils/format.ts";
 import { Block } from "~/app/routes.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
+import { difficultyFromHeader } from "~/libs/bitcoin/pow.ts";
 
-export function BlockWidget(block: Block) {
-	const { article, dl, dt, dd, div, time } = tags;
+export function BlockWidget(props: {
+	block: Block;
+	tipHeight: Sync<number>;
+}) {
+	const { block, tipHeight } = props;
+	const { article, dl, dt, dd, div } = tags;
 
 	const self = article().$bind(BlockWidgetStyle.useScope());
 	// TODO: maybe make this based on weight
 	self.$bind(useStyleProperty("--filled", `${(block.size ?? 0) / MAX_BLOCK_SIZE}`));
 
-	const date = new Date(block.header.timestamp * 1000);
+	const confirmations = tipHeight.derive((tip) => tip - block.height + 1);
 
 	self.append$(
 		div({ class: "stripe" }).append$(
@@ -28,18 +34,17 @@ export function BlockWidget(block: Block) {
 				dt().textContent("Size"),
 				dd().textContent(block.size ? formatBytesDecimal(block.size) : "unknown"),
 			),
-			// TODO: maybe remove this in favor of "n blocks ago"
-			div({ class: "timestamp" }).append$(
-				dt().textContent("Timestamp"),
-				dd().append$(time().dateTime(date.toISOString()).textContent(getRelativeDate(date))),
+			div({ class: "difficulty" }).append$(
+				dt().textContent("Difficulty"),
+				dd().textContent(`${formatBig(difficultyFromHeader(block.header))}`),
 			),
-			div({ class: "bits" }).append$(
-				dt().textContent("Bits"),
-				dd().textContent(`${block.header.bits}`),
+			div({ class: "version" }).append$(
+				dt().textContent("Version"),
+				dd().textContent(`0x${encodeHex(U32.encode(block.header.version))}`),
 			),
-			div({ class: "nonce" }).append$(
-				dt().textContent("Nonce"),
-				dd().textContent(`${block.header.nonce}`),
+			div({ class: "confirmations" }).append$(
+				dt().textContent("Confirmations"),
+				dd().textContent(confirmations.derive((n) => `${n} ${n === 1 ? "block" : "blocks"} ago`)),
 			),
 		),
 	);
@@ -94,15 +99,29 @@ const BlockWidgetStyle = css`
 
 	dl {
 		display: block grid;
-		grid-template-columns: auto auto minmax(0, 1fr) auto;
+		grid-template-columns: auto minmax(0, 1fr) auto;
 		grid-template-areas:
-			"size		.			.	height"
-			".			.      		.	bits"
-			"timestamp	timestamp 	.	nonce";
+			"difficulty		difficulty		height"
+			"version		version			."
+			"confirmations	confirmations	size";
 		gap: 0.25em;
 		align-items: baseline;
-		margin-block: 0;
-		margin-inline: 0;
+	}
+
+	.height {
+		grid-area: height;
+	}
+	.size {
+		grid-area: size;
+	}
+	.difficulty {
+		grid-area: difficulty;
+	}
+	.version {
+		grid-area: version;
+	}
+	.confirmations {
+		grid-area: confirmations;
 	}
 
 	dl > * {
@@ -111,8 +130,6 @@ const BlockWidgetStyle = css`
 	}
 
 	dt {
-		margin-block: 0;
-		margin-inline: 0;
 		font-size: 0.6em;
 		letter-spacing: 0.14em;
 		text-transform: uppercase;
@@ -120,34 +137,31 @@ const BlockWidgetStyle = css`
 	}
 
 	dd {
-		margin-block: 0;
-		margin-inline: 0;
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
 
-	.confirmations {
-		grid-area: confirmations;
-	}
-
+	/* inline end */
 	.height,
-	.bits,
-	.nonce {
+	.size {
 		justify-self: end;
 		text-align: end;
 	}
 
-	:is(.height, .timestamp, .hash) dt {
+	/* no title */
+	:is(.height, .confirmations) dt {
 		position: absolute;
-		clip-path: inset(50%);
-		overflow: hidden;
-		white-space: nowrap;
+		scale: 0;
+	}
+
+	/* small value */
+	:is(.difficulty, .version) dd {
+		font-size: .85em;
 	}
 
 	.height {
-		grid-area: height;
 		position: relative;
 		align-self: center;
 	}
@@ -155,65 +169,33 @@ const BlockWidgetStyle = css`
 	.height dd {
 		font-size: 2em;
 		line-height: 1;
-		font-weight: 600;
-	}
-
-	.hash {
-		grid-area: hash;
-	}
-
-	.hash dd {
-		font-family: var(--font-mono, ui-monospace, monospace);
-		font-size: 0.95em;
-		color: color-mix(in srgb, currentcolor 72%, transparent);
-
-		display: block grid;
-		grid-template-columns: 1fr auto;
-
-		span:first-child {
-			white-space: nowrap;
-			overflow: hidden;
-			text-overflow: ellipsis;
-		}
+		font-weight: bolder;
 	}
 
 	.size {
-		grid-area: size;
+		font-weight: bolder;
 	}
 
-	.timestamp {
-		grid-area: timestamp;
+	.confirmations {
 		align-self: end;
 		font-size: .7em;
 		color: color-mix(in srgb, currentcolor 72%, transparent);
-	}
-
-	.bits {
-		grid-area: bits;
-	}
-
-	.nonce {
-		grid-area: nonce;
 	}
 
 	@container (inline-size <= 20em) {
 		dl {
 			grid-template-columns: minmax(0, 1fr) auto;
 			grid-template-areas:
-				"size		height"
-				"bits       bits"
-				"nonce      nonce"
-				"timestamp  timestamp";
+				"size			height"
+				"difficulty 	difficulty"
+				"version    	version"
+				"confirmations  confirmations";
 			row-gap: .25em;
 			column-gap: .15em;
 		}
 
 		dl > * {
 			align-self: baseline;
-		}
-
-		.bits,
-		.nonce {
 			justify-self: start;
 			text-align: start;
 		}

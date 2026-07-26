@@ -47,9 +47,10 @@ function useMeasureBlockSize(
 }
 
 export async function ChainTimeline() {
-	const tip = await api.fetch("GET /v1/block/tip", {});
-	if (!tip) return;
-	const total = tip.height + 1; // heights 0..tip.height, newest first
+	// TODO: Later stream new blocks and tip using http chunks (probably tell your current height, and it will stream the rest)
+	const tip = ref(await api.fetch("GET /v1/block/tip", {}));
+	const total = tip.derive((tip) => tip ? tip.height + 1 : 0);
+	const tipHeight = tip.derive((tip) => tip ? tip.height : 0);
 
 	// --- measured geometry, in px ----------------------------------------
 	const rowSize = ref(0); // row pitch (the whole li, gap baked in); 0 until measured
@@ -57,18 +58,18 @@ export async function ChainTimeline() {
 
 	// --- scroll model, in fractional rows --------------------------------
 	const position = ref(0);
-	const maxFirst = combine({ rowSize, viewport })
-		.derive(({ rowSize, viewport }) => (rowSize > 0 ? Math.max(0, total - viewport / rowSize) : 0));
+	const maxFirst = combine({ rowSize, viewport, total })
+		.derive(({ rowSize, viewport, total }) => (tip && rowSize > 0 ? Math.max(0, total - viewport / rowSize) : 0));
 
 	// --- the live window (quantised to PAGE with overscan) ---------------
 	// take/start only change on a page crossing, so the row set rebuilds rarely; `offset` slides
 	// every frame instead.
-	const geometry = combine({ position, rowSize, viewport });
-	const take = geometry.derive(({ rowSize, viewport }) => {
+	const geometry = combine({ position, rowSize, viewport, total });
+	const take = geometry.derive(({ rowSize, viewport, total }) => {
 		if (rowSize <= 0) return 0;
 		return Math.min(total, Math.ceil(viewport / rowSize) + PAGE + OVERSCAN * 2);
 	});
-	const start = geometry.derive(({ position, rowSize, viewport }) => {
+	const start = geometry.derive(({ position, rowSize, viewport, total }) => {
 		if (rowSize <= 0) return 0;
 		const count = Math.min(total, Math.ceil(viewport / rowSize) + PAGE + OVERSCAN * 2);
 		return Math.max(0, Math.min(total - count, Math.floor(position / PAGE) * PAGE - OVERSCAN));
@@ -83,9 +84,10 @@ export async function ChainTimeline() {
 	const store = new Map<number, Block>();
 	const revision = ref(0);
 
-	const fetched = defer(combine({ start, take }), DELAY)
-		.derive(async ({ start, take }) => {
+	const fetched = defer(combine({ start, take, tip }), DELAY)
+		.derive(async ({ start, take, tip }) => {
 			if (take === 0) return null;
+			if (!tip) return null;
 			const to = tip.height - start; // highest height in the window
 			const blocks = await api.fetch("GET /v1/block?to=:to&take=:take", { params: { search: { to, take } } });
 			return { to, blocks };
@@ -105,9 +107,9 @@ export async function ChainTimeline() {
 		const height = ref(-1);
 		const block = combine({ height, revision }).derive(({ height }) => store.get(height) ?? null);
 		const item = li()
-			.ariaSetSize(`${total}`)
+			.ariaSetSize(total.derive((total) => `${total}` as const))
 			.ariaBusy(block.derive((b) => (b ? null : "true")))
-			.$bind(useReplaceChildren(block.derive((block) => (block ? BlockWidget(block) : ""))));
+			.$bind(useReplaceChildren(block.derive((block) => (block ? BlockWidget({ block, tipHeight }) : ""))));
 		const slot: Slot = { item, height };
 		slots.push(slot);
 		list.append$(item);
@@ -115,14 +117,14 @@ export async function ChainTimeline() {
 		return slot;
 	};
 
-	const paint = (start: number, take: number) => {
+	const paint = (start: number, take: number, tipHeight: number) => {
 		while (slots.length < take) createSlot();
 		for (let i = 0; i < slots.length; i++) {
 			const slot = slots[i]!;
 			const active = i < take;
 			slot.item.hidden(!active);
 			if (!active) continue;
-			slot.height.set(tip.height - (start + i));
+			slot.height.set(tipHeight - (start + i));
 			slot.item.ariaPosInSet(`${start + i + 1}`);
 		}
 	};
@@ -180,7 +182,7 @@ export async function ChainTimeline() {
 	// Off-axis measuring row: gives us the row pitch without rendering a card.
 	const probe = li({ class: "probe" }).ariaHidden("true")
 		.$bind(useMeasureBlockSize(rowSize))
-		.append$(BlockWidget(tip));
+		.$bind(useReplaceChildren(tip.derive((block) => block ? BlockWidget({ block, tipHeight }) : null)));
 	list.append$(probe);
 
 	const self = section({ class: "surface" })
@@ -195,7 +197,7 @@ export async function ChainTimeline() {
 
 			const unfollows = [
 				// row set rebuilds only on a page shift / resize
-				combine({ start, take }).follow(({ start, take }) => paint(start, take), true),
+				combine({ start, take, tipHeight }).follow(({ start, take, tipHeight }) => paint(start, take, tipHeight), true),
 				// the transform slides every frame
 				offset.follow((value) => (list.$node.style.transform = `translateY(${value}px)`), true),
 				// filled blocks land in the store
@@ -216,7 +218,7 @@ export async function ChainTimeline() {
 			ChainScrollbar({
 				value: position,
 				max: maxFirst,
-				tip: tip.height,
+				tipHeight: tipHeight,
 				onScrub: layout,
 			}),
 		),
@@ -314,6 +316,9 @@ const ChainTimelineStyle = css`
 		background-color: var(--row-placeholder);
 		opacity: 0;
 		transition: opacity 300ms ease-out 60ms;
+
+		pointer-events: none;
+		user-select: none;
 	}
 
 	li[aria-busy]::before {
