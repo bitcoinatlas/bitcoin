@@ -13,37 +13,43 @@ export function BlockWidget(props: {
 	tipHeight: Sync<number>;
 }) {
 	const { block, tipHeight } = props;
-	const { article, dl, dt, dd, div } = tags;
+	const { a, article, dl, dt, dd, div } = tags;
 
-	const self = article().$bind(BlockWidgetStyle.useScope());
-	self.$bind(useStyleProperty("--filled", `${(block.size ?? 0) / MAX_BLOCK_SIZE}`));
+	const hash = block.header.hash().toReversed();
+
+	const t = (block.size ?? 0) / MAX_BLOCK_SIZE;
+	const self = a().href(`#/block/${encodeHex(hash)}`)
+		.$bind(BlockWidgetStyle.useScope())
+		.$bind(useStyleProperty("--filled", `${t}`));
 
 	const confirmations = tipHeight.derive((tip) => tip - block.height + 1);
 
 	self.append$(
-		div({ class: "stripe" }).append$(
-			Array.from(block.header.hash()).map((byte) => div().$bind(useStyleProperty("--hue", `${Math.round((byte / 255) * 360)}`))),
-		),
-		dl().append$(
-			div({ class: "height" }).append$(
-				dt().textContent("Height"),
-				dd().textContent(formatBlockHeight(block.height)),
+		article().append$(
+			div({ class: "stripe" }).append$(
+				Array.from(hash).map((byte) => div().$bind(useStyleProperty("--hue", `${Math.round((byte / 255) * 360)}`))),
 			),
-			div({ class: "size" }).append$(
-				dt().textContent("Size"),
-				dd().textContent(block.size ? formatBytesDecimal(block.size) : "unknown"),
-			),
-			div({ class: "difficulty" }).append$(
-				dt().textContent("Difficulty"),
-				dd().textContent(`${formatBig(difficultyFromHeader(block.header))}`),
-			),
-			div({ class: "version" }).append$(
-				dt().textContent("Version"),
-				dd().textContent(`0x${encodeHex(U32.encode(block.header.version))}`),
-			),
-			div({ class: "confirmations" }).append$(
-				dt().textContent("Confirmations"),
-				dd().textContent(confirmations.derive((n) => `${n} ${n === 1 ? "block" : "blocks"} ago`)),
+			dl().append$(
+				div({ class: "height" }).append$(
+					dt().textContent("Height"),
+					dd().textContent(formatBlockHeight(block.height)),
+				),
+				div({ class: "size" }).append$(
+					dt().textContent("Size"),
+					dd().textContent(block.size ? formatBytesDecimal(block.size) : "unknown"),
+				),
+				div({ class: "difficulty" }).append$(
+					dt().textContent("Difficulty"),
+					dd().textContent(`${formatBig(difficultyFromHeader(block.header))}`),
+				),
+				div({ class: "version" }).append$(
+					dt().textContent("Version"),
+					dd().textContent(`0x${encodeHex(U32.encode(block.header.version))}`),
+				),
+				div({ class: "confirmations" }).append$(
+					dt().textContent("Confirmations"),
+					dd().textContent(confirmations.derive((n) => `${n} ${n === 1 ? "block" : "blocks"} ago`)),
+				),
 			),
 		),
 	);
@@ -53,6 +59,15 @@ export function BlockWidget(props: {
 
 const BlockWidgetStyle = css`
 	:scope {
+		display: block grid;
+		color: inherit;
+		font: inherit;
+		&:hover {
+			text-decoration: none;
+		}
+	}
+
+	article {
 		container-type: inline-size;
 
 		--fill: clamp(0, var(--filled, 0), 1);
