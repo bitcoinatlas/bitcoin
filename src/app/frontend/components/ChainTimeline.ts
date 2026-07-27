@@ -2,11 +2,11 @@ import { Builder, combine, type Lifecycle, ref, Sync, tags } from "@purifyjs/cor
 import { api } from "~/app/frontend/api.ts";
 import { BlockWidget } from "~/app/frontend/components/BlockWidget.ts";
 import { ChainScrollbar } from "~/app/frontend/components/ChainScrollbar.ts";
-import { awaited } from "~/app/frontend/utils/awaited.ts";
-import { useReplaceChildren, useStyleProperty } from "~/app/frontend/utils/bind.ts";
-import { css } from "~/app/frontend/utils/css.ts";
-import { defer } from "~/app/frontend/utils/defer.ts";
-import { unroll } from "~/app/frontend/utils/unroll.ts";
+import { awaited } from "~/app/frontend/utils/dom/awaited.ts";
+import { useReplaceChildren, useStyleProperty } from "~/app/frontend/utils/dom/bind.ts";
+import { css } from "~/app/frontend/utils/dom/css.ts";
+import { defer } from "~/app/frontend/utils/dom/defer.ts";
+import { unroll } from "~/app/frontend/utils/dom/unroll.ts";
 import { Block } from "~/app/routes.ts";
 
 // The section scrolls NATIVELY — wheel, touch, momentum, keyboard and the accessible scroll

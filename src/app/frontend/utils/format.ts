@@ -1,7 +1,9 @@
 import { encodeHex } from "@std/encoding";
+import { U32 } from "@nomadshiba/codec";
 import type { LockTime } from "~/codec/LockTime.ts";
 import type { SequenceLock } from "~/codec/SequenceLock.ts";
-import { SECOND } from "~/constants.ts";
+import { DAY, HOUR, MINUTE, MONTH, SECOND, WEEK, YEAR } from "~/constants.ts";
+import { BigNumberFormat } from "~/app/frontend/utils/intl/BigNumberFormat.ts";
 
 export const LOCALE = new Intl.Locale("en-US");
 
@@ -9,9 +11,6 @@ export function formatHash(bytes: Uint8Array): string {
 	return encodeHex(bytes.toReversed());
 }
 
-/**
- * Format a LockTime for display.
- */
 export function formatLocktime(lock: LockTime): string {
 	switch (lock.kind) {
 		case "none":
@@ -23,9 +22,6 @@ export function formatLocktime(lock: LockTime): string {
 	}
 }
 
-/**
- * Format a SequenceLock for display.
- */
 export function formatSequence(seq: SequenceLock): string {
 	switch (seq.kind) {
 		case "final":
@@ -41,94 +37,65 @@ export function formatSequence(seq: SequenceLock): string {
 	}
 }
 
-/**
- * Format a satoshi value as BTC with up to 8 decimal places.
- */
-export function formatBtc(satoshis: bigint): string {
-	const whole = satoshis / 100_000_000n;
-	const frac = satoshis % 100_000_000n;
-	return `${whole}.${frac.toString().padStart(8, "0")} BTC`;
-}
-
-/** Truncate a long id in the middle: 0000abcd… ef123456 */
-export function truncateMiddle(str: string, head = 10, tail = 8): string {
-	if (str.length <= head + tail + 1) return str;
-	return `${str.slice(0, head)}…${str.slice(-tail)}`;
-}
-
-/** Group an integer with thin separators: 958399 -> "958,399". */
-export function formatNumber(n: number | bigint): string {
-	return n.toLocaleString("en-US");
-}
-
-export function formatBytes(bytes: number, base: number, units: string[]): string {
-	if (bytes === 0) return `0 ${units[0]}`;
-	const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(base));
-	const value = bytes / base ** i;
-	return `${value.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
-}
-
-/** Binary — MiB, KiB, etc. (1024-base). */
+const bytesBinaryFormatter = new BigNumberFormat(LOCALE, { base: 1024, units: ["B", "KiB", "MiB", "GiB", "TiB", "PiB"] });
 export function formatBytesBinary(bytes: number): string {
-	return formatBytes(bytes, 1024, ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]);
+	return bytesBinaryFormatter.format(bytes);
 }
 
-/** Decimal — MB, KB, etc. (1000-base). */
+const bytesDecimalFormatter = new BigNumberFormat(LOCALE, { base: 1000, units: ["B", "KB", "MB", "GB", "TB", "PB"] });
 export function formatBytesDecimal(bytes: number): string {
-	return formatBytes(bytes, 1000, ["B", "KB", "MB", "GB", "TB", "PB"]);
+	return bytesDecimalFormatter.format(bytes);
 }
 
-/** Format a satoshi amount as a plain BTC number (no unit suffix), trimming trailing zeros. */
-export function formatBtcValue(satoshis: bigint): string {
-	const neg = satoshis < 0n;
-	const abs = neg ? -satoshis : satoshis;
-	const whole = abs / 100_000_000n;
-	const frac = (abs % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
-	return `${neg ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
+const dateTimeFormatter = new Intl.DateTimeFormat(LOCALE);
+export function formatDateTime(value: number | Date | string): string {
+	const date = value instanceof Date ? value : new Date(value);
+	return dateTimeFormatter.format(date);
 }
 
-/** Human-readable large number with metric suffix (for difficulty / hashrate). */
-export function formatBig(n: number): string {
-	if (!isFinite(n)) return "—";
-	const units = ["", "K", "M", "G", "T", "P", "E", "Z"];
-	let value = n;
-	let unit = 0;
-	while (value >= 1000 && unit < units.length - 1) {
-		value /= 1000;
-		unit++;
-	}
-	return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 2)}${units[unit]}`;
-}
-
-/** Block subsidy in satoshis for a given height (halving every 210_000). */
-export function blockSubsidy(height: number): bigint {
-	const halvings = Math.floor(height / 210_000);
-	if (halvings >= 64) return 0n;
-	return 50_00000000n >> BigInt(halvings);
-}
-
-/** Absolute UTC timestamp string from a unix-seconds value. */
-export function formatUtc(unixSeconds: number): string {
-	return new Date(unixSeconds * 1000).toISOString().replace("T", " ").replace(".000Z", " UTC");
-}
-
-/** Printable-ASCII fragments pulled out of arbitrary script bytes (coinbase tags, OP_RETURN memos). */
-export function extractAscii(bytes: Uint8Array, minRun = 3): string {
-	let out = "";
-	let run = "";
-	for (const b of bytes) {
-		if (b >= 0x20 && b <= 0x7e) {
-			run += String.fromCharCode(b);
-		} else {
-			if (run.length >= minRun) out += out ? ` ${run}` : run;
-			run = "";
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(LOCALE, { numeric: "auto" });
+const RELATIVE_TIME_UNITS = [
+	["year", YEAR],
+	["month", MONTH],
+	["week", WEEK],
+	["day", DAY],
+	["hour", HOUR],
+	["minute", MINUTE],
+	["second", SECOND],
+] as const;
+export function formatRelativeTime(to: Date, from: Date = new Date()): string {
+	const diff = to.getTime() - from.getTime();
+	for (const [unit, msInUnit] of RELATIVE_TIME_UNITS) {
+		const diffInUnits = diff / msInUnit;
+		if (Math.abs(diffInUnits) >= 1) {
+			return relativeTimeFormatter.format(Math.round(diffInUnits), unit);
 		}
 	}
-	if (run.length >= minRun) out += out ? ` ${run}` : run;
-	return out;
+	return relativeTimeFormatter.format(0, "second"); // fallback: "now"
 }
 
 const blockHeightFormatter = new Intl.NumberFormat(LOCALE, { style: "decimal" });
 export function formatBlockHeight(height: number | bigint | Intl.StringNumericLiteral): string {
 	return blockHeightFormatter.format(height);
+}
+
+export function formatBlockVersion(version: number): string {
+	return `0x${encodeHex(U32.encode(version))}`;
+}
+
+const difficultyFormatter = new BigNumberFormat(LOCALE, { base: 1000, units: ["", "K", "M", "G", "T", "P", "E", "Z"], separator: "" });
+export function formatDifficulty(n: number): string {
+	return difficultyFormatter.format(n);
+}
+
+const hashrateFormatter = new BigNumberFormat(LOCALE, { base: 1000, units: ["", "K", "M", "G", "T", "P", "E", "Z"], separator: "" });
+export function formatHashrate(n: number): string {
+	return hashrateFormatter.format(n);
+}
+
+// TODO: this should probably moved to shared space, protocol also gonna use this.
+export function blockSubsidy(height: number): bigint {
+	const halvings = Math.floor(height / 210_000);
+	if (halvings >= 64) return 0n;
+	return 50_00000000n >> BigInt(halvings);
 }

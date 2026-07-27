@@ -1,9 +1,9 @@
 import { tags, toChild } from "@purifyjs/core";
 import { GlobalStyle } from "~/app/frontend/style.ts";
 import { ChainTimeline } from "~/app/frontend/components/ChainTimeline.ts";
-import { css } from "~/app/frontend/utils/css.ts";
-import { useReplaceChildren } from "~/app/frontend/utils/bind.ts";
-import { awaited } from "~/app/frontend/utils/awaited.ts";
+import { css } from "~/app/frontend/utils/dom/css.ts";
+import { useReplaceChildren } from "~/app/frontend/utils/dom/bind.ts";
+import { awaited } from "~/app/frontend/utils/dom/awaited.ts";
 
 await import("@ungap/custom-elements");
 

@@ -1,9 +1,8 @@
-import { U32 } from "@nomadshiba/codec";
 import { Sync, tags } from "@purifyjs/core";
 import { encodeHex } from "@std/encoding";
-import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
-import { css } from "~/app/frontend/utils/css.ts";
-import { formatBig, formatBlockHeight, formatBytesDecimal } from "~/app/frontend/utils/format.ts";
+import { useStyleProperty } from "~/app/frontend/utils/dom/bind.ts";
+import { css } from "~/app/frontend/utils/dom/css.ts";
+import { formatBlockHeight, formatBlockVersion, formatBytesDecimal, formatDifficulty } from "~/app/frontend/utils/format.ts";
 import { Block } from "~/app/routes.ts";
 import { MAX_BLOCK_SIZE } from "~/constants.ts";
 import { difficultyFromHeader } from "~/libs/bitcoin/pow.ts";
@@ -40,15 +39,15 @@ export function BlockWidget(props: {
 				),
 				div({ class: "difficulty" }).append$(
 					dt().textContent("Difficulty"),
-					dd().textContent(`${formatBig(difficultyFromHeader(block.header))}`),
+					dd().textContent(`${formatDifficulty(difficultyFromHeader(block.header))}`),
 				),
 				div({ class: "version" }).append$(
 					dt().textContent("Version"),
-					dd().textContent(`0x${encodeHex(U32.encode(block.header.version))}`),
+					dd().textContent(formatBlockVersion(block.header.version)),
 				),
 				div({ class: "confirmations" }).append$(
 					dt().textContent("Confirmations"),
-					dd().textContent(confirmations.derive((n) => `${n} ${n === 1 ? "block" : "blocks"} ago`)),
+					dd().textContent(confirmations.derive((n) => `${formatBlockHeight(n)} ${n === 1 ? "block" : "blocks"} ago`)),
 				),
 			),
 		),

@@ -1,4 +1,4 @@
-import { css } from "~/app/frontend/utils/css.ts";
+import { css } from "~/app/frontend/utils/dom/css.ts";
 
 // cards linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
 

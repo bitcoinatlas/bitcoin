@@ -1,7 +1,7 @@
 import { Builder, combine, ref, Sync, tags } from "@purifyjs/core";
-import { css } from "~/app/frontend/utils/css.ts";
+import { css } from "~/app/frontend/utils/dom/css.ts";
 import { HALVING_BLOCKS } from "~/constants.ts";
-import { useStyleProperty } from "~/app/frontend/utils/bind.ts";
+import { useStyleProperty } from "~/app/frontend/utils/dom/bind.ts";
 import { formatBlockHeight } from "~/app/frontend/utils/format.ts";
 
 // Ruler gradations, in blocks: halvings are the major bands, a twentieth of a halving the minor
