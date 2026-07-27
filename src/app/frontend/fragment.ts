@@ -7,13 +7,13 @@ const fragment = sync<string>((set) => {
 	return () => clearInterval(interval);
 }).derive((hash) => hash.slice(1) || undefined);
 
-export type FragmentViews =
+export type ViewFragment =
 	| { kind: "home" }
 	| { kind: "block.height"; height: number }
 	| { kind: "block.hash"; hash: Uint8Array }
 	| { kind: "tx"; txId: Uint8Array };
 
-fragment.derive((value): FragmentViews => {
+export const viewFragment = fragment.derive((value): ViewFragment => {
 	try {
 		if (!value) {
 			return { kind: "home" };

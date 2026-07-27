@@ -26,7 +26,7 @@ export function BlockWidget(props: {
 	self.append$(
 		article().append$(
 			div({ class: "stripe" }).append$(
-				Array.from(hash).map((byte) => div().$bind(useStyleProperty("--hue", `${Math.round((byte / 255) * 360)}`))),
+				hash.values().map((byte) => div().$bind(useStyleProperty("--hue", `${Math.round((byte / 255) * 360)}`))),
 			),
 			dl().append$(
 				div({ class: "height" }).append$(
