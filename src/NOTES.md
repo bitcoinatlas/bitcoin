@@ -1,3 +1,36 @@
+## 6
+
+ok so i think frontend has enough FOR NOW, i will change the the design of the BlockView and stuff later
+
+but rn lets focus on changing, storage and sync stuff. update it.
+
+but before that, few endpoint stuff.
+
+blocks storage should hold the wire size data.
+
+blocks endpoint should return combination of Block and BlockSummary.
+
+/txs/summary endpoint should give the txs with data, just the hash, input output count, and wire size. etc. minimal. what is visible on the ui.
+
+/txs can only be used with cursor and take params, similar to /blocks, but /txs/summary should give all of the txs, all of them.
+
+tbh i dont think we need a summary variants of endpoints, if you are getting a list its a summaryy, if you are getting one its the full data.
+
+makes more sense.
+
+and then neccery changes to storage extra data we need and stuff.
+
+then changing the way atomic and KV works. to remove the depdency on rocksdb. make it take less space and sync faster.
+easier to parallel as well.
+
+etc.
+
+then finish frontend design for blocks, txs, pubkeys.
+
+then make a nice home page.
+
+then idk we will see, probably script verification.
+
 ## 5
 
 - bring frontend to a good state

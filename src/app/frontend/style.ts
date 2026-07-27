@@ -1,7 +1,5 @@
 import { css } from "~/app/frontend/utils/dom/css.ts";
 
-// cards linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-
 export const GlobalStyle = css`
 	:root {
 		--base: hsl(240, 12%, 11%);
@@ -15,6 +13,10 @@ export const GlobalStyle = css`
 
 		--radius-min: 0.35em;
 		--radius-max: 0.75em;
+
+		--panel-radius: var(--radius-max);
+		--panel-surface: linear-gradient(to bottom, color-mix(in srgb, var(--base), currentcolor 2%) 0%, var(--base) 100%);
+		--panel-shadow: inset 0 0.06em 0 0 color-mix(in srgb, currentcolor 9%, transparent), inset 0 -0.14em 10px -0.25em color-mix(in srgb, black 45%, transparent);
 	}
 
 	:root {

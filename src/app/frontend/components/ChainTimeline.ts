@@ -272,7 +272,6 @@ const ChainTimelineStyle = css`
 		position: sticky;
 		inset-block-start: 0;
 		block-size: 0;
-		margin-block: 0;
 		padding-inline-start: .5em;
 		padding-inline-end: 1.25em;
 		list-style: none;
@@ -313,7 +312,7 @@ const ChainTimelineStyle = css`
 		position: absolute;
 		inset-block: var(--row-gap);
 		inset-inline: 0;
-		border-radius: var(--row-radius);
+		border-radius: var(--panel-radius);
 		background-color: var(--row-placeholder);
 		opacity: 0;
 		transition: opacity 300ms ease-out 60ms;

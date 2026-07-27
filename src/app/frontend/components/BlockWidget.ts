@@ -79,29 +79,36 @@ const BlockWidgetStyle = css`
 
 		padding-block: 1.05em;
 		padding-inline: 1.15em;
-		border-radius: 0.85em;
+		border-radius: var(--panel-radius);
 
-		background-color: color-mix(in srgb, var(--base), currentcolor 2%);
-		background-image:
-			linear-gradient(to left,
-			transparent calc(var(--fill) * 100% - 0.14em),
-			color-mix(in srgb, var(--accent) 75%, transparent) calc(var(--fill) * 100% - 0.14em),
-			color-mix(in srgb, var(--accent) 75%, transparent) calc(var(--fill) * 100%),
-			transparent calc(var(--fill) * 100%)),
-			linear-gradient(to left,
-			color-mix(in srgb, var(--accent) 22%, transparent) 0%,
-			transparent calc(var(--fill) * 100%));
+		background-image: var(--panel-surface);
+		box-shadow: var(--panel-shadow);
 
-		box-shadow:
-			inset 0 0.06em 0 0 color-mix(in srgb, currentcolor 9%, transparent),
-			inset 0 -0.14em 10px -0.25em color-mix(in srgb, black 45%, transparent);
+		isolation: isolate;
+		position: relative;
+		overflow: clip;
+		&::before {
+			content: "";
+			position: absolute;
+			inset: 0;
+			z-index: -1;
+			background-image:
+				linear-gradient(to left,
+				transparent calc(var(--fill) * 100% - 0.14em),
+				color-mix(in srgb, var(--accent) 75%, transparent) calc(var(--fill) * 100% - 0.14em),
+				color-mix(in srgb, var(--accent) 75%, transparent) calc(var(--fill) * 100%),
+				transparent calc(var(--fill) * 100%)),
+				linear-gradient(to left,
+				color-mix(in srgb, var(--accent) 22%, transparent) 0%,
+				transparent calc(var(--fill) * 100%));
+		}
 	}
 
 	.stripe {
 		display: block grid;
 		grid-auto-rows: 1fr;
 		inline-size: 0.8em;
-		border-radius: 0.3em;
+		border-radius: var(--radius-min);
 		overflow: hidden;
 		align-self: stretch;
 	}

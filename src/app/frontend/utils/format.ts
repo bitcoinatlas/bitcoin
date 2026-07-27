@@ -99,3 +99,9 @@ export function blockSubsidy(height: number): bigint {
 	if (halvings >= 64) return 0n;
 	return 50_00000000n >> BigInt(halvings);
 }
+
+const btcFormatter = new Intl.NumberFormat(LOCALE, { style: "currency", currency: "BTC" });
+export function formatBitcoin(sats: bigint) {
+	const btc = Number(sats) / 100_000_000;
+	return btcFormatter.format(btc);
+}

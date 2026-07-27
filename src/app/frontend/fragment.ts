@@ -1,19 +1,17 @@
 import { sync } from "@purifyjs/core";
 import { decodeHex } from "@std/encoding";
 
-const fragment = sync<string>((set) => {
-	set(location.hash);
-	const interval = setInterval(() => set(location.hash), 100);
-	return () => clearInterval(interval);
-}).derive((hash) => hash.slice(1) || undefined);
-
-export type ViewFragment =
+export type Fragment =
 	| { kind: "home" }
 	| { kind: "block.height"; height: number }
 	| { kind: "block.hash"; hash: Uint8Array }
 	| { kind: "tx"; txId: Uint8Array };
 
-export const viewFragment = fragment.derive((value): ViewFragment => {
+export const fragment = sync<string>((set) => {
+	set(location.hash);
+	const interval = setInterval(() => set(location.hash), 100);
+	return () => clearInterval(interval);
+}).derive((hash) => hash.slice(1) || undefined).derive((value): Fragment => {
 	try {
 		if (!value) {
 			return { kind: "home" };

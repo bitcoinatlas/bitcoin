@@ -3,6 +3,6 @@ import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 
 export type StoredTxOutput = Codec.InferOutput<typeof StoredTxOutput>;
 export const StoredTxOutput = new StructCodec({
-	value: BigVarInt,
+	value: BigVarInt, // TODO: doesnt have to be bigint
 	scriptPubKey: StoredPubkeyPointer,
 });
