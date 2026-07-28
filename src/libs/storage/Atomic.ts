@@ -52,7 +52,7 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 			if (!store) {
 				throw new Error(`Pinned store "${name}" does not exist.`);
 			}
-			store.truncate(size);
+			store.resize(size);
 		}
 	}
 

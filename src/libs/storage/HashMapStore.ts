@@ -1,8 +1,7 @@
 import { Bool, Codec, FixedCodec, StructCodec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
+import { Mmap } from "@nomadshiba/mmap";
 import { join } from "@std/path";
-import { ArrayStore, ArrayStoreOptions } from "~/libs/storage/ArrayStore.ts";
-import { BlobStore, BlobStoreOptions } from "~/libs/storage/BlobStore.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
 export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> = {
@@ -10,100 +9,113 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
 	pointer: Pointer;
 	key: Key;
 	value: Value;
-	entries: Pick<BlobStoreOptions, "compression" | "maxChunkSize">;
-	buckets: Pick<ArrayStoreOptions<Pointer>, "compression" | "itemsPerChunk">;
-	/** Ideal buckets/entries ratio; the map keeps `buckets ≈ entries * targetRatio`. Must be > 0. */
+	/** Ideal buckets/entries ratio; the map keeps `bucketCount ≈ entryCount * targetRatio`. E.g. `1` targets ~1 entry/bucket, `0.5` targets ~2 entries/bucket. Must be > 0. */
 	targetRatio: number;
-	/** How far the live buckets/entries ratio may drift from `targetRatio` before a rehash. Must be >= 0. */
+	/** How far the live ratio may drift from `targetRatio` before a rehash. Must be >= 0. */
 	maxRatioDrift: number;
-	writable: boolean;
 };
 
-type Meta = Codec.InferOutput<typeof Meta>;
-const Meta = new StructCodec({ stale: Bool });
-
 /**
- * On-disk hash map layered on top of {@link BlobStore} (entries) and
- * {@link ArrayStore} (bucket heads).
+ * On-disk hash map with its own mmap'd buckets + entries files (no BlobStore,
+ * no ArrayStore, no chunks, no compression).
  *
  * ## Layout
- * - `entries` (BlobStore, `path/entries`): append-only log. Each entry is
- *   `previous ++ key ++ value` (a {@link StructCodec}). `previous` is the first
- *   field so the fixed-width link can be read/patched without touching the
- *   variable-length key/value tail. It links backwards to the previous entry
- *   in the same bucket — a per-bucket singly-linked list.
- * - `buckets` (ArrayStore<Pointer>, `path/heads`): `buckets[hash(key) % len]`
- *   is the HEAD — a pointer to the *newest* entry in that bucket. Walking
- *   `HEAD -> previous` visits the whole bucket newest-first.
- * - `meta` (sidecar, `path/meta`): `{ stale }`. Everything else (bucket count,
- *   entry positions) is derived from the two stores.
+ * - `entries` (`path/entries`): append-only log. Each entry is
+ *   `previous ++ key ++ value` (a struct). `previous` is the fixed-width first
+ *   field so it can be patched in place during rehash. Links backwards to the
+ *   previous entry in the same bucket (per-bucket singly-linked list).
+ *   Pre-grown past its logical size; the logical size is tracked in `meta`.
+ * - `buckets` (`path/buckets`): flat array of fixed-width pointer slots.
+ *   `buckets[hash(key) % count]` = head (newest entry) of that bucket.
+ * - `meta` (`path/meta`): `{ stale, entriesSize, entriesCount }`. `stale` is
+ *   set during rehash for crash safety; `entriesSize` is the entries file's
+ *   logical size (bytes); `entriesCount` is the number of entries, kept for
+ *   the bucket-ratio math (see `targetRatio`) since entries are variable-
+ *   length and byte size alone is a poor proxy for chain length.
  *
  * ## Null sentinel
- * Every persisted pointer is stored offset by `+1`, so `0` means "empty slot" /
- * "end of chain". A real entry at byte offset `0` is persisted as `1`.
- *
- * ## Truncate safety
- * `previous` always points backwards to a lower byte offset, so any surviving
- * entry only references entries that also survive a truncate. Truncating the
- * entries log therefore leaves every survivor's chain intact; only the bucket
- * heads need rebuilding, which a rehash does.
+ * Persisted pointers are stored +1, so 0 = empty slot / end of chain.
  *
  * ## Rehash
- * Changing the bucket count reassigns keys to different buckets, invalidating
- * the inline `previous` links. Rehash replays entries oldest-first, patching
- * each entry's inline `previous` in place and rebuilding the heads.
+ * Replays entries oldest-first, patching inline `previous` links and rebuilding
+ * heads. Also recomputes `entriesCount` from scratch (see `targetRatio`) —
+ * it's the one place that field is allowed to go stale (`resize()` truncates
+ * by byte offset alone) and gets corrected. Crash-safe via the `stale` flag —
+ * a crash mid-rehash is detected on `open` and re-run.
  *
- * ## Crash safety
- * The heads (and inline links) are a rebuildable projection of the entries log.
- * A rebuild sets `meta.stale = true`, rewrites heads/links, then clears it. A
- * crash mid-rebuild is detected on `open` (via `stale`) and re-runs the rebuild.
+ * ## Crash safety of `set`
+ * An entry append + head update is not atomic across a crash. If we crash
+ * after the entry lands but before the head is updated, the entry is orphaned
+ * (present but unreachable) — a subsequent rehash cleans it up. If we crash
+ * after both, the meta's `entriesSize`/`entriesCount` may lag (written via
+ * mmap, flushed on `close`/`rehash`); on reopen the orphaned tail is simply
+ * not counted.
  */
 export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
 
-	public readonly entries: BlobStore;
-	public readonly buckets: ArrayStore<Pointer>;
-
 	private readonly Pointer: Pointer;
-	private readonly Key: Key;
-	private readonly Value: Value;
-	private readonly Entry: StructCodec<{ previous: Pointer; key: Key; value: Value }>;
-	private readonly EntryPrefix: StructCodec<{ previous: Pointer; key: Key }>;
-
-	private readonly writable: boolean;
+	private readonly key: Key;
+	private readonly value: Value;
+	private readonly entry: StructCodec<{ previous: Pointer; key: Key; value: Value }>;
+	private readonly entryPrefix: StructCodec<{ previous: Pointer; key: Key }>;
+	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: Pointer; entriesCount: Pointer }>;
 	private readonly targetRatio: number;
 	private readonly maxRatioDrift: number;
 
+	private readonly entriesPath: string;
+	private readonly bucketsPath: string;
 	private readonly metaPath: string;
-	private meta: Meta;
+	private readonly pointerSize: number;
+	private readonly metaSize: number;
 
-	private constructor(
-		entries: BlobStore,
-		buckets: ArrayStore<Pointer>,
-		meta: Meta,
-		options: HashMapStoreOptions<Pointer, Key, Value>,
-	) {
+	private entriesMap: Mmap | undefined;
+	private entriesPhysicalSize = 0;
+	private entriesSize = 0;
+	// Number of entries (not bytes) — used for the bucket-ratio math instead
+	// of entriesSize, since entries are variable-length and byte size alone is
+	// a poor proxy for average chain length. Recomputed authoritatively by
+	// rehash's counting pass, so it self-corrects after a resize() truncate.
+	private entriesCount = 0;
+
+	private bucketsMap: Mmap | undefined;
+	private bucketsCount = 0;
+
+	private metaMap: Mmap | undefined;
+	private stale = true;
+
+	// A fresh key per (re)map of entries/buckets opts each one out of Mmap's
+	// default same-path sharing cache — every resize is a mapping we own
+	// exclusively and fully close before the next one opens.
+	private mmapGeneration = 0;
+
+	private constructor(options: HashMapStoreOptions<Pointer, Key, Value>) {
 		super();
 		this.path = options.path;
-		this.entries = entries;
-		this.buckets = buckets;
-		this.meta = meta;
 		this.Pointer = options.pointer;
-		this.Key = options.key;
-		this.Value = options.value;
-		this.writable = options.writable;
+		this.key = options.key;
+		this.value = options.value;
 		this.targetRatio = options.targetRatio;
 		this.maxRatioDrift = options.maxRatioDrift;
+		this.entriesPath = join(options.path, "entries");
+		this.bucketsPath = join(options.path, "buckets");
 		this.metaPath = join(options.path, "meta");
+		this.pointerSize = options.pointer.stride.size;
+		this.metaSize = 1 + this.pointerSize * 2; // Bool + Pointer(entriesSize) + Pointer(entriesCount)
 
-		this.Entry = new StructCodec({
+		this.entry = new StructCodec({
 			previous: options.pointer,
 			key: options.key,
 			value: options.value,
 		});
-		this.EntryPrefix = new StructCodec({
+		this.entryPrefix = new StructCodec({
 			previous: options.pointer,
 			key: options.key,
+		});
+		this.meta = new StructCodec({
+			stale: Bool,
+			entriesSize: options.pointer,
+			entriesCount: options.pointer,
 		});
 	}
 
@@ -116,45 +128,120 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		if (options.targetRatio <= 0) throw new Error("targetRatio must be > 0");
 		if (options.maxRatioDrift < 0) throw new Error("maxRatioDrift must be >= 0");
 
-		const entries = BlobStore.open({
-			...options.entries,
-			path: join(options.path, "entries"),
-			writable: options.writable,
-		});
+		Deno.mkdirSync(options.path, { recursive: true });
 
-		const buckets = ArrayStore.open({
-			...options.buckets,
-			path: join(options.path, "heads"),
-			item: options.pointer,
-			writable: options.writable,
-		});
+		const self = new HashMapStore<Pointer, Key, Value>(options);
 
-		const metaPath = join(options.path, "meta");
-		let meta: Meta | undefined;
+		// Meta
+		let metaExists = true;
 		try {
-			[meta] = Meta.decode(Deno.readFileSync(metaPath));
+			const stat = Deno.statSync(self.metaPath);
+			if (stat.size !== self.metaSize) {
+				metaExists = false;
+			}
 		} catch (e) {
 			if (!(e instanceof Deno.errors.NotFound)) throw e;
+			metaExists = false;
 		}
-		meta ??= { stale: true };
-
-		const self = new HashMapStore<Pointer, Key, Value>(entries, buckets, meta, options);
-
-		if (!meta.stale) return self;
-		if (!options.writable) {
-			throw new Error(`HashMapStore at ${options.path} needs a rebuild but was opened read-only`);
+		if (!metaExists) {
+			Deno.openSync(self.metaPath, { create: true, write: true }).close();
+			Deno.truncateSync(self.metaPath, self.metaSize);
 		}
-		self.rehash();
+		self.metaMap = Mmap.openSync(self.metaPath, { write: true });
+		if (metaExists) {
+			const [meta] = self.meta.decode(self.metaMap.bytes);
+			self.stale = meta.stale;
+			self.entriesSize = meta.entriesSize;
+			self.entriesCount = meta.entriesCount;
+		}
+
+		// Entries
+		try {
+			self.entriesPhysicalSize = Deno.statSync(self.entriesPath).size;
+		} catch (e) {
+			if (!(e instanceof Deno.errors.NotFound)) throw e;
+			Deno.openSync(self.entriesPath, { create: true, write: true }).close();
+			self.entriesPhysicalSize = 0;
+		}
+		if (self.entriesPhysicalSize > 0) {
+			self.entriesMap = Mmap.openSync(self.entriesPath, { write: true, key: `${self.mmapGeneration++}` });
+		}
+
+		// Buckets (only if not stale — stale means rehash will create them)
+		if (!self.stale) {
+			try {
+				self.bucketsCount = Deno.statSync(self.bucketsPath).size / self.pointerSize;
+				if (self.bucketsCount > 0) {
+					self.bucketsMap = Mmap.openSync(self.bucketsPath, { write: true, key: `${self.mmapGeneration++}` });
+				}
+			} catch (e) {
+				if (!(e instanceof Deno.errors.NotFound)) throw e;
+			}
+		}
+
+		if (self.stale) self.rehash();
+
 		return self;
 	}
 
+	// ── meta ───────────────────────────────────────────────────────────────
+
 	private writeMeta(): void {
-		Deno.writeFileSync(this.metaPath, Meta.encode(this.meta));
+		this.metaMap!.bytes.set(this.meta.encode({ stale: this.stale, entriesSize: this.entriesSize, entriesCount: this.entriesCount }));
 	}
 
-	// ── hashing ─────────────────────────────────────────────────────────────
+	// ── entries file (pre-grown, mmap'd) ───────────────────────────────────
 
-	/** FNV-1a (32-bit) over the encoded key bytes. Codec-agnostic. */
+	private ensureEntriesCapacity(needed: number): void {
+		if (needed <= this.entriesPhysicalSize) return;
+		let newSize = this.entriesPhysicalSize;
+		if (newSize === 0) newSize = 1024 * 1024;
+		while (newSize < needed) newSize *= 2;
+		this.entriesMap?.close();
+		this.entriesMap = undefined;
+		const file = Deno.openSync(this.entriesPath, { write: true });
+		file.truncateSync(newSize);
+		file.close();
+		this.entriesMap = Mmap.openSync(this.entriesPath, { write: true, key: `${this.mmapGeneration++}` });
+		this.entriesPhysicalSize = newSize;
+	}
+
+	// ── buckets file (fixed-width array, mmap'd) ───────────────────────────
+
+	private resizeBuckets(count: number): void {
+		this.bucketsMap?.close();
+		this.bucketsMap = undefined;
+		this.bucketsCount = count;
+		if (count === 0) return;
+		// Delete + recreate (not truncate-in-place): rehash relies on every
+		// slot starting at 0 (empty). Truncating an EXISTING file only zero-
+		// fills the newly-grown tail, leaving stale non-zero pointers from the
+		// previous (differently-sized) layout sitting at the overlapping
+		// offsets — those get misread as real heads under the new bucket
+		// count, corrupting chains. A fresh file is zero end-to-end.
+		try {
+			Deno.removeSync(this.bucketsPath);
+		} catch (e) {
+			if (!(e instanceof Deno.errors.NotFound)) throw e;
+		}
+		const file = Deno.openSync(this.bucketsPath, { create: true, write: true });
+		file.truncateSync(count * this.pointerSize);
+		file.close();
+		this.bucketsMap = Mmap.openSync(this.bucketsPath, { write: true, key: `${this.mmapGeneration++}` });
+	}
+
+	private readBucket(index: number): number {
+		const [value] = this.Pointer.decode(this.bucketsMap!.bytes, index * this.pointerSize);
+		return value;
+	}
+
+	private writeBucket(index: number, value: number): void {
+		this.bucketsMap!.bytes.set(this.Pointer.encode(value), index * this.pointerSize);
+	}
+
+	// ── hashing ────────────────────────────────────────────────────────────
+
+	/** FNV-1a (32-bit) over the encoded key bytes. */
 	private hashKeyBytes(keyBytes: Uint8Array): number {
 		let hash = 0x811c9dc5;
 		for (let i = 0; i < keyBytes.length; i++) {
@@ -165,20 +252,20 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	}
 
 	private bucketIndexOf(keyBytes: Uint8Array): number {
-		return this.hashKeyBytes(keyBytes) % this.buckets.size();
+		return this.hashKeyBytes(keyBytes) % this.bucketsCount;
 	}
 
-	// ── read path ─────────────────────────────────────────────────────────────
+	// ── read path ──────────────────────────────────────────────────────────
 
 	get(key: Codec.InferInput<Key>): Codec.InferOutput<Value> | undefined {
-		if (this.buckets.size() === 0) return undefined;
-		const keyBytes = this.Key.encode(key);
-		let pointer = this.buckets.get(this.bucketIndexOf(keyBytes)) ?? 0; // +1 encoded
+		if (this.bucketsCount === 0) return undefined;
+		const keyBytes = this.key.encode(key);
+		let pointer = this.readBucket(this.bucketIndexOf(keyBytes));
 		while (pointer !== 0) {
 			pointer -= 1;
-			const [prefix, prefixSize] = this.entries.get(pointer, this.EntryPrefix);
-			if (equals(keyBytes, this.Key.encode(prefix.key))) {
-				const [value] = this.entries.get(pointer + prefixSize, this.Value);
+			const [prefix, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, pointer);
+			if (equals(keyBytes, this.key.encode(prefix.key))) {
+				const [value] = this.value.decode(this.entriesMap!.bytes, pointer + prefixSize);
 				return value;
 			}
 			pointer = prefix.previous;
@@ -187,74 +274,50 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	}
 
 	async getAsync(key: Codec.InferInput<Key>): Promise<Codec.InferOutput<Value> | undefined> {
-		if (this.buckets.size() === 0) return undefined;
-		const keyBytes = this.Key.encode(key);
-		let pointer = (await this.buckets.getAsync(this.bucketIndexOf(keyBytes))) ?? 0; // +1 encoded
-		while (pointer !== 0) {
-			pointer -= 1;
-			const [prefix, prefixSize] = await this.entries.getAsync(pointer, this.EntryPrefix);
-			if (equals(keyBytes, this.Key.encode(prefix.key))) {
-				const [value] = await this.entries.getAsync(pointer + prefixSize, this.Value);
-				return value;
-			}
-			pointer = prefix.previous;
-		}
-		return undefined;
+		return this.get(key);
 	}
 
 	has(key: Codec.InferInput<Key>): boolean {
 		return this.get(key) !== undefined;
 	}
 
-	// ── write path ────────────────────────────────────────────────────────────
+	// ── write path ─────────────────────────────────────────────────────────
 
-	/**
-	 * Insert `key -> value`. Rejects duplicates: if `key` already exists the
-	 * entry is left untouched and `false` is returned; a fresh insert returns
-	 * `true`.
-	 */
+	/** Insert `key -> value`. Rejects duplicates; returns `true` on fresh insert. */
 	set(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
-		if (!this.writable) throw new Error("HashMapStore opened read-only");
-		const keyBytes = this.Key.encode(key);
+		const keyBytes = this.key.encode(key);
 		const bucket = this.bucketIndexOf(keyBytes);
-		const head = this.buckets.get(bucket) ?? 0; // +1 encoded
+		const head = this.readBucket(bucket);
 
-		// Reject duplicates: walk the chain and bail if the key is already present.
+		// Reject duplicates: walk the chain.
 		let pointer = head;
 		while (pointer !== 0) {
 			pointer -= 1;
-			const [prefix] = this.entries.get(pointer, this.EntryPrefix);
-			if (equals(keyBytes, this.Key.encode(prefix.key))) return false;
+			const [prefix] = this.entryPrefix.decode(this.entriesMap!.bytes, pointer);
+			if (equals(keyBytes, this.key.encode(prefix.key))) return false;
 			pointer = prefix.previous;
 		}
 
-		// Append the new entry, linking it back to the (old) bucket head, then
-		// make it the new head (+1 encoded).
-		const offset = this.entries.append(this.Entry.encode({ previous: head, key, value }));
-		this.setHead(bucket, offset + 1);
+		// Append entry, link back to old head, make it the new head (+1 encoded).
+		const offset = this.entriesSize;
+		const encoded = this.entry.encode({ previous: head, key, value });
+		this.ensureEntriesCapacity(offset + encoded.length);
+		this.entriesMap!.bytes.set(encoded, offset);
+		this.entriesSize += encoded.length;
+		this.entriesCount += 1;
+		this.writeMeta();
+
+		this.writeBucket(bucket, offset + 1);
 
 		this.maybeRehash();
 		return true;
 	}
 
-	/** Overwrite head slot `bucket` with `head` (already +1 encoded), growing if needed. */
-	private setHead(bucket: number, head: number): void {
-		const length = this.buckets.size();
-		if (bucket < length) {
-			this.buckets.set(bucket, head);
-			return;
-		}
-		for (let i = length; i < bucket; i++) this.buckets.push(0);
-		this.buckets.push(head);
-	}
+	// ── rehash ─────────────────────────────────────────────────────────────
 
-	// ── rehash ────────────────────────────────────────────────────────────────
-
-	/** Rehash if the live buckets/entries ratio has drifted past `maxRatioDrift`. */
 	private maybeRehash(): void {
-		const entries = this.entries.size();
-		if (entries === 0) return;
-		const ratio = this.buckets.size() / entries;
+		if (this.entriesCount === 0) return;
+		const ratio = this.bucketsCount / this.entriesCount;
 		const low = this.targetRatio * (1 - this.maxRatioDrift);
 		const high = this.targetRatio * (1 + this.maxRatioDrift);
 		if (ratio < low || ratio > high) this.rehash();
@@ -262,80 +325,82 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 	/**
 	 * Rebuild the whole hash structure against the entries log. Replays entries
-	 * oldest-first so that, within each bucket, the newest entry ends up as the
-	 * head and every inline `previous` points backwards to a lower byte offset.
+	 * oldest-first, patching each entry's inline `previous` and rebuilding heads.
+	 * Crash-safe via the `stale` flag in meta.
 	 *
-	 * Both the bucket heads and the inline `previous` links are rewritten (the
-	 * latter in place inside the entries log). Crash-safe via the `stale` flag.
+	 * Also recomputes `entriesCount` from scratch (a separate counting pass
+	 * before the bucket rebuild) rather than trusting the incrementally-
+	 * tracked field — `resize()` truncates the log by byte offset alone and
+	 * has no cheap way to know how many entries that corresponds to, so this
+	 * is the one place that count is allowed to go stale and gets corrected.
 	 */
 	rehash(): void {
-		if (!this.writable) throw new Error("HashMapStore opened read-only");
-		const total = this.entries.size();
-		const bucketCount = Math.max(1, Math.round(total * this.targetRatio));
-
-		// (1) mark stale
-		this.meta.stale = true;
+		// (1) mark stale + flush
+		this.stale = true;
 		this.writeMeta();
+		this.metaMap!.flush();
 
-		// Reset heads to `bucketCount` empty (0) slots.
-		this.buckets.truncate(0);
-		for (let i = 0; i < bucketCount; i++) this.buckets.push(0);
+		const total = this.entriesSize;
 
-		// (2) replay entries oldest-first, repointing each entry at the current
-		// head of its (freshly assigned) bucket, then making it the new head.
+		// (2) count entries (authoritative)
+		let count = 0;
+		for (let offset = 0; offset < total;) {
+			const [, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, offset);
+			const [, valueSize] = this.value.decode(this.entriesMap!.bytes, offset + prefixSize);
+			offset += prefixSize + valueSize;
+			count++;
+		}
+		this.entriesCount = count;
+
+		// (3) reset buckets, sized off entry count (not byte size)
+		const bucketCount = Math.max(1, Math.round(this.entriesCount * this.targetRatio));
+		this.resizeBuckets(bucketCount);
+
+		// (4) replay entries oldest-first, patching links + rebuilding heads
 		let offset = 0;
 		while (offset < total) {
-			const [prefix, prefixSize] = this.entries.get(offset, this.EntryPrefix);
-			const [, valueSize] = this.entries.get(offset + prefixSize, this.Value);
-			const keyBytes = this.Key.encode(prefix.key);
+			const [prefix, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, offset);
+			const [, valueSize] = this.value.decode(this.entriesMap!.bytes, offset + prefixSize);
+			const keyBytes = this.key.encode(prefix.key);
 
 			const bucket = this.bucketIndexOf(keyBytes);
-			const head = this.buckets.get(bucket) ?? 0;
+			const head = this.readBucket(bucket);
 
-			// Patch the inline `previous` (fixed-width first field) only if changed.
 			if (prefix.previous !== head) {
-				this.entries.writeInto(offset, this.Pointer.encode(head));
+				this.entriesMap!.bytes.set(this.Pointer.encode(head), offset);
 			}
-			this.buckets.set(bucket, offset + 1); // +1 encoded head
+			this.writeBucket(bucket, offset + 1);
 
-			// NOT `offset + prefixSize + valueSize`: append() may have padded a gap
-			// between this entry and the next one (sealing a chunk early rather than
-			// letting an entry straddle it) — nextPointer skips over that gap.
-			offset = this.entries.nextPointer(offset, prefixSize + valueSize);
+			offset += prefixSize + valueSize;
 		}
 
-		// (3) clear stale
-		this.meta.stale = false;
+		// (5) clear stale + flush
+		this.stale = false;
 		this.writeMeta();
+		this.metaMap!.flush();
 	}
 
-	// ── Store contract ────────────────────────────────────────────────────────
+	// ── Store contract ─────────────────────────────────────────────────────
 
-	/** Size == byte length of the entries log (the pin/truncate unit). */
+	/** Size == byte length of the entries log. */
 	override size(): number {
-		return this.entries.size();
+		return this.entriesSize;
 	}
 
-	/**
-	 * Truncate the entries log down to `size` bytes, then rebuild the heads via
-	 * a rehash. Entries first, heads second: `previous` always points to a lower
-	 * offset, so the truncated log is self-consistent before the rehash runs.
-	 */
-	override truncate(size: number): void {
-		if (!this.writable) throw new Error("HashMapStore opened read-only");
-
-		// Mark stale up front so a crash between the entries truncate and the
-		// rehash is recovered on the next open.
-		this.meta.stale = true;
-		this.writeMeta();
-
-		this.entries.truncate(size);
+	/** Truncate the entries log to `size` bytes, then rebuild heads via rehash. */
+	override resize(size: number): void {
+		this.entriesSize = size;
 		this.rehash();
 	}
 
 	close(): void {
-		this.entries.close();
-		this.buckets.close();
+		this.writeMeta();
+		this.metaMap?.flush();
+		this.entriesMap?.flush();
+		this.bucketsMap?.flush();
+		this.entriesMap?.close();
+		this.bucketsMap?.close();
+		this.metaMap?.close();
 	}
 
 	[Symbol.dispose](): void {

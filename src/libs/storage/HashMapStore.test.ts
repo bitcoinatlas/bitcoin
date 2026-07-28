@@ -27,11 +27,8 @@ function options<V extends Codec>(
 		pointer: U48,
 		key: Bytes32,
 		value,
-		writable: true,
 		targetRatio: 0.25, // ~4 entries per bucket
 		maxRatioDrift: 0.5,
-		entries: { maxChunkSize: 1 * 1024 * 1024 },
-		buckets: { itemsPerChunk: 1_000_000 },
 		...overrides,
 	};
 }
@@ -69,7 +66,7 @@ Deno.test("truncate drops suffix, survivors stay findable", () => {
 	const cut = map.size();
 	for (let i = 30; i < 50; i++) map.set(key32(i), i);
 
-	map.truncate(cut);
+	map.resize(cut);
 
 	for (let i = 0; i < 30; i++) assertEquals(map.get(key32(i)), i, `survivor ${i} missing`);
 	for (let i = 30; i < 50; i++) assertEquals(map.get(key32(i)), undefined, `dropped ${i} still present`);
@@ -88,34 +85,17 @@ Deno.test("async get matches sync get", async () => {
 	assertEquals(await map.getAsync(key32(9999)), undefined);
 });
 
-Deno.test("rehash across compressed entries (writeInto inflate path)", () => {
-	using map = HashMapStore.open(options(tmpDir(), U32, {
-		targetRatio: 0.5,
-		maxRatioDrift: 0.25,
-		entries: {
-			maxChunkSize: 4 * 1024,
-			compression: {
-				maxInflatedChunkAge: 60_000,
-				maxInflatedChunks: 4,
-				zstd: { compress: { compressionLevel: 3 }, decompress: {} },
-			},
-		},
-	}));
-	const N = 300;
-	for (let i = 0; i < N; i++) map.set(key32(i), i);
-	// force an explicit rehash to exercise inline-link patching
-	map.rehash();
-	for (let i = 0; i < N; i++) assertEquals(map.get(key32(i)), i, `compressed ${i}`);
-});
-
 Deno.test("reopen recovers heads (stale rebuild path)", () => {
 	const path = tmpDir();
 	{
 		using map = HashMapStore.open(options(path, VarInt));
 		for (let i = 0; i < 60; i++) map.set(key32(i), i);
 	}
-	// Force a stale rebuild on next open.
-	Deno.writeFileSync(`${path}/meta`, new Uint8Array([1])); // stale = true
+	// Force a stale rebuild on next open: flip the stale byte in meta.
+	// Meta layout: Bool(1 byte stale) + U48(6 bytes entriesSize) + U48(6 bytes entriesCount).
+	const meta = Deno.readFileSync(`${path}/meta`);
+	meta[0] = 1; // stale = true, keep entriesSize/entriesCount as-is
+	Deno.writeFileSync(`${path}/meta`, meta);
 
 	using map = HashMapStore.open(options(path, VarInt));
 	for (let i = 0; i < 60; i++) assertEquals(map.get(key32(i)), i, `post-recovery ${i} missing`);

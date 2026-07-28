@@ -1,5 +1,5 @@
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
-import { BlobStore, CompressionOptions } from "./BlobStore.ts";
+import { BlobStore } from "./BlobStore.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
 export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
@@ -7,7 +7,6 @@ export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 	item: T;
 	counter: C;
 	itemsPerChunk: number;
-	compression?: CompressionOptions;
 };
 
 export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
@@ -91,14 +90,14 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 
 	set(index: number, item: Codec.InferInput<T>): void {
 		const length = this.size();
-		if (index < 0 || index >= length) {
-			throw new RangeError(`set out of bounds index=${index} length=${length}`);
+		if (index < length) {
+			throw new RangeError(`set index=${index} is behind the cursor (length=${length}); set can only fill space at or in front of the cursor`);
 		}
 		this.blob.writeInto(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
-	truncate(length: number): void {
-		return this.blob.truncate(length * this.codec.stride.size);
+	resize(length: number): void {
+		return this.blob.resize(length * this.codec.stride.size);
 	}
 
 	close(): void {
