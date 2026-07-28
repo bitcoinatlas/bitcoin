@@ -50,7 +50,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 
 		let anyWitness = false;
 		for (const input of storedTx.inputs) {
-			if (input.witness.length > 0) {
+			if (input.witness.kind !== "none") {
 				anyWitness = true;
 				break;
 			}
@@ -63,11 +63,11 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		}));
 
 		const outputs: WireTxOutput[] = storedTx.outputs.map((output) => ({
-			value: output.value,
+			value: BigInt(output.value),
 			scriptPubKey: chainStorage.getScriptPubKeyFromPointer(output.scriptPubKey),
 		}));
 
-		const witness: Uint8Array[][] = anyWitness ? storedTx.inputs.map((input) => input.witness) : [];
+		const witness: Uint8Array[][] = anyWitness ? storedTx.inputs.map((input) => input.witness.raw()) : [];
 
 		return { version, locktime, inputs, outputs, witness };
 	}

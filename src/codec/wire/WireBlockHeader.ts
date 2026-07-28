@@ -13,6 +13,6 @@ export const WireBlockHeader = new StructCodec({
 }).transform((value, bytes) => {
 	const transformed = value as typeof value & { hash(): Uint8Array };
 	let hash: Uint8Array | undefined;
-	transformed.hash = () => hash ??= sha256d(bytes);
+	transformed.hash = () => hash ??= sha256d(bytes.slice()); // TODO: This might be a problenm
 	return transformed;
 });

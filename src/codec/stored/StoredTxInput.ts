@@ -11,9 +11,9 @@ export type PrevOut = {
 
 export type StoredTxInput = {
 	prevOut: PrevOut;
-	scriptSig: Uint8Array;
+	scriptSig: Uint8Array<ArrayBuffer>;
 	sequence: SequenceLock;
-	witness: Uint8Array[];
+	witness: StoredWitness;
 };
 
 /**
@@ -122,8 +122,8 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		seqU32: number,
 		seqTag: number,
 		seqExplicit: boolean,
-		scriptSigEncoded: Uint8Array,
-		witnessEncoded: Uint8Array,
+		scriptSigEncoded: Uint8Array<ArrayBuffer>,
+		witnessEncoded: Uint8Array<ArrayBuffer>,
 	): number {
 		const start = offset;
 

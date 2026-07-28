@@ -101,7 +101,7 @@ class WireTxCodec extends Codec<WireTx, WireTxIn> {
 		current += 4; // locktime is always 4 bytes
 
 		// wtxid: hash the full consumed range (marker + witness included)
-		const wtxId = sha256d(bytes.subarray(start, current));
+		const wtxId = sha256d(bytes.slice(start, current)); // TODO: again
 
 		// txid: legacy serialization = version ++ body ++ locktime
 		let txId: Uint8Array;
@@ -158,17 +158,17 @@ function encodeWitnessInto(witness: Uint8Array[][], target: Uint8Array, offset: 
 // Decode witness: array of witness per input
 function decodeWitness(data: Uint8Array, offset: number, inputCount: number): [Uint8Array[][], number] {
 	let currentOffset = offset;
-	const witness: Uint8Array[][] = [];
+	const witness: Uint8Array<ArrayBuffer>[][] = [];
 	for (let i = 0; i < inputCount; i++) {
 		const [nItems, nItemsBytes] = CompactSize.decode(data, currentOffset);
 		currentOffset += nItemsBytes;
-		const items: Uint8Array[] = [];
+		const items: Uint8Array<ArrayBuffer>[] = [];
 		for (let j = 0; j < nItems; j++) {
 			const [itemLen, itemLenBytes] = CompactSize.decode(data, currentOffset);
 			currentOffset += itemLenBytes;
 			const item = data.subarray(currentOffset, currentOffset + itemLen);
 			currentOffset += itemLen;
-			items.push(item);
+			items.push(item.slice()); // TODO: Same thing
 		}
 		witness.push(items);
 	}

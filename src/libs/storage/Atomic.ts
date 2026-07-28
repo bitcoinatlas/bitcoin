@@ -1,59 +1,68 @@
-import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
-import { Store, StoreAppendOnly } from "~/libs/storage/Store.ts";
+import { DB, PreparedQuery } from "@pomdtr/sqlite";
+import { join } from "@std/path";
+import { Store } from "~/libs/storage/Store.ts";
 
 export type AtomicStores = { readonly [name: string]: Store };
-export type AtomicOptions<T extends AtomicStores> = { rocksdb: RocksDatabase; stores: T };
+export type AtomicOptions<T extends AtomicStores> = {
+	path: string;
+	stores: T;
+};
 
-export class Atomic<T extends AtomicStores> {
+export class Atomic<T extends AtomicStores> implements Disposable {
 	public readonly stores: T;
-	public readonly rocksdb: RocksDatabase;
-
-	private appendOnlyStores: ReadonlyMap<string, StoreAppendOnly>;
+	public readonly path: string;
+	private readonly db: DB;
+	private readonly storeMap: ReadonlyMap<string, Store>;
+	private readonly pinQuery: PreparedQuery<never, never, { name: string; size: number }>;
+	private readonly getPinsQuery: PreparedQuery<[string, number]>;
 
 	private constructor(options: AtomicOptions<T>) {
-		this.rocksdb = options.rocksdb;
+		this.path = options.path;
 		this.stores = options.stores;
-
-		const appendOnlyStores = new Map<string, StoreAppendOnly>();
-		for (const [name, store] of Object.entries(this.stores)) {
-			if (this.rocksdb.path !== store.rocksdb.path) {
-				throw new Error([
-					"inconsistent rocksdb paths.",
-					"for state consistency use different rocksdb columns, not different rocksdb paths",
-				].join("\n"));
-			}
-			if (store instanceof StoreAppendOnly) {
-				appendOnlyStores.set(name, store);
-			}
-		}
-		this.appendOnlyStores = appendOnlyStores;
+		this.storeMap = new Map(Object.entries(this.stores));
+		this.db = new DB(join(this.path, "db.sqlite"), { mode: "create" });
+		this.db.execute(`CREATE TABLE pins (name TEXT PRIMARY KEY, size INTEGER NOT NULL);`);
+		this.getPinsQuery = this.db.prepareQuery("SELECT name, size FROM pins");
+		this.pinQuery = this.db.prepareQuery(
+			"INSERT INTO pins (name, size) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET size = excluded.size;",
+		);
 	}
 
 	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
 		return new Atomic<T>(options);
 	}
 
-	private inTrx = false;
-
-	async trx(call: (stores: T, transaction: Transaction) => Promise<void> | void) {
-		if (this.inTrx) throw new Error("atomic().trx called re-entrantly — a caller forgot to await");
-		this.inTrx = true;
+	pin() {
 		try {
-			await this.rocksdb.transaction((trx) => {
-				call(this.stores, trx);
-				for (const store of this.appendOnlyStores.values()) {
-					store.pin(trx);
-				}
-			});
+			this.db.execute("BEGIN IMMEDIATE;");
+			for (const [name, store] of this.storeMap) {
+				this.pinQuery.execute({ name, size: store.size() });
+			}
+			this.db.execute("COMMIT;");
 		} catch (reason) {
-			console.error("atomic trx failed", reason);
-			Deno.exit(1);
-		} finally {
-			this.inTrx = false;
+			this.db.execute("ROLLBACK;");
+			throw reason;
 		}
 	}
 
-	recover(transaction?: Transaction): void {
-		for (const store of this.appendOnlyStores.values()) store.rollback(transaction);
+	rollback(): void {
+		const pins = this.getPinsQuery.all();
+		for (const [name, size] of pins) {
+			const store = this.storeMap.get(name);
+			if (!store) {
+				throw new Error(`Pinned store "${name}" does not exist.`);
+			}
+			store.truncate(size);
+		}
+	}
+
+	close() {
+		this.pinQuery.finalize();
+		this.getPinsQuery.finalize();
+		this.db.close();
+	}
+
+	[Symbol.dispose](): void {
+		this.close();
 	}
 }

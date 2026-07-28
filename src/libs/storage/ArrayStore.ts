@@ -1,95 +1,87 @@
-import { RocksDatabase, Transaction } from "@harperfast/rocksdb-js";
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
-import { StoreAppendOnly } from "~/libs/storage/Store.ts";
 import { BlobStore, CompressionOptions } from "./BlobStore.ts";
+import { Store } from "~/libs/storage/Store.ts";
 
-export type ArrayStoreOptions<T extends FixedCodec> = {
+export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 	path: string;
-	rocksdb: RocksDatabase;
-	codec: T;
+	item: T;
+	counter: C;
 	itemsPerChunk: number;
-	writable: boolean;
 	compression?: CompressionOptions;
 };
 
-export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements Disposable {
+export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
 	public readonly path: string;
-	public get rocksdb() {
-		return this.blob.rocksdb;
-	}
 
-	public readonly blob: BlobStore;
+	public readonly blob: BlobStore<T, C>;
 	public readonly codec: T;
 
-	private constructor(blob: BlobStore, options: ArrayStoreOptions<T>) {
+	private constructor(blob: BlobStore<T, C>, options: ArrayStoreOptions<T, C>) {
 		super();
 		this.blob = blob;
-		this.codec = options.codec;
+		this.codec = options.item;
 		this.path = options.path;
 	}
 
-	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
+	static open<T extends FixedCodec, C extends Codec<number>>(options: ArrayStoreOptions<T, C>): ArrayStore<T, C> {
 		const blob = BlobStore.open({
 			path: options.path,
-			rocksdb: options.rocksdb,
-			maxChunkSize: options.itemsPerChunk * options.codec.stride.size,
-			writable: options.writable,
-			compression: options.compression,
+			counter: options.counter,
+			entry: options.item,
+			maxChunkSize: options.itemsPerChunk * options.item.stride.size,
 		});
-		const self = new ArrayStore(blob, options);
-		return self;
+		return new ArrayStore(blob, options);
 	}
 
-	length(): number {
+	size(): number {
 		return this.blob.size() / this.codec.stride.size;
 	}
 
-	/** Reader-only: reveal items committed since open (see {@link BlobStore.refresh}). */
-	refresh(): void {
-		this.blob.refresh();
-	}
-
 	get(index: number): Codec.InferOutput<T> | undefined {
-		const length = this.length();
+		const length = this.size();
 		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		return this.blob.get(index * this.codec.stride.size, this.codec);
+		const [value] = this.blob.get(index * this.codec.stride.size, this.codec);
+		return value;
 	}
 
 	async getAsync(index: number): Promise<Codec.InferOutput<T> | undefined> {
-		const length = this.length();
+		const length = this.size();
 		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		return this.blob.getAsync(index * this.codec.stride.size, this.codec).catch((reason) => {
+		const [value] = await this.blob.getAsync(index * this.codec.stride.size, this.codec).catch((reason) => {
 			console.log(index, length);
 			throw reason;
 		});
+		return value;
 	}
 
 	slice(start: number, end: number): Codec.InferOutput<T>[] {
-		const length = this.length();
+		const length = this.size();
 		if (end > length) end = length;
 		if (start < 0) {
 			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
 		}
 		if (start > length) start = length;
 		if (end <= start) return [];
-		return this.blob.get(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		const [value] = this.blob.get(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		return value;
 	}
 
 	async sliceAsync(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
-		const length = this.length();
+		const length = this.size();
 		if (end > length) end = length;
 		if (start < 0) {
 			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
 		}
 		if (start > length) start = length;
 		if (end <= start) return [];
-		return this.blob.getAsync(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		const [value] = await this.blob.getAsync(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		return value;
 	}
 
 	push(item: Codec.InferInput<T>): number {
@@ -97,24 +89,12 @@ export class ArrayStore<T extends FixedCodec> extends StoreAppendOnly implements
 		return pointer / this.codec.stride.size;
 	}
 
-	pushMany(items: Codec.InferInput<T>[]): number {
-		const stride = this.codec.stride.size;
-		const buffer = new Uint8Array(items.length * stride);
-		let offset = 0;
-		for (const item of items) {
-			this.codec.encodeInto(item, buffer, offset);
-			offset += stride;
+	set(index: number, item: Codec.InferInput<T>): void {
+		const length = this.size();
+		if (index < 0 || index >= length) {
+			throw new RangeError(`set out of bounds index=${index} length=${length}`);
 		}
-		const pointer = this.blob.append(buffer);
-		return pointer / stride;
-	}
-
-	pin(transaction?: Transaction): void {
-		return this.blob.pin(transaction);
-	}
-
-	rollback(transaction?: Transaction): void {
-		return this.blob.rollback(transaction);
+		this.blob.writeInto(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
 	truncate(length: number): void {

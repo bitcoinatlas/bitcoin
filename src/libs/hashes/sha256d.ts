@@ -19,7 +19,7 @@ export class SHA256D extends Hash<SHA256D> {
 		this.destroy();
 	}
 
-	public override digest(): Uint8Array {
+	public override digest(): Uint8Array<ArrayBuffer> {
 		const out = new Uint8Array(this.outputLen);
 		this.digestInto(out);
 		return out;

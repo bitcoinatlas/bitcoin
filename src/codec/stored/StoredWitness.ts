@@ -1,7 +1,5 @@
-import { ArrayCodec, BytesCodec, Codec, EnumCodec, type EnumOutput, Stride, StructCodec } from "@nomadshiba/codec";
+import { ArrayCodec, BytesCodec, Codec, EnumCodec, Stride, StructCodec, Void } from "@nomadshiba/codec";
 import { CompactSize } from "~/codec/primitives/CompactSize.ts";
-
-// ── Fixed-size byte array codecs ──────────────────────────────────────────────
 
 const Sig73 = new BytesCodec({ size: 73 });
 const Sig65 = new BytesCodec({ size: 65 });
@@ -11,78 +9,31 @@ const Script71 = new BytesCodec({ size: 71 });
 const Script105 = new BytesCodec({ size: 105 });
 const Script39 = new BytesCodec({ size: 39 });
 
-// ── Raw witness fallback ──────────────────────────────────────────────────────
+const RawWitnessItem = new BytesCodec({ sizer: CompactSize });
+const RawWitness = new ArrayCodec(RawWitnessItem, { counter: CompactSize });
 
-const RawWitnessItemCodec = new BytesCodec({ sizer: CompactSize });
-const RawWitnessCodec = new ArrayCodec(RawWitnessItemCodec, { counter: CompactSize });
-
-// ── Struct codecs for each recognized pattern ─────────────────────────────────
-
-const P2WPKHCodec = new StructCodec({ sig: Sig73, pubkey: Pubkey });
-const P2TRKeyPathCodec = new StructCodec({ sig: Sig65 });
-const P2WSH1of1Codec = new StructCodec({ sig: Sig73, script: Script34 });
-const P2WSH2of2Codec = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script71 });
-const P2WSH2of3Codec = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script105 });
-const P2WSH3of3Codec = new StructCodec({ sig1: Sig73, sig2: Sig73, sig3: Sig73, script: Script105 });
-const P2WSH1of2Codec = new StructCodec({ sig: Sig73, script: Script71 });
-const P2WSH1of3Codec = new StructCodec({ sig: Sig73, script: Script105 });
-const P2WSHTimelockCodec = new StructCodec({ sig: Sig73, script: Script39 });
-
-// ── Clean witness pattern types ───────────────────────────────────────────────
-
-export type WitnessPattern =
-	| { kind: "raw"; value: Uint8Array[] }
-	| { kind: "p2wpkh"; value: { sig: Uint8Array; pubkey: Uint8Array } }
-	| { kind: "p2trKeyPath"; value: { sig: Uint8Array } }
-	| { kind: "p2wsh1of1"; value: { sig: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wsh2of2"; value: { sig1: Uint8Array; sig2: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wsh2of3"; value: { sig1: Uint8Array; sig2: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wsh3of3"; value: { sig1: Uint8Array; sig2: Uint8Array; sig3: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wsh1of2"; value: { sig: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wsh1of3"; value: { sig: Uint8Array; script: Uint8Array } }
-	| { kind: "p2wshTimelock"; value: { sig: Uint8Array; script: Uint8Array } };
-
-// ── Internal union (numbered keys for deterministic wire-format indices) ──────
-
-const StoredWitnessUnion = new EnumCodec({
-	"0_raw": RawWitnessCodec,
-	"1_p2wpkh": P2WPKHCodec,
-	"2_p2trKeyPath": P2TRKeyPathCodec,
-	"3_p2wsh1of1": P2WSH1of1Codec,
-	"4_p2wsh2of2": P2WSH2of2Codec,
-	"5_p2wsh2of3": P2WSH2of3Codec,
-	"6_p2wsh3of3": P2WSH3of3Codec,
-	"7_p2wsh1of2": P2WSH1of2Codec,
-	"8_p2wsh1of3": P2WSH1of3Codec,
-	"9_p2wshTimelock": P2WSHTimelockCodec,
+const P2WPKH = new StructCodec({ sig: Sig73, pubkey: Pubkey });
+const P2TRKeyPath = new StructCodec({ sig: Sig65 });
+const P2WSH1of1 = new StructCodec({ sig: Sig73, script: Script34 });
+const P2WSH2of2 = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script71 });
+const P2WSH2of3 = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script105 });
+const P2WSH3of3 = new StructCodec({ sig1: Sig73, sig2: Sig73, sig3: Sig73, script: Script105 });
+const P2WSH1of2 = new StructCodec({ sig: Sig73, script: Script71 });
+const P2WSH1of3 = new StructCodec({ sig: Sig73, script: Script105 });
+const P2WSHTimelock = new StructCodec({ sig: Sig73, script: Script39 });
+const WitnessEnum = new EnumCodec({
+	none: Void,
+	raw: RawWitness,
+	p2wpkh: P2WPKH,
+	p2trKeyPath: P2TRKeyPath,
+	p2wsh1of1: P2WSH1of1,
+	p2wsh2of2: P2WSH2of2,
+	p2wsh2of3: P2WSH2of3,
+	p2wsh3of3: P2WSH3of3,
+	p2wsh1of2: P2WSH1of2,
+	p2wsh1of3: P2WSH1of3,
+	p2wshTimelock: P2WSHTimelock,
 });
-
-type UnionWitness = typeof StoredWitnessUnion extends EnumCodec<infer T> ? EnumOutput<T> : never;
-
-const KIND_MAP: Record<UnionWitness["kind"], WitnessPattern["kind"]> = {
-	"0_raw": "raw",
-	"1_p2wpkh": "p2wpkh",
-	"2_p2trKeyPath": "p2trKeyPath",
-	"3_p2wsh1of1": "p2wsh1of1",
-	"4_p2wsh2of2": "p2wsh2of2",
-	"5_p2wsh2of3": "p2wsh2of3",
-	"6_p2wsh3of3": "p2wsh3of3",
-	"7_p2wsh1of2": "p2wsh1of2",
-	"8_p2wsh1of3": "p2wsh1of3",
-	"9_p2wshTimelock": "p2wshTimelock",
-};
-
-const REV_KIND_MAP: Record<WitnessPattern["kind"], UnionWitness["kind"]> = Object.fromEntries(
-	Object.entries(KIND_MAP).map(([k, v]) => [v, k]),
-) as Record<WitnessPattern["kind"], UnionWitness["kind"]>;
-
-function toUnion(pattern: WitnessPattern): UnionWitness {
-	return { kind: REV_KIND_MAP[pattern.kind], value: pattern.value } as UnionWitness;
-}
-
-function fromUnion(u: UnionWitness): WitnessPattern {
-	return { kind: KIND_MAP[u.kind], value: u.value } as WitnessPattern;
-}
 
 // ── Padding helpers ───────────────────────────────────────────────────────────
 
@@ -93,15 +44,15 @@ function padTo(src: Uint8Array, size: number): Uint8Array {
 	return out;
 }
 
-function trimTrailingZeros(src: Uint8Array): Uint8Array {
+function trimTrailingZeros(src: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
 	let len = src.length;
 	while (len > 0 && src[len - 1] === 0) len--;
 	return src.subarray(0, len);
 }
 
-// ── Pattern detection ─────────────────────────────────────────────────────────
+export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<typeof WitnessEnum> {
+	if (items.length === 0) return { kind: "none", value: null };
 
-export function detectWitnessPattern(items: Uint8Array[]): WitnessPattern {
 	// P2WPKH: [sig(71-73), pubkey(33)]
 	if (items.length === 2) {
 		const [sig, pubkey] = [items[0]!, items[1]!];
@@ -214,8 +165,11 @@ export function detectWitnessPattern(items: Uint8Array[]): WitnessPattern {
 
 // ── Reconstruction ────────────────────────────────────────────────────────────
 
-export function reconstructWitness(pattern: WitnessPattern): Uint8Array[] {
+function reconstructWitness(pattern: Codec.InferOutput<typeof WitnessEnum>): Uint8Array<ArrayBuffer>[] {
 	switch (pattern.kind) {
+		case "none":
+			return [];
+
 		case "raw":
 			return pattern.value;
 
@@ -282,39 +236,26 @@ export function reconstructWitness(pattern: WitnessPattern): Uint8Array[] {
 	}
 }
 
-// ── Codecs ────────────────────────────────────────────────────────────────────
+export type StoredWitness = Codec.InferOutput<typeof WitnessEnum> & { raw(): Uint8Array<ArrayBuffer>[] };
+type WitnessInput = Codec.InferInput<typeof WitnessEnum> | Uint8Array[];
 
-export class StoredWitnessPatternCodec extends Codec<WitnessPattern> {
+export class StoredWitnessCodec extends Codec<StoredWitness, WitnessInput> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encoder(pattern: WitnessPattern, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	encoder(pattern: WitnessPattern, target: Uint8Array, offset: number): number;
-	encoder(pattern: WitnessPattern, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
-		if (target === undefined) return StoredWitnessUnion.encode(toUnion(pattern));
-		return StoredWitnessUnion.encodeInto(toUnion(pattern), target, offset);
+	encoder(pattern: WitnessInput, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(pattern: WitnessInput, target: Uint8Array, offset: number): number;
+	encoder(pattern: WitnessInput, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (Array.isArray(pattern)) pattern = detectWitnessPattern(pattern);
+		if (target === undefined) return WitnessEnum.encode(pattern);
+		return WitnessEnum.encodeInto(pattern, target, offset);
 	}
 
-	decoder(bytes: Uint8Array, offset: number): [WitnessPattern, number] {
-		const [stored, bytesRead] = StoredWitnessUnion.decode(bytes, offset);
-		return [fromUnion(stored), bytesRead];
-	}
-}
-
-export const StoredWitnessPattern = new StoredWitnessPatternCodec();
-
-export class StoredWitnessCodec extends Codec<Uint8Array[]> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
-
-	encoder(items: Uint8Array[], target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	encoder(items: Uint8Array[], target: Uint8Array, offset: number): number;
-	encoder(items: Uint8Array[], target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
-		if (target === undefined) return StoredWitnessPattern.encode(detectWitnessPattern(items));
-		return StoredWitnessPattern.encodeInto(detectWitnessPattern(items), target, offset);
-	}
-
-	public decoder(bytes: Uint8Array, offset: number): [Uint8Array[], number] {
-		const [pattern, bytesRead] = StoredWitnessPattern.decode(bytes, offset);
-		return [reconstructWitness(pattern), bytesRead];
+	decoder(bytes: Uint8Array, offset: number): [StoredWitness, number] {
+		const [pattern, bytesRead] = WitnessEnum.decode(bytes, offset);
+		const stored = pattern as StoredWitness;
+		let rawCache: Uint8Array<ArrayBuffer>[] | undefined;
+		stored.raw = () => rawCache ??= reconstructWitness(pattern);
+		return [stored, bytesRead];
 	}
 }
 

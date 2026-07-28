@@ -1,8 +1,8 @@
-import { RocksDatabase, RocksDatabaseOptions } from "@harperfast/rocksdb-js";
-import { StructCodec, U32 } from "@nomadshiba/codec";
+import { StructCodec, VarInt } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Block } from "~/app/routes.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
@@ -10,28 +10,13 @@ import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
-import { COINBASE_TXID, GB, GiB, MAX_BLOCK_WEIGHT, MiB, MINUTE } from "~/constants.ts";
-import { BASE_DATA_DIR, PARALLELISM_THREADS } from "~/env.ts";
+import { COINBASE_TXID, GB, MINUTE } from "~/constants.ts";
+import { BASE_DATA_DIR } from "~/env.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
-import { KvStore } from "~/libs/storage/KvStore.ts";
-
-// TODO: Later blockCacheSize can be calculated by device memory and core count and etc. idk
-// NOTE: If there is a huge slow down check blockCacheSize and try to make it bigger
-RocksDatabase.config({
-	blockCacheSize: 750 * MiB, // mul by PARALLELISM to find how much memory this uses in total
-	writeBufferManagerSize: 1 * GiB, // global i think
-});
-
-const ROCKS_PATH = join(BASE_DATA_DIR, "indexes");
-const ROCKS_OPTIONS: RocksDatabaseOptions = {
-	disableWAL: true,
-	parallelismThreads: PARALLELISM_THREADS,
-	bloomBitsPerKey: 10,
-	ribbonFilter: true,
-};
+import { HashMapStore } from "~/libs/storage/HashMapStore.ts";
 
 const COMPRESSION_OPTIONS: CompressionOptions = {
 	maxInflatedChunkAge: 15 * MINUTE,
@@ -52,59 +37,74 @@ const COMPRESSION_OPTIONS: CompressionOptions = {
 
 export class ChainStorage {
 	public readonly atomic = Atomic.open({
-		rocksdb: RocksDatabase.open(ROCKS_PATH, ROCKS_OPTIONS),
+		path: join(BASE_DATA_DIR, "meta"),
 		stores: {
 			headers: ArrayStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "headers" }),
 				path: join(BASE_DATA_DIR, "headers"),
-				codec: StoredBlockHeader,
+				item: StoredBlockHeader,
 				itemsPerChunk: 1_000_000,
 				writable: self.name === "chain",
 			}),
 			blocks: ArrayStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "blocks" }),
 				path: join(BASE_DATA_DIR, "blocks"),
-				codec: StoredTxPointer,
+				item: StoredTxPointer,
 				itemsPerChunk: 1_000_000,
 				writable: self.name === "chain",
 			}),
-			txs: BlobStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txs" }),
+			txs: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txs"),
-				maxChunkSize: 1 * GB,
-				writable: self.name === "chain",
-				compression: COMPRESSION_OPTIONS,
-			}),
-			txid: KvStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "txid" }),
 				key: Bytes32,
-				value: StoredTxPointer,
+				value: StoredTx,
+				pointer: StoredTxPointer,
+				buckets: {
+					itemsPerChunk: 1_000_000,
+				},
+				entries: {
+					maxChunkSize: 1 * GB,
+					compression: COMPRESSION_OPTIONS,
+				},
+				targetRatio: .7,
+				maxRatioDrift: .15,
+				writable: self.name === "chain",
 			}),
-			pubkeys: BlobStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkeys" }),
+			pubkeys: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkeys"),
-				maxChunkSize: 1 * GB,
+				key: Bytes32,
+				value: StoredScriptPubKey, // TODO: value might also include HEAD and TAIL of the linked list of outputs or something
+				pointer: StoredPubkeyPointer,
+				buckets: {
+					itemsPerChunk: 1_000_000,
+				},
+				entries: {
+					maxChunkSize: 1 * GB,
+				},
+				targetRatio: .7,
+				maxRatioDrift: .15,
 				writable: self.name === "chain",
 			}),
-			pubkey: KvStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "pubkey" }),
-				key: Bytes32,
-				value: StoredPubkeyPointer, // TODO: value might also include HEAD and TAIL of the linked list of outputs or something
-			}),
-			spenders: KvStore.open({
-				rocksdb: RocksDatabase.open(ROCKS_PATH, { ...ROCKS_OPTIONS, name: "spenders" }),
-				key: new StructCodec({ tx: StoredTxPointer, output: U32 }), // output // TODO: make output VarInt
+			spenders: HashMapStore.open({
+				path: join(BASE_DATA_DIR, "spenders"),
+				key: new StructCodec({ tx: StoredTxPointer, output: VarInt }),
 				value: StoredTxPointer, // spender tx
+				pointer: U48,
+				buckets: {
+					itemsPerChunk: 1_000_000,
+				},
+				entries: {
+					maxChunkSize: 1 * GB,
+				},
+				targetRatio: .7,
+				maxRatioDrift: .15,
+				writable: self.name === "chain",
 			}),
 		},
 	});
 	public readonly stores = this.atomic.stores;
-	public readonly rocksdb = this.atomic.rocksdb;
 	private readonly hashIndex: FastUint8ArrayMap<number>;
 	private readonly indexHeightByHashChannel: BroadcastChannel;
 
 	private constructor() {
-		const length = this.stores.headers.length();
+		const length = this.stores.headers.size();
 		const channel = new BroadcastChannel("ChainStore.indexHeightByHash");
 		const index = new FastUint8ArrayMap<number>(Math.max(256, length));
 
@@ -140,30 +140,18 @@ export class ChainStorage {
 		return this.hashIndex.get(hash);
 	}
 
-	/**
-	 * Reader-only: pull in everything the writer has pinned since the last call.
-	 * On the writable opener this is a no-op (it owns `size` directly). The API
-	 * worker is a reader, so without this its stores are stuck at whatever was
-	 * visible at startup — `getChainTipAsync` would return null mid-IBD.
-	 */
-	public refresh(): void {
-		this.stores.headers.refresh();
-		this.stores.blocks.refresh();
-		this.stores.txs.refresh();
-	}
-
 	public indexHeightByHash(hash: Uint8Array, height: number) {
 		this.hashIndex.set(hash, height);
 		this.indexHeightByHashChannel.postMessage({ hash, height });
 	}
 
 	public getHeaderByHeight(height: number): StoredBlockHeader | undefined {
-		if (height < 0 || height >= this.stores.headers.length()) return undefined;
+		if (height < 0 || height >= this.stores.headers.size()) return undefined;
 		return this.stores.headers.get(height);
 	}
 
 	public async getHeaderByHeightAsync(height: number): Promise<Block | undefined> {
-		if (height < 0 || height >= this.stores.headers.length()) return undefined;
+		if (height < 0 || height >= this.stores.headers.size()) return undefined;
 		const header = await this.stores.headers.getAsync(height);
 		if (!header) return undefined;
 		const [current, next] = await Promise.all([
@@ -175,7 +163,7 @@ export class ChainStorage {
 	}
 
 	public getHeaderByRange(from: number, to: number): Array<Block> {
-		const length = this.stores.headers.length();
+		const length = this.stores.headers.size();
 		from = Math.max(0, from);
 		to = Math.min(length - 1, to);
 		if (to < from) return [];
@@ -192,7 +180,7 @@ export class ChainStorage {
 	}
 
 	public async getHeaderByRangeAsync(from: number, to: number): Promise<Array<Block>> {
-		const length = this.stores.headers.length();
+		const length = this.stores.headers.size();
 		const lo = Math.max(0, from);
 		const hi = Math.min(length - 1, to);
 		if (hi < lo) return [];
@@ -204,8 +192,10 @@ export class ChainStorage {
 		// every size ends up measured from the `lo` baseline. Pulling them all
 		// into an array first keeps the reads parallel and the sizes correct.
 		const pointers = await Promise.all(
-			Array.from({ length: headers.length + 1 }, (_, i) =>
-				this.stores.blocks.getAsync(lo + i).then((p) => p ?? (i === 0 ? 0 : this.stores.txs.size()))),
+			Array.from(
+				{ length: headers.length + 1 },
+				(_, i) => this.stores.blocks.getAsync(lo + i).then((p) => p ?? (i === 0 ? 0 : this.stores.txs.size())),
+			),
 		);
 		return headers.map((header, i) => {
 			const height = lo + i;
@@ -234,43 +224,43 @@ export class ChainStorage {
 	public getTxsByBlockHeight(height: number): StoredTx[] | undefined {
 		const pointer = height === 0 ? 0 : this.stores.blocks.get(height);
 		if (pointer === undefined) return undefined;
-		return this.stores.txs.get(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
+		return this.stores.txs.get(pointer, StoredTxs);
 	}
 
 	public async getTxsByBlockHeightAsync(height: number): Promise<StoredTx[] | undefined> {
 		const pointer = height === 0 ? 0 : await this.stores.blocks.getAsync(height);
 		if (pointer === undefined) return undefined;
-		return this.stores.txs.getAsync(pointer, StoredTxs, { readAheadSize: MAX_BLOCK_WEIGHT });
+		return this.stores.txs.getAsync(pointer, StoredTxs);
 	}
 
 	public getTxById(txId: Uint8Array): StoredTx | undefined {
 		const pointer = this.stores.txid.get(txId);
 		if (pointer === undefined) return undefined;
-		return this.stores.txs.get(pointer, StoredTx, { readAheadSize: 400_000 });
+		return this.stores.txs.get(pointer, StoredTx);
 	}
 
 	public async getTxByIdAsync(txId: Uint8Array): Promise<StoredTx | undefined> {
 		const pointer = await this.stores.txid.getAsync(txId);
 		if (pointer === undefined) return undefined;
-		return this.stores.txs.getAsync(pointer, StoredTx, { readAheadSize: 400_000 });
+		return this.stores.txs.getAsync(pointer, StoredTx);
 	}
 
 	public getTxByPointer(pointer: StoredTxPointer): StoredTx {
-		return this.stores.txs.get(pointer, StoredTx, { readAheadSize: 400_000 });
+		return this.stores.txs.get(pointer, StoredTx);
 	}
 
 	public async getTxByPointerAsync(pointer: StoredTxPointer): Promise<StoredTx> {
-		return this.stores.txs.getAsync(pointer, StoredTx, { readAheadSize: 400_000 });
+		return this.stores.txs.getAsync(pointer, StoredTx);
 	}
 
-	public getPrevOutTxId(input: StoredTxInput): Uint8Array {
+	public getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
 		const { kind, value } = input.prevOut.txId;
 		if (kind === "pointer") return this.getTxByPointer(value).txId;
 		if (kind === "coinbase") return COINBASE_TXID;
 		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
 	}
 
-	public async getPrevOutTxIdAsync(input: StoredTxInput): Promise<Uint8Array> {
+	public async getPrevOutTxIdAsync(input: StoredTxInput): Promise<Uint8Array<ArrayBuffer>> {
 		const { kind, value } = input.prevOut.txId;
 		if (kind === "pointer") return (await this.getTxByPointerAsync(value)).txId;
 		if (kind === "coinbase") return COINBASE_TXID;
