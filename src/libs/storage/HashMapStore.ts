@@ -4,15 +4,19 @@ import { Mmap } from "@nomadshiba/mmap";
 import { join } from "@std/path";
 import { Store } from "~/libs/storage/Store.ts";
 
+export type LoadFactorOptions = {
+	/** Target average entries per bucket (`entryCount / bucketCount`) — same meaning as e.g. Java `HashMap`'s load factor. `1` aims for ~1 entry/bucket, `4` aims for ~4 (fewer, cheaper buckets; longer chains). Must be > 0. */
+	target: number;
+	/** How far the live load factor may drift from `target` before a rehash. Must be >= 0. */
+	maxDrift: number;
+};
+
 export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> = {
 	path: string;
 	pointer: Pointer;
 	key: Key;
 	value: Value;
-	/** Ideal buckets/entries ratio; the map keeps `bucketCount ≈ entryCount * targetRatio`. E.g. `1` targets ~1 entry/bucket, `0.5` targets ~2 entries/bucket. Must be > 0. */
-	targetRatio: number;
-	/** How far the live ratio may drift from `targetRatio` before a rehash. Must be >= 0. */
-	maxRatioDrift: number;
+	loadFactor: LoadFactorOptions;
 };
 
 /**
@@ -30,16 +34,24 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
  * - `meta` (`path/meta`): `{ stale, entriesSize, entriesCount }`. `stale` is
  *   set during rehash for crash safety; `entriesSize` is the entries file's
  *   logical size (bytes); `entriesCount` is the number of entries, kept for
- *   the bucket-ratio math (see `targetRatio`) since entries are variable-
- *   length and byte size alone is a poor proxy for chain length.
+ *   the load-factor math (see `loadFactor`) since entries are variable-length
+ *   and byte size alone is a poor proxy for chain length.
  *
  * ## Null sentinel
  * Persisted pointers are stored +1, so 0 = empty slot / end of chain.
  *
+ * ## Load factor
+ * `loadFactor.target` is the standard `entryCount / bucketCount` ratio (same
+ * meaning as e.g. Java `HashMap`'s load factor) — NOT buckets per entry.
+ * `bucketCount` is kept at `entryCount / loadFactor.target`, so `target = 1`
+ * aims for ~1 entry/bucket, `target = 4` aims for ~4 (fewer, cheaper buckets,
+ * longer chains). `loadFactor.maxDrift` bounds how far the live value may
+ * wander before a rehash corrects it.
+ *
  * ## Rehash
  * Replays entries oldest-first, patching inline `previous` links and rebuilding
- * heads. Also recomputes `entriesCount` from scratch (see `targetRatio`) —
- * it's the one place that field is allowed to go stale (`resize()` truncates
+ * heads. Also recomputes `entriesCount` from scratch (see "Load factor" above)
+ * — it's the one place that field is allowed to go stale (`resize()` truncates
  * by byte offset alone) and gets corrected. Crash-safe via the `stale` flag —
  * a crash mid-rehash is detected on `open` and re-run.
  *
@@ -60,8 +72,8 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	private readonly entry: StructCodec<{ previous: Pointer; key: Key; value: Value }>;
 	private readonly entryPrefix: StructCodec<{ previous: Pointer; key: Key }>;
 	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: Pointer; entriesCount: Pointer }>;
-	private readonly targetRatio: number;
-	private readonly maxRatioDrift: number;
+	private readonly targetLoadFactor: number;
+	private readonly maxLoadFactorDrift: number;
 
 	private readonly entriesPath: string;
 	private readonly bucketsPath: string;
@@ -95,8 +107,8 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.Pointer = options.pointer;
 		this.key = options.key;
 		this.value = options.value;
-		this.targetRatio = options.targetRatio;
-		this.maxRatioDrift = options.maxRatioDrift;
+		this.targetLoadFactor = options.loadFactor.target;
+		this.maxLoadFactorDrift = options.loadFactor.maxDrift;
 		this.entriesPath = join(options.path, "entries");
 		this.bucketsPath = join(options.path, "buckets");
 		this.metaPath = join(options.path, "meta");
@@ -125,8 +137,8 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		if (options.pointer.stride.kind !== "fixed") {
 			throw new Error("HashMapStore pointer codec must be fixed-stride");
 		}
-		if (options.targetRatio <= 0) throw new Error("targetRatio must be > 0");
-		if (options.maxRatioDrift < 0) throw new Error("maxRatioDrift must be >= 0");
+		if (options.loadFactor.target <= 0) throw new Error("loadFactor.target must be > 0");
+		if (options.loadFactor.maxDrift < 0) throw new Error("loadFactor.maxDrift must be >= 0");
 
 		Deno.mkdirSync(options.path, { recursive: true });
 
@@ -317,10 +329,11 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 	private maybeRehash(): void {
 		if (this.entriesCount === 0) return;
-		const ratio = this.bucketsCount / this.entriesCount;
-		const low = this.targetRatio * (1 - this.maxRatioDrift);
-		const high = this.targetRatio * (1 + this.maxRatioDrift);
-		if (ratio < low || ratio > high) this.rehash();
+		// Standard load factor: entries per bucket (NOT buckets per entry).
+		const loadFactor = this.entriesCount / this.bucketsCount;
+		const low = this.targetLoadFactor * (1 - this.maxLoadFactorDrift);
+		const high = this.targetLoadFactor * (1 + this.maxLoadFactorDrift);
+		if (loadFactor < low || loadFactor > high) this.rehash();
 	}
 
 	/**
@@ -352,8 +365,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		}
 		this.entriesCount = count;
 
-		// (3) reset buckets, sized off entry count (not byte size)
-		const bucketCount = Math.max(1, Math.round(this.entriesCount * this.targetRatio));
+		// (3) reset buckets, sized off entry count (not byte size). Load factor
+		// is entries/buckets, so buckets = entries/targetLoadFactor.
+		const bucketCount = Math.max(1, Math.round(this.entriesCount / this.targetLoadFactor));
 		this.resizeBuckets(bucketCount);
 
 		// (4) replay entries oldest-first, patching links + rebuilding heads

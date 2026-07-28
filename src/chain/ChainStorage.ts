@@ -2,6 +2,7 @@ import { StructCodec, VarInt } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Block } from "~/app/routes.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+import { U40 } from "~/codec/primitives/U40.ts";
 import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
@@ -16,7 +17,7 @@ import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
-import { HashMapStore } from "~/libs/storage/HashMapStore.ts";
+import { HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
 
 const COMPRESSION_OPTIONS: CompressionOptions = {
 	maxInflatedChunkAge: 15 * MINUTE,
@@ -35,6 +36,11 @@ const COMPRESSION_OPTIONS: CompressionOptions = {
 	},
 };
 
+const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
+	target: .7,
+	maxDrift: .15,
+};
+
 export class ChainStorage {
 	public readonly atomic = Atomic.open({
 		path: join(BASE_DATA_DIR, "meta"),
@@ -43,59 +49,40 @@ export class ChainStorage {
 				path: join(BASE_DATA_DIR, "headers"),
 				item: StoredBlockHeader,
 				itemsPerChunk: 1_000_000,
-				writable: self.name === "chain",
+				cursor: U40,
 			}),
 			blocks: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "blocks"),
 				item: StoredTxPointer,
 				itemsPerChunk: 1_000_000,
-				writable: self.name === "chain",
+				cursor: U40,
 			}),
-			txs: HashMapStore.open({
+			txs: BlobStore.open({
 				path: join(BASE_DATA_DIR, "txs"),
+				cursor: U48,
+				entry: StoredTx,
+				maxChunkSize: 1 * GB,
+			}),
+			txid: HashMapStore.open({
+				path: join(BASE_DATA_DIR, "txid"),
 				key: Bytes32,
-				value: StoredTx,
+				value: U48,
 				pointer: StoredTxPointer,
-				buckets: {
-					itemsPerChunk: 1_000_000,
-				},
-				entries: {
-					maxChunkSize: 1 * GB,
-					compression: COMPRESSION_OPTIONS,
-				},
-				targetRatio: .7,
-				maxRatioDrift: .15,
-				writable: self.name === "chain",
+				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
 			pubkeys: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkeys"),
 				key: Bytes32,
 				value: StoredScriptPubKey, // TODO: value might also include HEAD and TAIL of the linked list of outputs or something
 				pointer: StoredPubkeyPointer,
-				buckets: {
-					itemsPerChunk: 1_000_000,
-				},
-				entries: {
-					maxChunkSize: 1 * GB,
-				},
-				targetRatio: .7,
-				maxRatioDrift: .15,
-				writable: self.name === "chain",
+				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
 			spenders: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "spenders"),
 				key: new StructCodec({ tx: StoredTxPointer, output: VarInt }),
 				value: StoredTxPointer, // spender tx
 				pointer: U48,
-				buckets: {
-					itemsPerChunk: 1_000_000,
-				},
-				entries: {
-					maxChunkSize: 1 * GB,
-				},
-				targetRatio: .7,
-				maxRatioDrift: .15,
-				writable: self.name === "chain",
+				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
 		},
 	});
@@ -275,4 +262,8 @@ export class ChainStorage {
 		return this.stores.pubkeys.getAsync(pointer, StoredScriptPubKey);
 	}
 }
+
 export const chainStorage = ChainStorage.main();
+if (self.name === "chain") {
+	chainStorage.stores.txs.startCompression(COMPRESSION_OPTIONS);
+}

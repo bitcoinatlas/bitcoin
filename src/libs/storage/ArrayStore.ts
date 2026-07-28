@@ -5,7 +5,7 @@ import { Store } from "~/libs/storage/Store.ts";
 export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 	path: string;
 	item: T;
-	counter: C;
+	cursor: C;
 	itemsPerChunk: number;
 };
 
@@ -25,7 +25,7 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 	static open<T extends FixedCodec, C extends Codec<number>>(options: ArrayStoreOptions<T, C>): ArrayStore<T, C> {
 		const blob = BlobStore.open({
 			path: options.path,
-			counter: options.counter,
+			cursor: options.cursor,
 			entry: options.item,
 			maxChunkSize: options.itemsPerChunk * options.item.stride.size,
 		});
@@ -91,7 +91,9 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 	set(index: number, item: Codec.InferInput<T>): void {
 		const length = this.size();
 		if (index < length) {
-			throw new RangeError(`set index=${index} is behind the cursor (length=${length}); set can only fill space at or in front of the cursor`);
+			throw new RangeError(
+				`set index=${index} is behind the cursor (length=${length}); set can only fill space at or in front of the cursor`,
+			);
 		}
 		this.blob.writeInto(index * this.codec.stride.size, this.codec.encode(item));
 	}

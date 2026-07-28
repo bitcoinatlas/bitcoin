@@ -37,7 +37,7 @@ export type BlobStoreOptions<T extends Codec, C extends Codec<number>> = {
 	path: string;
 	entry: T;
 	/** Codec for the on-disk cursor (the store's logical size). */
-	counter: C;
+	cursor: C;
 	maxChunkSize: number;
 };
 
@@ -179,7 +179,7 @@ function discardStaleCompressedForm(root: string, index: number): void {
 export class BlobStore<T extends Codec, C extends Codec<number>> extends Store implements Disposable {
 	public readonly path: string;
 	public readonly entry: T;
-	public readonly counter: C;
+	public readonly cursor: C;
 	public readonly maxChunkSize: number;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
@@ -191,7 +191,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		super();
 		this.path = options.path;
 		this.entry = options.entry;
-		this.counter = options.counter;
+		this.cursor = options.cursor;
 		this.maxChunkSize = options.maxChunkSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
@@ -264,7 +264,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			return 0;
 		}
 		if (bytes.length === 0) return 0;
-		return this.counter.decode(bytes, 0)[0];
+		return this.cursor.decode(bytes, 0)[0];
 	}
 
 	/**
@@ -281,12 +281,12 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			let current = 0;
 			if (stat.size > 0) {
 				file.seekSync(0, Deno.SeekMode.Start);
-				current = this.counter.decode(readFileSync(file, stat.size), 0)[0];
+				current = this.cursor.decode(readFileSync(file, stat.size), 0)[0];
 			}
 
 			const { size, result } = mutate(current);
 
-			const encoded = this.counter.encode(size);
+			const encoded = this.cursor.encode(size);
 			file.truncateSync(0);
 			file.seekSync(0, Deno.SeekMode.Start);
 			writeFileSync(file, encoded);
@@ -350,33 +350,6 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			this.touchInflated(index);
 		}
 		return [map.bytes, start];
-	}
-
-	/**
-	 * For full-log scans in append order: given a record's `pointer` and how
-	 * many bytes it consumed, return the pointer of the NEXT record — skipping
-	 * the padding gap `append()` may have inserted when it sealed a chunk early.
-	 *
-	 * TODO: since chunks are now always fully sized on disk, a sealed-early
-	 * chunk's physical file size is ALWAYS maxChunkSize — the `physicalSize`
-	 * check below can never fire anymore. Detecting the gap needs a different
-	 * signal now (flagged, not fixed).
-	 */
-	nextPointer(pointer: number, consumed: number): number {
-		// TODO: maybe replace this with an iterator??
-		const end = pointer + consumed;
-		const size = this.readCursor();
-		if (end >= size) return end;
-
-		const index = Math.floor(pointer / this.maxChunkSize);
-		const boundary = (index + 1) * this.maxChunkSize;
-		const localEnd = end - index * this.maxChunkSize;
-		if (localEnd >= this.maxChunkSize) return end;
-
-		if (!this.getChunkMap(index)) this.inflateChunkSync(index);
-		const physicalSize = Deno.statSync(chunkPath(this.path, index)).size;
-		if (localEnd === physicalSize) return boundary;
-		return end;
 	}
 
 	/**

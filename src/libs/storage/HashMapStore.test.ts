@@ -27,8 +27,7 @@ function options<V extends Codec>(
 		pointer: U48,
 		key: Bytes32,
 		value,
-		targetRatio: 0.25, // ~4 entries per bucket
-		maxRatioDrift: 0.5,
+		loadFactor: { target: 4, maxDrift: 0.5 }, // ~4 entries per bucket
 		...overrides,
 	};
 }
@@ -50,7 +49,7 @@ Deno.test("set/get roundtrip + duplicate rejection", () => {
 });
 
 Deno.test("rehash on drift keeps all entries findable", () => {
-	using map = HashMapStore.open(options(tmpDir(), U32, { targetRatio: 0.5, maxRatioDrift: 0.25 }));
+	using map = HashMapStore.open(options(tmpDir(), U32, { loadFactor: { target: 2, maxDrift: 0.25 } }));
 
 	const N = 500;
 	for (let i = 0; i < N; i++) map.set(key32(i), i);
@@ -77,7 +76,7 @@ Deno.test("truncate drops suffix, survivors stay findable", () => {
 });
 
 Deno.test("async get matches sync get", async () => {
-	using map = HashMapStore.open(options(tmpDir(), U32, { targetRatio: 0.33, maxRatioDrift: 0.5 }));
+	using map = HashMapStore.open(options(tmpDir(), U32, { loadFactor: { target: 3, maxDrift: 0.5 } }));
 	for (let i = 0; i < 120; i++) map.set(key32(i), i * 3);
 	for (let i = 0; i < 120; i++) {
 		assertEquals(await map.getAsync(key32(i)), i * 3, `async ${i}`);
