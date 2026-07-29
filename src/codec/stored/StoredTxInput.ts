@@ -104,7 +104,7 @@ export class StoredTxInputCodec extends Codec<Output, Input> {
 
 		if (target === undefined) {
 			// Size-compute pass then single allocation.
-			const outputSize = input.prevOut.txId.kind === "pointer" ? VarInt.encode(input.prevOut.output).length : 0;
+			const outputSize = input.prevOut.txId === null ? 0 : VarInt.encode(input.prevOut.output).length;
 
 			const totalLength = StoredPrevOutTxId.stride.size + outputSize + 1 + (seqExplicit ? 4 : 0) +
 				scriptSigEncoded.length + witnessEncoded.length;
@@ -129,7 +129,7 @@ export class StoredTxInputCodec extends Codec<Output, Input> {
 		const start = offset;
 
 		offset += StoredPrevOutTxId.encodeInto(input.prevOut.txId, target, offset);
-		if (input.prevOut.txId.kind === "pointer") {
+		if (input.prevOut.txId !== null) {
 			offset += VarInt.encodeInto(input.prevOut.output, target, offset);
 		}
 
@@ -156,7 +156,7 @@ export class StoredTxInputCodec extends Codec<Output, Input> {
 		currentOffset += txIdBytes;
 
 		let output: number;
-		if (txId.kind === "pointer") {
+		if (txId !== null) {
 			let outputSize: number;
 			[output, outputSize] = VarInt.decode(data, currentOffset);
 			currentOffset += outputSize;

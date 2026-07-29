@@ -111,14 +111,14 @@ async function consumeChunks() {
 					inputs: tx.inputs.map((input, index): Codec.InferInput<typeof StoredTxInput> => {
 						let prevOutTxId: Codec.InferInput<typeof StoredPrevOutTxId>;
 						if (equals(input.prevOut.txId, COINBASE_TXID)) {
-							prevOutTxId = { kind: "coinbase" };
+							prevOutTxId = null;
 						} else {
 							const pointer = chainStore.stores.txid.getPointer(input.prevOut.txId);
 							if (pointer === undefined) {
 								throw new Error(""); // TODO: message
 							}
 							chainStore.stores.spender.put({ tx: pointer, output: input.prevOut.output }, txIdPointer);
-							prevOutTxId = { kind: "pointer", value: pointer };
+							prevOutTxId = pointer;
 						}
 
 						return {
@@ -135,7 +135,7 @@ async function consumeChunks() {
 							pubkeyResult = [txIdPointer, pubKeyPointer];
 							return {
 								value: Number(output.value),
-								previousOutputTx: 0,
+								previousOutputTx: null,
 								scriptPubKey: pubKeyPointer,
 							};
 						}
@@ -143,7 +143,7 @@ async function consumeChunks() {
 						chainStore.stores.pubkey.setValue(pubKeyPointer, txIdPointer);
 						return {
 							value: Number(output.value),
-							previousOutputTx: previousTxIdPointer + 1,
+							previousOutputTx: previousTxIdPointer,
 							scriptPubKey: pubKeyPointer,
 						};
 					}),
