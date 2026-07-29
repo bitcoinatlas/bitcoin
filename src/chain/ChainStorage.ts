@@ -77,7 +77,7 @@ export class ChainStorage {
 			pubkey: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkey"),
 				key: StoredPubKey,
-				value: Void, // TODO: HEAD to pubkey's outputs maybe?
+				value: StoredTxCursor, // cursor to last tx of the pubkey at txid hashmap store
 				pointer: StoredPubkeyCursor,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),

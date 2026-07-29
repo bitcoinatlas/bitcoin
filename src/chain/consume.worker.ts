@@ -10,6 +10,7 @@ import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { chainStorage } from "~/chain/ChainStorage.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
+import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 
 /**
  * consume.worker — one parallel stage of the IBD pipeline.
@@ -44,14 +45,18 @@ export type EncodedBlock = {
 	patchTxids: Uint8Array;
 };
 
+export type InitResult = {
+	encoded: Uint8Array;
+	encodedLengths: Uint32Array;
+};
+
 /** A prevOut that missed disk, pending commit-thread resolution. */
 type Deferred = { inputIndex: number; txid: Uint8Array };
 
 const PUBKEY_PENDING = -1;
 
-const pubkeyPointers = new FastUint8ArrayMap<number>();
+const unknownPubkeysSet = new FastUint8ArraySet();
 const unknownPubkeys: Uint8Array[] = [];
-const unknownPubkeyHashes: Uint8Array[] = [];
 const unknownPubkeyEncoded: Uint8Array[] = [];
 const blocks: WireTx[][] = [];
 
@@ -71,10 +76,10 @@ self.addEventListener("message", (event) => {
 			case "init": {
 				const t = performance.now();
 				const result = init(data as Uint8Array);
-				console.log(`[${NAME}] init done ${ms(t)}ms blocks=${blocks.length} unknownPubkeys=${result.lengths.length}`);
+				console.log(`[${NAME}] init done ${ms(t)}ms blocks=${blocks.length} unknownPubkeys=${result.encodedLengths.length}`);
 				self.postMessage(
-					{ stage: "init-done", hashes: result.hashes, encoded: result.encoded, lengths: result.lengths },
-					[result.hashes.buffer, result.encoded.buffer, result.lengths.buffer],
+					{ stage: "init-done", hashes: result.hashes, encoded: result.encoded, lengths: result.encodedLengths },
+					[result.hashes.buffer, result.encoded.buffer, result.encodedLengths.buffer],
 				);
 				break;
 			}
@@ -120,41 +125,25 @@ self.addEventListener("error", (event) => {
 console.log(`[${NAME}] ready`);
 self.postMessage({ stage: "ready" });
 
-const pubKeyHashBuffer = new Uint8Array(32);
-
-function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; lengths: Uint32Array } {
+function init(buffer: Uint8Array): InitResult {
 	blocks.length = 0;
 	unknownPubkeys.length = 0;
-	unknownPubkeyHashes.length = 0;
 	unknownPubkeyEncoded.length = 0;
-	pubkeyPointers.clear();
 
-	const tDecode = performance.now();
 	let offset = 0;
 	while (offset < buffer.length) {
 		const [txs, size] = WireTxs.decode(buffer.subarray(offset));
 		offset += size;
 		blocks.push(txs);
 	}
-	const decodeMs = ms(tDecode);
 
-	const tDedup = performance.now();
 	for (const txs of blocks) {
 		for (const tx of txs) {
 			for (const output of tx.outputs) {
-				if (pubkeyPointers.get(output.scriptPubKey) !== undefined) continue;
-				sha256.create().update(output.scriptPubKey).digestInto(pubKeyHashBuffer);
-				const onDisk = chainStorage.stores.pubkey.get(pubKeyHashBuffer);
-				if (onDisk !== undefined) {
-					pubkeyPointers.put(output.scriptPubKey, onDisk);
-				} else {
-					pubkeyPointers.put(output.scriptPubKey, PUBKEY_PENDING);
-					unknownPubkeys.push(output.scriptPubKey);
-					unknownPubkeyHashes.push(pubKeyHashBuffer.slice());
-					// Encode HERE (worker), not on the chain thread — the chain thread
-					// just concatenates these into one blob and does a single append.
-					unknownPubkeyEncoded.push(StoredPubKey.encode(output.scriptPubKey));
-				}
+				if (chainStorage.stores.pubkey.has(output.scriptPubKey)) continue;
+				unknownPubkeysSet.add(output.scriptPubKey);
+				unknownPubkeys.push(output.scriptPubKey);
+				unknownPubkeyEncoded.push(StoredPubKey.encode(output.scriptPubKey));
 			}
 		}
 	}
@@ -162,33 +151,26 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 	// Pack for a cheap transfer + zero re-hash/re-encode on the chain thread:
 	// hashes[i] identifies pubkey i (for cross-worker dedup), encoded is every
 	// pubkey's StoredPubKey bytes back-to-back, lengths[i] slices them.
-	const n = unknownPubkeyHashes.length;
-	const hashes = new Uint8Array(n * 32);
-	const lengths = new Uint32Array(n);
+	const n = unknownPubkeys.length;
+	const encodedLengths = new Uint32Array(n);
 	let total = 0;
 	for (let i = 0; i < n; i++) {
-		hashes.set(unknownPubkeyHashes[i]!, i * 32);
-		lengths[i] = unknownPubkeyEncoded[i]!.length;
+		encodedLengths[i] = unknownPubkeyEncoded[i]!.length;
 		total += unknownPubkeyEncoded[i]!.length;
 	}
 	const encoded = new Uint8Array(total);
-	let encOffset = 0;
+	let encodedOffset = 0;
 	for (let i = 0; i < n; i++) {
-		encoded.set(unknownPubkeyEncoded[i]!, encOffset);
-		encOffset += unknownPubkeyEncoded[i]!.length;
+		encoded.set(unknownPubkeyEncoded[i]!, encodedOffset);
+		encodedOffset += unknownPubkeyEncoded[i]!.length;
 	}
-	console.log(`[${NAME}] init: decode=${decodeMs}ms dedup=${ms(tDedup)}ms`);
 
-	return { hashes, encoded, lengths };
+	return { encoded, encodedLengths };
 }
 
-function process(pubkeyPointerBuffer: BigUint64Array): EncodedBlock[] {
+function process(): EncodedBlock[] {
 	prevOutDiskHits = 0;
 	prevOutDeferred = 0;
-
-	for (let i = 0; i < unknownPubkeys.length; i++) {
-		pubkeyPointers.set(unknownPubkeys[i]!, Number(pubkeyPointerBuffer[i]!));
-	}
 
 	const encoded: EncodedBlock[] = new Array(blocks.length);
 
@@ -239,12 +221,16 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 	const deferred: Deferred[] = [];
 
 	const outputs = tx.outputs.map((output): StoredTxOutput => {
-		const pointer = pubkeyPointers.get(output.scriptPubKey);
-		if (pointer === undefined || pointer === PUBKEY_PENDING) {
-			throw new Error("pubkey pointer missing after assignment — init/process desync");
+		const pubKeyResult = chainStorage.stores.pubkey.getValueAndPointer(output.scriptPubKey);
+		if (pubKeyResult === undefined) {
+			throw new Error("pubkey pointer missing after assignment");
 		}
-		const 
-		return { value: Number(output.value), scriptPubKey: pointer, previousOutputTx:  };
+		const [pubKeyPointer, lastTxIdPointer] = pubKeyResult;
+		// const [lastTxIdEntry] = chainStorage.stores.txid.getEntry(lastTxIdPointer);
+		// const [lastTxId, lastTxPointer] = lastTxIdEntry;
+		// const [lastTx] = chainStorage.stores.tx.get(lastTxPointer, StoredTx);
+		chainStorage.stores.pubkey.setValue(pubKeyPointer); // TODO: uhhhh
+		return { value: Number(output.value), scriptPubKey: pubKeyPointer, previousOutputTx: lastTxIdPointer };
 	});
 
 	const inputs = tx.inputs.map((input, index): StoredTxInput => {

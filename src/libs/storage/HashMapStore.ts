@@ -1,4 +1,4 @@
-import { Bool, Codec, FixedCodec, StructCodec, StructOutput } from "@nomadshiba/codec";
+import { Bool, Codec, FixedCodec, StructCodec, StructOutput, TupleCodec, TupleOutput } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
 import { Mmap } from "@nomadshiba/mmap";
 import { join } from "@std/path";
@@ -83,7 +83,7 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 	private readonly pointer: pointer;
 	private readonly key: Key;
 	private readonly value: Value;
-	private readonly entry: StructCodec<{ key: Key; value: Value }>;
+	private readonly entry: TupleCodec<[key: Key, value: Value]>;
 	private readonly header: StructCodec<{ previous: pointer; key: Key }>;
 	private readonly item: StructCodec<{ previous: pointer; key: Key; value: Value }>;
 	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: pointer; entriesCount: pointer }>;
@@ -132,10 +132,7 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 			previous: options.pointer,
 			key: options.key,
 		});
-		this.entry = new StructCodec({
-			key: options.key,
-			value: options.value,
-		});
+		this.entry = new TupleCodec([options.key, options.value]);
 		this.meta = new StructCodec({
 			stale: Bool,
 			entriesSize: options.pointer,
@@ -312,7 +309,23 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 		return undefined;
 	}
 
-	getEntry(pointer: number): [StructOutput<{ key: Key; value: Value }>, offset: number] {
+	getValueAndPointer(key: Codec.InferInput<Key>): [value: Codec.InferOutput<Value>, pointer: number] | undefined {
+		if (this.bucketsCount === 0) return undefined;
+		const keyBytes = this.key.encode(key);
+		let pointer = this.readBucket(this.bucketIndexOf(keyBytes));
+		while (pointer !== 0) {
+			pointer -= 1;
+			const [prefix, prefixSize] = this.header.decode(this.entriesMap!.bytes, pointer);
+			if (equals(keyBytes, this.key.encode(prefix.key))) {
+				const [value] = this.value.decode(this.entriesMap!.bytes, pointer + prefixSize);
+				return [value, pointer];
+			}
+			pointer = prefix.previous;
+		}
+		return undefined;
+	}
+
+	getEntry(pointer: number): [TupleOutput<[key: Key, value: Value]>, offset: number] {
 		pointer -= 1;
 		return this.entry.decode(this.entriesMap!.bytes, pointer + this.pointer.stride.size);
 	}
@@ -329,7 +342,7 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 	// ── write path ─────────────────────────────────────────────────────────
 
 	/** Insert `key -> value`. Rejects duplicates; returns `true` on fresh insert. */
-	put(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
+	put(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): void {
 		const keyBytes = this.key.encode(key);
 		const bucket = this.bucketIndexOf(keyBytes);
 		const head = this.readBucket(bucket);
@@ -339,7 +352,10 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 		while (pointer !== 0) {
 			pointer -= 1;
 			const [prefix] = this.header.decode(this.entriesMap!.bytes, pointer);
-			if (equals(keyBytes, this.key.encode(prefix.key))) return false;
+			if (equals(keyBytes, this.key.encode(prefix.key))) {
+				// TODO: better error message
+				throw new Error("duplicate");
+			}
 			pointer = prefix.previous;
 		}
 
@@ -355,11 +371,13 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 		this.writeBucket(bucket, offset + 1);
 
 		this.maybeRehash();
-		return true;
 	}
 
 	set(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
 		// TODO: impl
+	}
+
+	setValue(pointer: number, value: Codec.InferInput<Value>): void {
 	}
 
 	// ── rehash ─────────────────────────────────────────────────────────────

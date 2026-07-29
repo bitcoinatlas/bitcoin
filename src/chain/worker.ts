@@ -1,22 +1,9 @@
 import { chainStorage } from "~/chain/ChainStorage.ts";
-import { Queue } from "~/libs/collections/Queue.ts";
-import { PARALLELISM_THREADS } from "~/env.ts";
 import { SpenderIndexer } from "~/chain/SpenderIndexer.ts";
 import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
+import { PARALLELISM_THREADS } from "~/env.ts";
+import { Queue } from "~/libs/collections/Queue.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
-import { delay } from "@std/async";
-import { EncodedBlock } from "~/chain/consume.worker.ts";
-import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
-
-/** consume.worker `init` output: unknown scriptPubKeys, pre-hashed + pre-encoded. */
-type InitResult = {
-	/** hash of each unknown pubkey, packed 32 bytes each (for cross-worker dedup). */
-	hashes: Uint8Array;
-	/** StoredScriptPubKey bytes of each unknown pubkey, back-to-back. */
-	encoded: Uint8Array;
-	/** encoded length of each unknown pubkey; slices `encoded`. */
-	lengths: Uint32Array;
-};
 
 self.addEventListener("message", async (event) => {
 	const port = event.ports[0]!;
@@ -56,13 +43,7 @@ async function prepare(p2pPort: MessagePortLike) {
 async function tick(p2pPort: MessagePortLike) {
 	const message = p2pMessageQueue.dequeue();
 	if (!message) {
-		// Nothing pending. If chunks are waiting but we never reached a full
-		// batch (tail of IBD, or p2p idle at the tip), flush the partial now so
-		// it doesn't stall. During fast IBD the queue reaches batchSize before
-		// it ever empties, so this only fires when p2p genuinely has nothing.
-		if (chunkQueue.size() > 0) {
-			await consumeBatch(batchChunkQueue());
-		}
+		if (chunkQueue.size() > 0) await consumeChunks();
 		return;
 	}
 
@@ -71,7 +52,7 @@ async function tick(p2pPort: MessagePortLike) {
 			console.error("[chain] chunkQueue overflow — p2p backpressure is not holding");
 			Deno.kill(Deno.pid);
 		}
-		if (chunkQueue.size() >= consumers.length) await consumeBatch(batchChunkQueue());
+		if (chunkQueue.size() >= consumers.length) await consumeChunks();
 		return;
 	}
 
@@ -107,12 +88,9 @@ async function handleHeadersMessage(headers: WireBlockHeaders) {
 	}
 }
 
-function batchChunkQueue(): Uint8Array[] {
-	const n = Math.min(consumers.length, chunkQueue.size());
-	const batch: Uint8Array[] = new Array(n);
-	for (let i = 0; i < n; i++) batch[i] = chunkQueue.dequeue()!;
-	return batch;
-}
-
-async function consumeBatch(batch: Uint8Array[]) {
+async function consumeChunks() {
+	const batchSize = Math.min(consumers.length, chunkQueue.size());
+	if (batchSize === 0) return;
+	const batch: Uint8Array[] = new Array(batchSize);
+	for (let i = 0; i < batchSize; i++) batch[i] = chunkQueue.dequeue()!;
 }
