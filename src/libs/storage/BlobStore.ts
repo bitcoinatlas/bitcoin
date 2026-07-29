@@ -13,6 +13,14 @@ import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
 const COMPRESS_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor(PARALLELISM_THREADS * .5)));
 
+/**
+ * A chunk's memory mapping paired with its `bytes()` view, taken once at open
+ * time and reused. `Mmap.bytes()` builds a fresh `Uint8Array` on every call, so
+ * caching it here keeps the read/write hot paths allocation-free. The pair is
+ * always created and discarded together.
+ */
+type MappedChunk = { mapping: Mmap; bytes: Uint8Array };
+
 // node:zlib streams default to 16 KiB chunks — ~65k event-loop hops per ~1 GiB
 // chunk. 8 MiB buffers cut that to ~130.
 const INFLATE_STREAM_BUFFER_SIZE = 8 * MiB;
@@ -38,7 +46,7 @@ export type BlobStoreOptions<T extends Codec, C extends Codec<number>> = {
 	entry: T;
 	/** Codec for the on-disk cursor (the store's logical size). */
 	cursor: C;
-	maxChunkSize: number;
+	chunkSize: number;
 };
 
 /** Map `{ compressionLevel: 19, ... }` -> `{ [ZSTD_c_compressionLevel]: 19 }`. */
@@ -192,14 +200,14 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		this.path = options.path;
 		this.entry = options.entry;
 		this.cursor = options.cursor;
-		this.maxChunkSize = options.maxChunkSize;
+		this.maxChunkSize = options.chunkSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
 		this.zstdDecompressSyncOptions = {
 			chunkSize: INFLATE_SYNC_CHUNK_SIZE,
 			// Sealed raw chunks are always exactly maxChunkSize — a hard output
 			// bound is free corruption detection on top of the frame checksum.
-			maxOutputLength: options.maxChunkSize,
+			maxOutputLength: options.chunkSize,
 			params: this.zstdDecompressOptions,
 		};
 		this.zstdDecompressStreamOptions = {
@@ -425,7 +433,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	}
 
 	sync() {
-		for (const map of this.chunkMaps) map?.flush();
+		for (const map of this.chunkMaps) map?.mapping.flush();
 	}
 
 	size(): number {
@@ -485,23 +493,24 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	}
 
 	// undefined = never probed. null = probed, raw file absent (compressed, not
-	// yet inflated). Mmap = raw file present and mapped.
+	// yet inflated). MappedChunk = raw file present and mapped.
 	// SIGBUS SAFETY: every site that shrinks/removes a raw chunk MUST call
 	// closeChunkMap(index) — which unmaps — BEFORE the shrink/remove.
-	private chunkMaps: (Mmap | null | undefined)[] = [];
+	private chunkMaps: (MappedChunk | null | undefined)[] = [];
 
 	private closeChunkMap(index: number) {
 		const map = this.chunkMaps[index];
-		if (map) map.close();
+		if (map) map.mapping.close();
 		this.chunkMaps[index] = undefined;
 	}
 
-	private getChunkMap(index: number): Mmap | null {
+	private getChunkMap(index: number): MappedChunk | null {
 		let map = this.chunkMaps[index];
 		if (map !== undefined) return map;
 		try {
-			map = Mmap.openSync(chunkPath(this.path, index), { write: true });
-			map.advise(Advice.Random);
+			const mapping = Mmap.openSync(chunkPath(this.path, index), { write: true });
+			mapping.advise(Advice.Random);
+			map = { mapping, bytes: mapping.bytes() };
 		} catch (e) {
 			if (!(e instanceof Deno.errors.NotFound)) throw e;
 			map = null;
@@ -761,7 +770,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		this.disposed = true;
 		this.compressPool?.dispose();
 		this.compressPool = undefined;
-		for (const map of this.chunkMaps) map?.close();
+		for (const map of this.chunkMaps) map?.mapping.close();
 		this.chunkMaps.length = 0;
 		for (const timer of this.inflatedTimers.values()) clearTimeout(timer);
 		this.inflatedTimers.clear();

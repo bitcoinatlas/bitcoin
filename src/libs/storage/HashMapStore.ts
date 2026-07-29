@@ -1,8 +1,22 @@
-import { Bool, Codec, FixedCodec, StructCodec } from "@nomadshiba/codec";
+import { Bool, Codec, FixedCodec, StructCodec, StructOutput } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
 import { Mmap } from "@nomadshiba/mmap";
 import { join } from "@std/path";
 import { Store } from "~/libs/storage/Store.ts";
+
+/**
+ * A memory mapping paired with its `bytes()` view, taken once at open time and
+ * reused for every access. `Mmap.bytes()` allocates a fresh `Uint8Array` (over
+ * a fresh `ArrayBuffer`) on every call, so caching it here keeps the hot read/
+ * write loops allocation-free. The two always travel together: whenever the
+ * mapping is (re)opened the `bytes` snapshot is refreshed alongside it.
+ */
+type MappedFile = { mapping: Mmap; bytes: Uint8Array };
+
+function mapFile(path: string): MappedFile {
+	const mapping = Mmap.openSync(path, { write: true });
+	return { mapping, bytes: mapping.bytes() };
+}
 
 export type LoadFactorOptions = {
 	/** Target average entries per bucket (`entryCount / bucketCount`) — same meaning as e.g. Java `HashMap`'s load factor. `1` aims for ~1 entry/bucket, `4` aims for ~4 (fewer, cheaper buckets; longer chains). Must be > 0. */
@@ -63,25 +77,25 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
  * mmap, flushed on `close`/`rehash`); on reopen the orphaned tail is simply
  * not counted.
  */
-export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
+export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
 
-	private readonly Pointer: Pointer;
+	private readonly pointer: pointer;
 	private readonly key: Key;
 	private readonly value: Value;
-	private readonly entry: StructCodec<{ previous: Pointer; key: Key; value: Value }>;
-	private readonly entryPrefix: StructCodec<{ previous: Pointer; key: Key }>;
-	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: Pointer; entriesCount: Pointer }>;
+	private readonly entry: StructCodec<{ key: Key; value: Value }>;
+	private readonly header: StructCodec<{ previous: pointer; key: Key }>;
+	private readonly item: StructCodec<{ previous: pointer; key: Key; value: Value }>;
+	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: pointer; entriesCount: pointer }>;
 	private readonly targetLoadFactor: number;
 	private readonly maxLoadFactorDrift: number;
 
 	private readonly entriesPath: string;
 	private readonly bucketsPath: string;
 	private readonly metaPath: string;
-	private readonly pointerSize: number;
 	private readonly metaSize: number;
 
-	private entriesMap: Mmap | undefined;
+	private entriesMap: MappedFile | undefined;
 	private entriesPhysicalSize = 0;
 	private entriesSize = 0;
 	// Number of entries (not bytes) — used for the bucket-ratio math instead
@@ -90,21 +104,16 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	// rehash's counting pass, so it self-corrects after a resize() truncate.
 	private entriesCount = 0;
 
-	private bucketsMap: Mmap | undefined;
+	private bucketsMap: MappedFile | undefined;
 	private bucketsCount = 0;
 
-	private metaMap: Mmap | undefined;
+	private metaMap: MappedFile | undefined;
 	private stale = true;
 
-	// A fresh key per (re)map of entries/buckets opts each one out of Mmap's
-	// default same-path sharing cache — every resize is a mapping we own
-	// exclusively and fully close before the next one opens.
-	private mmapGeneration = 0;
-
-	private constructor(options: HashMapStoreOptions<Pointer, Key, Value>) {
+	private constructor(options: HashMapStoreOptions<pointer, Key, Value>) {
 		super();
 		this.path = options.path;
-		this.Pointer = options.pointer;
+		this.pointer = options.pointer;
 		this.key = options.key;
 		this.value = options.value;
 		this.targetLoadFactor = options.loadFactor.target;
@@ -112,17 +121,20 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.entriesPath = join(options.path, "entries");
 		this.bucketsPath = join(options.path, "buckets");
 		this.metaPath = join(options.path, "meta");
-		this.pointerSize = options.pointer.stride.size;
-		this.metaSize = 1 + this.pointerSize * 2; // Bool + Pointer(entriesSize) + Pointer(entriesCount)
+		this.metaSize = 1 + this.pointer.stride.size * 2; // Bool + Pointer(entriesSize) + Pointer(entriesCount)
 
-		this.entry = new StructCodec({
+		this.item = new StructCodec({
 			previous: options.pointer,
 			key: options.key,
 			value: options.value,
 		});
-		this.entryPrefix = new StructCodec({
+		this.header = new StructCodec({
 			previous: options.pointer,
 			key: options.key,
+		});
+		this.entry = new StructCodec({
+			key: options.key,
+			value: options.value,
 		});
 		this.meta = new StructCodec({
 			stale: Bool,
@@ -159,7 +171,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			Deno.openSync(self.metaPath, { create: true, write: true }).close();
 			Deno.truncateSync(self.metaPath, self.metaSize);
 		}
-		self.metaMap = Mmap.openSync(self.metaPath, { write: true });
+		self.metaMap = mapFile(self.metaPath);
 		if (metaExists) {
 			const [meta] = self.meta.decode(self.metaMap.bytes);
 			self.stale = meta.stale;
@@ -176,15 +188,15 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			self.entriesPhysicalSize = 0;
 		}
 		if (self.entriesPhysicalSize > 0) {
-			self.entriesMap = Mmap.openSync(self.entriesPath, { write: true, key: `${self.mmapGeneration++}` });
+			self.entriesMap = mapFile(self.entriesPath);
 		}
 
 		// Buckets (only if not stale — stale means rehash will create them)
 		if (!self.stale) {
 			try {
-				self.bucketsCount = Deno.statSync(self.bucketsPath).size / self.pointerSize;
+				self.bucketsCount = Deno.statSync(self.bucketsPath).size / self.pointer.stride.size;
 				if (self.bucketsCount > 0) {
-					self.bucketsMap = Mmap.openSync(self.bucketsPath, { write: true, key: `${self.mmapGeneration++}` });
+					self.bucketsMap = mapFile(self.bucketsPath);
 				}
 			} catch (e) {
 				if (!(e instanceof Deno.errors.NotFound)) throw e;
@@ -209,19 +221,19 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		let newSize = this.entriesPhysicalSize;
 		if (newSize === 0) newSize = 1024 * 1024;
 		while (newSize < needed) newSize *= 2;
-		this.entriesMap?.close();
+		this.entriesMap?.mapping.close();
 		this.entriesMap = undefined;
 		const file = Deno.openSync(this.entriesPath, { write: true });
 		file.truncateSync(newSize);
 		file.close();
-		this.entriesMap = Mmap.openSync(this.entriesPath, { write: true, key: `${this.mmapGeneration++}` });
+		this.entriesMap = mapFile(this.entriesPath);
 		this.entriesPhysicalSize = newSize;
 	}
 
 	// ── buckets file (fixed-width array, mmap'd) ───────────────────────────
 
 	private resizeBuckets(count: number): void {
-		this.bucketsMap?.close();
+		this.bucketsMap?.mapping.close();
 		this.bucketsMap = undefined;
 		this.bucketsCount = count;
 		if (count === 0) return;
@@ -237,18 +249,18 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			if (!(e instanceof Deno.errors.NotFound)) throw e;
 		}
 		const file = Deno.openSync(this.bucketsPath, { create: true, write: true });
-		file.truncateSync(count * this.pointerSize);
+		file.truncateSync(count * this.pointer.stride.size);
 		file.close();
-		this.bucketsMap = Mmap.openSync(this.bucketsPath, { write: true, key: `${this.mmapGeneration++}` });
+		this.bucketsMap = mapFile(this.bucketsPath);
 	}
 
 	private readBucket(index: number): number {
-		const [value] = this.Pointer.decode(this.bucketsMap!.bytes, index * this.pointerSize);
+		const [value] = this.pointer.decode(this.bucketsMap!.bytes, index * this.pointer.stride.size);
 		return value;
 	}
 
 	private writeBucket(index: number, value: number): void {
-		this.bucketsMap!.bytes.set(this.Pointer.encode(value), index * this.pointerSize);
+		this.bucketsMap!.bytes.set(this.pointer.encode(value), index * this.pointer.stride.size);
 	}
 
 	// ── hashing ────────────────────────────────────────────────────────────
@@ -275,7 +287,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		let pointer = this.readBucket(this.bucketIndexOf(keyBytes));
 		while (pointer !== 0) {
 			pointer -= 1;
-			const [prefix, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, pointer);
+			const [prefix, prefixSize] = this.header.decode(this.entriesMap!.bytes, pointer);
 			if (equals(keyBytes, this.key.encode(prefix.key))) {
 				const [value] = this.value.decode(this.entriesMap!.bytes, pointer + prefixSize);
 				return value;
@@ -285,8 +297,29 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		return undefined;
 	}
 
-	async getAsync(key: Codec.InferInput<Key>): Promise<Codec.InferOutput<Value> | undefined> {
-		return this.get(key);
+	getPointer(key: Codec.InferInput<Key>): number | undefined {
+		if (this.bucketsCount === 0) return undefined;
+		const keyBytes = this.key.encode(key);
+		let pointer = this.readBucket(this.bucketIndexOf(keyBytes));
+		while (pointer !== 0) {
+			pointer -= 1;
+			const [prefix] = this.header.decode(this.entriesMap!.bytes, pointer);
+			if (equals(keyBytes, this.key.encode(prefix.key))) {
+				return pointer;
+			}
+			pointer = prefix.previous;
+		}
+		return undefined;
+	}
+
+	getEntry(pointer: number): [StructOutput<{ key: Key; value: Value }>, offset: number] {
+		pointer -= 1;
+		return this.entry.decode(this.entriesMap!.bytes, pointer + this.pointer.stride.size);
+	}
+
+	getKey(pointer: number): [Codec.InferOutput<Key>, offset: number] {
+		pointer -= 1;
+		return this.key.decode(this.entriesMap!.bytes, pointer + this.pointer.stride.size);
 	}
 
 	has(key: Codec.InferInput<Key>): boolean {
@@ -296,7 +329,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	// ── write path ─────────────────────────────────────────────────────────
 
 	/** Insert `key -> value`. Rejects duplicates; returns `true` on fresh insert. */
-	set(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
+	put(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
 		const keyBytes = this.key.encode(key);
 		const bucket = this.bucketIndexOf(keyBytes);
 		const head = this.readBucket(bucket);
@@ -305,14 +338,14 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		let pointer = head;
 		while (pointer !== 0) {
 			pointer -= 1;
-			const [prefix] = this.entryPrefix.decode(this.entriesMap!.bytes, pointer);
+			const [prefix] = this.header.decode(this.entriesMap!.bytes, pointer);
 			if (equals(keyBytes, this.key.encode(prefix.key))) return false;
 			pointer = prefix.previous;
 		}
 
 		// Append entry, link back to old head, make it the new head (+1 encoded).
 		const offset = this.entriesSize;
-		const encoded = this.entry.encode({ previous: head, key, value });
+		const encoded = this.item.encode({ previous: head, key, value });
 		this.ensureEntriesCapacity(offset + encoded.length);
 		this.entriesMap!.bytes.set(encoded, offset);
 		this.entriesSize += encoded.length;
@@ -323,6 +356,10 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 		this.maybeRehash();
 		return true;
+	}
+
+	set(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {
+		// TODO: impl
 	}
 
 	// ── rehash ─────────────────────────────────────────────────────────────
@@ -351,14 +388,14 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// (1) mark stale + flush
 		this.stale = true;
 		this.writeMeta();
-		this.metaMap!.flush();
+		this.metaMap!.mapping.flush();
 
 		const total = this.entriesSize;
 
 		// (2) count entries (authoritative)
 		let count = 0;
 		for (let offset = 0; offset < total;) {
-			const [, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, offset);
+			const [, prefixSize] = this.header.decode(this.entriesMap!.bytes, offset);
 			const [, valueSize] = this.value.decode(this.entriesMap!.bytes, offset + prefixSize);
 			offset += prefixSize + valueSize;
 			count++;
@@ -373,7 +410,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// (4) replay entries oldest-first, patching links + rebuilding heads
 		let offset = 0;
 		while (offset < total) {
-			const [prefix, prefixSize] = this.entryPrefix.decode(this.entriesMap!.bytes, offset);
+			const [prefix, prefixSize] = this.header.decode(this.entriesMap!.bytes, offset);
 			const [, valueSize] = this.value.decode(this.entriesMap!.bytes, offset + prefixSize);
 			const keyBytes = this.key.encode(prefix.key);
 
@@ -381,7 +418,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			const head = this.readBucket(bucket);
 
 			if (prefix.previous !== head) {
-				this.entriesMap!.bytes.set(this.Pointer.encode(head), offset);
+				this.entriesMap!.bytes.set(this.pointer.encode(head), offset);
 			}
 			this.writeBucket(bucket, offset + 1);
 
@@ -391,7 +428,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// (5) clear stale + flush
 		this.stale = false;
 		this.writeMeta();
-		this.metaMap!.flush();
+		this.metaMap!.mapping.flush();
 	}
 
 	// ── Store contract ─────────────────────────────────────────────────────
@@ -409,12 +446,12 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 	close(): void {
 		this.writeMeta();
-		this.metaMap?.flush();
-		this.entriesMap?.flush();
-		this.bucketsMap?.flush();
-		this.entriesMap?.close();
-		this.bucketsMap?.close();
-		this.metaMap?.close();
+		this.metaMap?.mapping.flush();
+		this.entriesMap?.mapping.flush();
+		this.bucketsMap?.mapping.flush();
+		this.entriesMap?.mapping.close();
+		this.bucketsMap?.mapping.close();
+		this.metaMap?.mapping.close();
 	}
 
 	[Symbol.dispose](): void {

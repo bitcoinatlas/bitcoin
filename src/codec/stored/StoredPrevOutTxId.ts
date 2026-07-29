@@ -1,8 +1,8 @@
 import { Codec, Stride } from "@nomadshiba/codec";
-import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
+import { StoredTxCursor } from "~/codec/stored/StoredTxCursor.ts";
 
 export type StoredPrevOutTxId =
-	| { kind: "pointer"; value: StoredTxPointer }
+	| { kind: "pointer"; value: StoredTxCursor }
 	| { kind: "coinbase"; value?: undefined };
 
 /**
@@ -24,7 +24,7 @@ export type StoredPrevOutTxId =
 const COINBASE_SENTINEL = 0;
 
 export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: StoredTxPointer.stride.size };
+	readonly stride: Stride<"fixed"> = { kind: "fixed", size: StoredTxCursor.stride.size };
 
 	encoder(txId: StoredPrevOutTxId, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	encoder(txId: StoredPrevOutTxId, target: Uint8Array, offset: number): number;
@@ -38,18 +38,18 @@ export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 		const { kind } = txId;
 
 		if (kind === "pointer") {
-			return StoredTxPointer.encodeInto(txId.value + 1, target, offset);
+			return StoredTxCursor.encodeInto(txId.value + 1, target, offset);
 		}
 
 		if (kind === "coinbase") {
-			return StoredTxPointer.encodeInto(COINBASE_SENTINEL, target, offset);
+			return StoredTxCursor.encodeInto(COINBASE_SENTINEL, target, offset);
 		}
 
 		throw new Error(`unknown txid kind, ${kind satisfies never}`);
 	}
 
 	decoder(data: Uint8Array, offset: number): [StoredPrevOutTxId, number] {
-		const [rawPointer] = StoredTxPointer.decode(data, offset);
+		const [rawPointer] = StoredTxCursor.decode(data, offset);
 
 		if (rawPointer === COINBASE_SENTINEL) {
 			return [{ kind: "coinbase" }, this.stride.size];
@@ -70,8 +70,8 @@ export class StoredPrevOutTxIdCodec extends Codec<StoredPrevOutTxId> {
 	 * than writing the raw u48 by hand. Only ever patches a pointer — never a
 	 * coinbase slot (coinbase is known at encode time and never deferred).
 	 */
-	patchPointer(target: Uint8Array, offset: number, pointer: StoredTxPointer): void {
-		StoredTxPointer.encodeInto(pointer + 1, target, offset);
+	patchPointer(target: Uint8Array, offset: number, pointer: StoredTxCursor): void {
+		StoredTxCursor.encodeInto(pointer + 1, target, offset);
 	}
 }
 

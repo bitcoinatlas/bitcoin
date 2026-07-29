@@ -6,7 +6,7 @@ export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 	path: string;
 	item: T;
 	cursor: C;
-	itemsPerChunk: number;
+	minChunkSize: number;
 };
 
 export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
@@ -23,11 +23,17 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 	}
 
 	static open<T extends FixedCodec, C extends Codec<number>>(options: ArrayStoreOptions<T, C>): ArrayStore<T, C> {
+		if (options.minChunkSize < 0) {
+			throw new RangeError(`minChunkSize must be non-negative, got ${options.minChunkSize}`);
+		}
+		if (!Number.isInteger(options.item.stride.size) || options.item.stride.size <= 0) {
+			throw new RangeError(`stride.size must be a positive integer, got ${options.item.stride.size}`);
+		}
 		const blob = BlobStore.open({
 			path: options.path,
 			cursor: options.cursor,
 			entry: options.item,
-			maxChunkSize: options.itemsPerChunk * options.item.stride.size,
+			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);
 	}

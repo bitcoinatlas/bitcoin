@@ -36,10 +36,10 @@ Deno.test("set/get roundtrip + duplicate rejection", () => {
 	using map = HashMapStore.open(options(tmpDir(), U32));
 
 	for (let i = 0; i < 100; i++) {
-		assertEquals(map.set(key32(i), i * 7), true);
+		assertEquals(map.put(key32(i), i * 7), true);
 	}
 	// duplicate
-	assertEquals(map.set(key32(42), 999), false);
+	assertEquals(map.put(key32(42), 999), false);
 	assertEquals(map.get(key32(42)), 42 * 7);
 
 	for (let i = 0; i < 100; i++) {
@@ -52,7 +52,7 @@ Deno.test("rehash on drift keeps all entries findable", () => {
 	using map = HashMapStore.open(options(tmpDir(), U32, { loadFactor: { target: 2, maxDrift: 0.25 } }));
 
 	const N = 500;
-	for (let i = 0; i < N; i++) map.set(key32(i), i);
+	for (let i = 0; i < N; i++) map.put(key32(i), i);
 	for (let i = 0; i < N; i++) assertEquals(map.get(key32(i)), i, `missing ${i}`);
 });
 
@@ -61,23 +61,23 @@ Deno.test("truncate drops suffix, survivors stay findable", () => {
 	const open = () => HashMapStore.open(options(path, U32));
 
 	const map = open();
-	for (let i = 0; i < 30; i++) map.set(key32(i), i);
+	for (let i = 0; i < 30; i++) map.put(key32(i), i);
 	const cut = map.size();
-	for (let i = 30; i < 50; i++) map.set(key32(i), i);
+	for (let i = 30; i < 50; i++) map.put(key32(i), i);
 
 	map.resize(cut);
 
 	for (let i = 0; i < 30; i++) assertEquals(map.get(key32(i)), i, `survivor ${i} missing`);
 	for (let i = 30; i < 50; i++) assertEquals(map.get(key32(i)), undefined, `dropped ${i} still present`);
 	// can insert again after truncate
-	assertEquals(map.set(key32(30), 12345), true);
+	assertEquals(map.put(key32(30), 12345), true);
 	assertEquals(map.get(key32(30)), 12345);
 	map.close();
 });
 
 Deno.test("async get matches sync get", async () => {
 	using map = HashMapStore.open(options(tmpDir(), U32, { loadFactor: { target: 3, maxDrift: 0.5 } }));
-	for (let i = 0; i < 120; i++) map.set(key32(i), i * 3);
+	for (let i = 0; i < 120; i++) map.put(key32(i), i * 3);
 	for (let i = 0; i < 120; i++) {
 		assertEquals(await map.getAsync(key32(i)), i * 3, `async ${i}`);
 	}
@@ -88,7 +88,7 @@ Deno.test("reopen recovers heads (stale rebuild path)", () => {
 	const path = tmpDir();
 	{
 		using map = HashMapStore.open(options(path, VarInt));
-		for (let i = 0; i < 60; i++) map.set(key32(i), i);
+		for (let i = 0; i < 60; i++) map.put(key32(i), i);
 	}
 	// Force a stale rebuild on next open: flip the stale byte in meta.
 	// Meta layout: Bool(1 byte stale) + U48(6 bytes entriesSize) + U48(6 bytes entriesCount).

@@ -1,7 +1,7 @@
 import { sha256 } from "@noble/hashes/sha2";
 import { VarInt } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
-import { StoredScriptPubKey } from "~/codec/stored/StoredScriptPubkey.ts";
+import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
@@ -9,6 +9,7 @@ import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { chainStorage } from "~/chain/ChainStorage.ts";
+import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 
 /**
  * consume.worker — one parallel stage of the IBD pipeline.
@@ -152,7 +153,7 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 					unknownPubkeyHashes.push(pubKeyHashBuffer.slice());
 					// Encode HERE (worker), not on the chain thread — the chain thread
 					// just concatenates these into one blob and does a single append.
-					unknownPubkeyEncoded.push(StoredScriptPubKey.encode(output.scriptPubKey));
+					unknownPubkeyEncoded.push(StoredPubKey.encode(output.scriptPubKey));
 				}
 			}
 		}
@@ -160,7 +161,7 @@ function init(buffer: Uint8Array): { hashes: Uint8Array; encoded: Uint8Array; le
 
 	// Pack for a cheap transfer + zero re-hash/re-encode on the chain thread:
 	// hashes[i] identifies pubkey i (for cross-worker dedup), encoded is every
-	// pubkey's StoredScriptPubKey bytes back-to-back, lengths[i] slices them.
+	// pubkey's StoredPubKey bytes back-to-back, lengths[i] slices them.
 	const n = unknownPubkeyHashes.length;
 	const hashes = new Uint8Array(n * 32);
 	const lengths = new Uint32Array(n);
@@ -237,12 +238,13 @@ function process(pubkeyPointerBuffer: BigUint64Array): EncodedBlock[] {
 function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 	const deferred: Deferred[] = [];
 
-	const outputs = tx.outputs.map((output) => {
+	const outputs = tx.outputs.map((output): StoredTxOutput => {
 		const pointer = pubkeyPointers.get(output.scriptPubKey);
 		if (pointer === undefined || pointer === PUBKEY_PENDING) {
 			throw new Error("pubkey pointer missing after assignment — init/process desync");
 		}
-		return { value: output.value, scriptPubKey: pointer };
+		const 
+		return { value: Number(output.value), scriptPubKey: pointer, previousOutputTx:  };
 	});
 
 	const inputs = tx.inputs.map((input, index): StoredTxInput => {
@@ -250,21 +252,21 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 		const base = { scriptSig: input.scriptSig, sequence: input.sequence, witness };
 
 		if (equals(input.prevOut.txId, COINBASE_TXID) && input.prevOut.output === COINBASE_VOUT) {
-			return { prevOut: { txId: { kind: "coinbase" } as const, output: input.prevOut.output }, ...base };
+			return { prevOut: { txId: { kind: "coinbase" }, output: input.prevOut.output }, ...base };
 		}
 
 		const onDiskPointer = chainStorage.stores.txid.get(input.prevOut.txId);
 		if (onDiskPointer !== undefined) {
 			prevOutDiskHits++;
-			return { prevOut: { txId: { kind: "pointer" as const, value: onDiskPointer }, output: input.prevOut.output }, ...base };
+			return { prevOut: { txId: { kind: "pointer", value: onDiskPointer }, output: input.prevOut.output }, ...base };
 		}
 
 		prevOutDeferred++;
-		deferred.push({ inputIndex: index, txid: input.prevOut.txId.slice() });
-		return { prevOut: { txId: { kind: "pointer" as const, value: 0 }, output: input.prevOut.output }, ...base };
+		deferred.push({ inputIndex: index, txid: input.prevOut.txId });
+		return { prevOut: { txId: { kind: "pointer", value: 0 }, output: input.prevOut.output }, ...base };
 	});
 
-	return { stored: { txId: tx.txId, locktime: tx.locktime, version: tx.version, outputs, inputs }, deferred };
+	return { stored: { locktime: tx.locktime, version: tx.version, outputs, inputs }, deferred };
 }
 
 function packTxids(txIds: Uint8Array[]): Uint8Array {

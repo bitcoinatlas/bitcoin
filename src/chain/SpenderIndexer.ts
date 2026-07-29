@@ -60,7 +60,7 @@ export class SpenderIndexer {
 	private readonly active = new Set<Promise<void>>();
 
 	constructor() {
-		const committed = chainStorage.stores.blocks.length();
+		const committed = chainStorage.stores.block.size();
 		const saved = this.readCheckpoint();
 		// Never trust a checkpoint that's ahead of committed data: a crash mid-round
 		// can roll the block stores back below where the checkpoint reached. Clamp,
@@ -73,7 +73,7 @@ export class SpenderIndexer {
 			const worker = new Worker(new URL("./spender.worker.ts", import.meta.url), { type: "module", name: `spender-${i}` });
 			worker.addEventListener("error", (event) => {
 				console.error(`[spender] spender-${i} uncaught:`, event.message, event.filename, event.lineno);
-				Deno.exit(1);
+				Deno.kill(Deno.pid);
 			});
 			worker.addEventListener("message", (event) => this.onMessage(i, event.data));
 			this.workers[i] = worker;
@@ -106,7 +106,7 @@ export class SpenderIndexer {
 			// PoW-verified means our own data is corrupt — fail loud, same as the
 			// commit path's invariant checks.
 			console.error(`[spender] spender-${i} failed on ${data.from}..${data.to}: ${data.message}\n${data.stack ?? ""}`);
-			Deno.exit(1);
+			Deno.kill(Deno.pid);
 		}
 	}
 

@@ -13,7 +13,7 @@ Deno.test("WireTx decode block1 coinbase - txId matches known value", () => {
 	const [tx] = WireTx.decode(raw);
 	// Known txId for block 1 coinbase (big-endian display)
 	const expectedTxId = "0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098";
-	const actualHex = encodeHex(tx.txId.slice().reverse());
+	const actualHex = encodeHex(tx.txId.toReversed());
 	assertEquals(actualHex, expectedTxId);
 });
 
@@ -154,7 +154,7 @@ function toHex(bytes: Uint8Array): string {
 
 /** Reverse a 32-byte hash to the big-endian form block explorers display. */
 function displayHash(internalLE: Uint8Array): string {
-	return toHex(internalLE.slice().reverse());
+	return toHex(internalLE.toReversed());
 }
 
 const VECTORS = {

@@ -31,7 +31,7 @@ import { chainStorage } from "~/chain/ChainStorage.ts";
 const NAME = self.name || "spender-?";
 const ms = (t: number) => (performance.now() - t) | 0;
 
-const { blocks, txs, spenders } = chainStorage.stores;
+const { block, tx, spender } = chainStorage.stores;
 
 self.addEventListener("message", (event) => {
 	const { type, from, to } = event.data as { type: string; from: number; to: number };
@@ -63,24 +63,24 @@ self.postMessage({ type: "ready" });
 function index(from: number, to: number): number {
 	// Pull in everything committed since we last looked. Both stores are pinned
 	// together each round, so their revealed sizes stay consistent.
-	blocks.refresh();
-	txs.refresh();
+	block.refresh();
+	tx.refresh();
 
-	const committedBlocks = blocks.length();
+	const committedBlocks = block.size();
 	if (to > committedBlocks) {
 		throw new Error(`asked to index up to ${to} but only ${committedBlocks} blocks are committed`);
 	}
 
-	const txsPinnedSize = txs.size();
+	const txsPinnedSize = tx.size();
 	let entries = 0;
 
 	for (let height = from; height < to; height++) {
 		// Block h's txs occupy [base, end) in the txs blob. Height 0 lives at
 		// offset 0 (matches ChainStore's height===0 shortcut); the last committed
 		// block runs to the pinned tail.
-		const base = height === 0 ? 0 : blocks.get(height)!;
-		const end = height + 1 < committedBlocks ? blocks.get(height + 1)! : txsPinnedSize;
-		const bytes = txs.get(base, new BytesCodec({ size: end - base }));
+		const base = height === 0 ? 0 : block.get(height)!;
+		const end = height + 1 < committedBlocks ? block.get(height + 1)! : txsPinnedSize;
+		const bytes = tx.get(base, new BytesCodec({ size: end - base }));
 
 		let cursor = 0;
 		const [txCount, countSize] = VarInt.decode(bytes, cursor);
@@ -97,9 +97,9 @@ function index(from: number, to: number): number {
 				if (prevOut.txId.kind !== "pointer") continue;
 
 				const key = { tx: prevOut.txId.value, output: prevOut.output };
-				const guard = spenders.setNoOverwrite(key, spenderPointer);
+				const guard = spender.setNoOverwrite(key, spenderPointer);
 				if (guard === "conflict") {
-					const existing = spenders.get(key);
+					const existing = spender.get(key);
 					throw new Error(
 						`double spend at height=${height}: output (tx=${prevOut.txId.value}, vout=${prevOut.output}) ` +
 							`already spent by tx pointer ${existing}, now also claimed by ${spenderPointer}`,

@@ -40,6 +40,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 	 * the API layer serializes), and only emits a segwit marker when at least one
 	 * input actually carries witness data — so legacy txs round-trip to the right txid.
 	 */
+	// TODO: Move this to somewhere else
 	toWire(storedTx: StoredTx, chainStorage: ChainStorage): Codec.InferInput<typeof WireTx> {
 		const { version, locktime } = storedTx;
 
@@ -57,10 +58,11 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			sequence: input.sequence,
 		}));
 
-		const outputs: WireTxOutput[] = storedTx.outputs.map((output) => ({
-			value: BigInt(output.value),
-			scriptPubKey: chainStorage.getScriptPubKeyFromPointer(output.scriptPubKey),
-		}));
+		const outputs: WireTxOutput[] = storedTx.outputs.map((output) => {
+			const [scriptPubKey] = chainStorage.stores.pubkey.getKey(output.scriptPubKey);
+			const value = BigInt(output.value);
+			return { value, scriptPubKey };
+		});
 
 		const witness: Uint8Array[][] = anyWitness ? storedTx.inputs.map((input) => input.witness.raw()) : [];
 
