@@ -341,8 +341,8 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 
 	// ── write path ─────────────────────────────────────────────────────────
 
-	/** Insert `key -> value`. Rejects duplicates; returns `true` on fresh insert. */
-	put(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): void {
+	/** Insert `key -> value`. Rejects duplicates; returns pointer. */
+	put(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): number {
 		const keyBytes = this.key.encode(key);
 		const bucket = this.bucketIndexOf(keyBytes);
 		const head = this.readBucket(bucket);
@@ -371,6 +371,8 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 		this.writeBucket(bucket, offset + 1);
 
 		this.maybeRehash();
+
+		return offset;
 	}
 
 	set(key: Codec.InferInput<Key>, value: Codec.InferInput<Value>): boolean {

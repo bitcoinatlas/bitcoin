@@ -1,6 +1,6 @@
 import { U48 } from "~/codec/primitives/U48.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { chainStorage } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStorage.ts";
 
 /**
  * SpenderIndexer — chain-thread orchestrator for the detached spender index.
@@ -60,7 +60,7 @@ export class SpenderIndexer {
 	private readonly active = new Set<Promise<void>>();
 
 	constructor() {
-		const committed = chainStorage.stores.block.size();
+		const committed = chainStore.stores.block.size();
 		const saved = this.readCheckpoint();
 		// Never trust a checkpoint that's ahead of committed data: a crash mid-round
 		// can roll the block stores back below where the checkpoint reached. Clamp,
@@ -84,7 +84,7 @@ export class SpenderIndexer {
 	}
 
 	private readCheckpoint(): number {
-		const bytes = chainStorage.rocksdb.getSync(CHECKPOINT_KEY) as Uint8Array | undefined;
+		const bytes = chainStore.rocksdb.getSync(CHECKPOINT_KEY) as Uint8Array | undefined;
 		return bytes ? U48.decode(bytes)[0] : 0;
 	}
 
@@ -136,12 +136,12 @@ export class SpenderIndexer {
 		// safety guarantee: crash after the flush but before/around the checkpoint
 		// write only ever leaves the checkpoint BEHIND durable data (→ harmless
 		// redo), never ahead of it (→ a permanent gap).
-		chainStorage.stores.spenders.rocksdb.flushSync();
-		chainStorage.rocksdb.putSync(CHECKPOINT_KEY, U48.encode(this.frontier));
+		chainStore.stores.spenders.rocksdb.flushSync();
+		chainStore.rocksdb.putSync(CHECKPOINT_KEY, U48.encode(this.frontier));
 		// Also flush the checkpoint itself (disableWAL means an unflushed put is
 		// lost on exit). Doesn't affect safety — a lost checkpoint just redoes — it
 		// only keeps the redo window small across a clean restart.
-		chainStorage.rocksdb.flushSync();
+		chainStore.rocksdb.flushSync();
 		this.persistedFrontier = this.frontier;
 	}
 

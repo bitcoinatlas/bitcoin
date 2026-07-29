@@ -32,8 +32,8 @@ type WireTxIn = {
 };
 
 export type WireTx = {
-	txId: Uint8Array;
-	wtxId: Uint8Array;
+	txId: Uint8Array<ArrayBuffer>;
+	wtxId: Uint8Array<ArrayBuffer>;
 	version: number;
 	locktime: LockTime;
 	inputs: WireTxInput[];
@@ -101,10 +101,10 @@ class WireTxCodec extends Codec<WireTx, WireTxIn> {
 		current += 4; // locktime is always 4 bytes
 
 		// wtxid: hash the full consumed range (marker + witness included)
-		const wtxId = sha256d(bytes.subarray(start, current));
+		const wtxId = sha256d(bytes.subarray(start, current)) as Uint8Array<ArrayBuffer>; // TODO: why?
 
 		// txid: legacy serialization = version ++ body ++ locktime
-		let txId: Uint8Array;
+		let txId: Uint8Array<ArrayBuffer>;
 		if (!preWitness.hasWitness) {
 			txId = wtxId; // no marker, no witness → identical & contiguous
 		} else {
@@ -113,7 +113,7 @@ class WireTxCodec extends Codec<WireTx, WireTxIn> {
 			legacy.set(bytes.subarray(offset, offset + 4), 0);
 			legacy.set(bytes.subarray(bodyStart, bodyEnd), 4);
 			legacy.set(bytes.subarray(locktimeStart, locktimeStart + 4), 4 + bodyLen);
-			txId = sha256d(legacy);
+			txId = sha256d(legacy) as Uint8Array<ArrayBuffer>; // TODO: why?
 		}
 
 		return [{

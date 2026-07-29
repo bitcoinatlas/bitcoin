@@ -1,20 +1,21 @@
-import { BytesCodec, Codec, Stride, U32, VarInt } from "@nomadshiba/codec";
+import { Bytes, BytesCodec, Codec, Stride, StructCodec, U32, VarInt } from "@nomadshiba/codec";
 import { SequenceLock, SequenceLockCodec } from "~/codec/SequenceLock.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { StoredWitness } from "~/codec/stored/StoredWitness.ts";
 import { COINBASE_VOUT } from "~/constants.ts";
 
-export type PrevOut = {
-	txId: StoredPrevOutTxId;
-	output: VarInt;
-};
+type T = StructCodec<{
+	prevOut: StructCodec<{
+		txId: typeof StoredPrevOutTxId;
+		output: typeof VarInt;
+	}>;
+	scriptSig: typeof Bytes;
+	sequence: typeof SequenceLock;
+	witness: typeof StoredWitness;
+}>;
 
-export type StoredTxInput = {
-	prevOut: PrevOut;
-	scriptSig: Uint8Array<ArrayBuffer>;
-	sequence: SequenceLock;
-	witness: StoredWitness;
-};
+type Input = Codec.InferInput<T>;
+type Output = Codec.InferOutput<T>;
 
 /**
  * StoredTxInput binary layout
@@ -88,12 +89,12 @@ function sequenceU32ForTag(tag: number): number | null {
 }
 
 // StoredTxInput codec that decodes to plain TxInput data
-export class StoredTxInputCodec extends Codec<StoredTxInput> {
+export class StoredTxInputCodec extends Codec<Output, Input> {
 	readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encoder(input: StoredTxInput, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	encoder(input: StoredTxInput, target: Uint8Array, offset: number): number;
-	encoder(input: StoredTxInput, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	encoder(input: Input, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	encoder(input: Input, target: Uint8Array, offset: number): number;
+	encoder(input: Input, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
 		const seqTag = sequenceTagForU32(seqU32);
 		const seqExplicit = seqTag === SEQ_EXPLICIT;
@@ -116,7 +117,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 	}
 
 	private writeInto(
-		input: StoredTxInput,
+		input: Input,
 		target: Uint8Array,
 		offset: number,
 		seqU32: number,
@@ -148,7 +149,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		return offset - start;
 	}
 
-	decoder(data: Uint8Array, offset: number): [StoredTxInput, number] {
+	decoder(data: Uint8Array, offset: number): [Output, number] {
 		let currentOffset = offset;
 
 		const [txId, txIdBytes] = StoredPrevOutTxId.decode(data, currentOffset);
@@ -180,7 +181,7 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 		const [witness, witnessBytes] = StoredWitness.decode(data, currentOffset);
 		currentOffset += witnessBytes;
 
-		const input: StoredTxInput = {
+		const input: Output = {
 			prevOut: { txId, output: output },
 			sequence: SequenceLockCodec.fromU32(seqU32),
 			scriptSig,
@@ -191,4 +192,5 @@ export class StoredTxInputCodec extends Codec<StoredTxInput> {
 	}
 }
 
+export type StoredTxInput = Codec.InferOutput<typeof StoredTxInput>;
 export const StoredTxInput = new StoredTxInputCodec();

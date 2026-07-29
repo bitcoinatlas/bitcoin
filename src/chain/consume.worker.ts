@@ -8,7 +8,7 @@ import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
-import { chainStorage } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStorage.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 
@@ -140,7 +140,7 @@ function init(buffer: Uint8Array): InitResult {
 	for (const txs of blocks) {
 		for (const tx of txs) {
 			for (const output of tx.outputs) {
-				if (chainStorage.stores.pubkey.has(output.scriptPubKey)) continue;
+				if (chainStore.stores.pubkey.has(output.scriptPubKey)) continue;
 				unknownPubkeysSet.add(output.scriptPubKey);
 				unknownPubkeys.push(output.scriptPubKey);
 				unknownPubkeyEncoded.push(StoredPubKey.encode(output.scriptPubKey));
@@ -221,7 +221,7 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 	const deferred: Deferred[] = [];
 
 	const outputs = tx.outputs.map((output): StoredTxOutput => {
-		const pubKeyResult = chainStorage.stores.pubkey.getValueAndPointer(output.scriptPubKey);
+		const pubKeyResult = chainStore.stores.pubkey.getValueAndPointer(output.scriptPubKey);
 		if (pubKeyResult === undefined) {
 			throw new Error("pubkey pointer missing after assignment");
 		}
@@ -229,7 +229,7 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 		// const [lastTxIdEntry] = chainStorage.stores.txid.getEntry(lastTxIdPointer);
 		// const [lastTxId, lastTxPointer] = lastTxIdEntry;
 		// const [lastTx] = chainStorage.stores.tx.get(lastTxPointer, StoredTx);
-		chainStorage.stores.pubkey.setValue(pubKeyPointer); // TODO: uhhhh
+		chainStore.stores.pubkey.setValue(pubKeyPointer); // TODO: uhhhh
 		return { value: Number(output.value), scriptPubKey: pubKeyPointer, previousOutputTx: lastTxIdPointer };
 	});
 
@@ -241,7 +241,7 @@ function toStored(tx: WireTx): { stored: StoredTx; deferred: Deferred[] } {
 			return { prevOut: { txId: { kind: "coinbase" }, output: input.prevOut.output }, ...base };
 		}
 
-		const onDiskPointer = chainStorage.stores.txid.get(input.prevOut.txId);
+		const onDiskPointer = chainStore.stores.txid.get(input.prevOut.txId);
 		if (onDiskPointer !== undefined) {
 			prevOutDiskHits++;
 			return { prevOut: { txId: { kind: "pointer", value: onDiskPointer }, output: input.prevOut.output }, ...base };

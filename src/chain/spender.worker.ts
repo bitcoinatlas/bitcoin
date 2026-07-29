@@ -1,6 +1,6 @@
 import { BytesCodec, VarInt } from "@nomadshiba/codec";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { chainStorage } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStorage.ts";
 
 /**
  * spender.worker — indexes who spends each output, in parallel, off the IBD
@@ -31,7 +31,7 @@ import { chainStorage } from "~/chain/ChainStorage.ts";
 const NAME = self.name || "spender-?";
 const ms = (t: number) => (performance.now() - t) | 0;
 
-const { block, tx, spender } = chainStorage.stores;
+const { block, tx, spender } = chainStore.stores;
 
 self.addEventListener("message", (event) => {
 	const { type, from, to } = event.data as { type: string; from: number; to: number };

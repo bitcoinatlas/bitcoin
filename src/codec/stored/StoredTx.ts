@@ -1,5 +1,5 @@
 import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
-import { ChainStorage } from "~/chain/ChainStorage.ts";
+import { ChainStore } from "~/chain/ChainStorage.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
@@ -7,30 +7,23 @@ import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
 
-// Field codecs, referenced directly by encode/decode below.
 const PACK = LockTimeVersionPack;
 const INPUTS = new ArrayCodec(StoredTxInput, { counter: VarInt });
 const OUTPUTS = new ArrayCodec(StoredTxOutput, { counter: VarInt });
 
-// locktime/version are spread from the pack codec's output so they sit at the
-// top level of StoredTx rather than nested under a `locktimeVersionPack` key.
-export type StoredTx =
+type Output =
 	& Codec.InferOutput<typeof PACK>
 	& { inputs: Codec.InferOutput<typeof INPUTS> }
 	& { outputs: Codec.InferOutput<typeof OUTPUTS> };
 
-/** Offsets reported by {@link StoredTxCodec.encodeWithOffsets}. */
+type Input =
+	& Codec.InferInput<typeof PACK>
+	& { inputs: Codec.InferInput<typeof INPUTS> }
+	& { outputs: Codec.InferInput<typeof OUTPUTS> };
+
 export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
 
-/**
- * Codec for a stored transaction.
- *
- * encode/decode handle the plain path; encodeWithOffsets additionally reports
- * the relative byte offset of each vout and vin item: add `txPointer` (the blob
- * offset where the tx was appended) to each `offsets.vout[i]` or
- * `offsets.vin[i]` to get the absolute blob pointer for output i or input i.
- */
-export class StoredTxCodec extends Codec<StoredTx> {
+export class StoredTxCodec extends Codec<Output, Input> {
 	public readonly stride = { kind: "variable" } as const;
 
 	/**
@@ -41,7 +34,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 	 * input actually carries witness data — so legacy txs round-trip to the right txid.
 	 */
 	// TODO: Move this to somewhere else
-	toWire(storedTx: StoredTx, chainStorage: ChainStorage): Codec.InferInput<typeof WireTx> {
+	toWire(storedTx: Output, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
 		const { version, locktime } = storedTx;
 
 		let anyWitness = false;
@@ -64,14 +57,14 @@ export class StoredTxCodec extends Codec<StoredTx> {
 			return { value, scriptPubKey };
 		});
 
-		const witness: Uint8Array[][] = anyWitness ? storedTx.inputs.map((input) => input.witness.raw()) : [];
+		const witness: Uint8Array<ArrayBuffer>[][] = anyWitness ? storedTx.inputs.map((input) => input.witness.raw()) : [];
 
 		return { version, locktime, inputs, outputs, witness };
 	}
 
-	public encoder(value: StoredTx, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	public encoder(value: StoredTx, target: Uint8Array, offset: number): number;
-	public encoder(value: StoredTx, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	public encoder(value: Input, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(value: Input, target: Uint8Array, offset: number): number;
+	public encoder(value: Input, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		if (target === undefined) {
 			// Size-compute pass.
 			const packBytes = PACK.encode(value);
@@ -98,7 +91,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 		return offset - start;
 	}
 
-	public decoder(data: Uint8Array, offset: number): [StoredTx, number] {
+	public decoder(data: Uint8Array, offset: number): [Output, number] {
 		let pos = offset;
 
 		const [{ locktime, version }, packSize] = PACK.decode(data, pos);
@@ -119,7 +112,7 @@ export class StoredTxCodec extends Codec<StoredTx> {
 	 *
 	 * Invariant: the number of bytes written equals the total encoded size.
 	 */
-	public encodeWithOffsets(value: StoredTx, target: Uint8Array, offset: number): StoredTxOffsets {
+	public encodeWithOffsets(value: Output, target: Uint8Array, offset: number): StoredTxOffsets {
 		const start = offset;
 		offset += PACK.encodeInto(value, target, offset);
 
@@ -141,4 +134,5 @@ export class StoredTxCodec extends Codec<StoredTx> {
 	}
 }
 
+export type StoredTx = Codec.InferOutput<typeof StoredTx>;
 export const StoredTx = new StoredTxCodec();

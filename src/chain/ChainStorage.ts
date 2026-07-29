@@ -39,7 +39,7 @@ const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	maxDrift: .15,
 };
 
-export class ChainStorage {
+export class ChainStore {
 	public readonly atomic = Atomic.open({
 		path: join(BASE_DATA_DIR, "meta"),
 		stores: {
@@ -95,9 +95,9 @@ export class ChainStorage {
 
 	private constructor() {}
 
-	private static main_: ChainStorage;
+	private static main_: ChainStore;
 	public static main() {
-		return this.main_ ??= new ChainStorage();
+		return this.main_ ??= new ChainStore();
 	}
 
 	public getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
@@ -111,7 +111,7 @@ export class ChainStorage {
 	}
 }
 
-export const chainStorage = ChainStorage.main();
+export const chainStore = ChainStore.main();
 if (self.name === "chain") {
-	chainStorage.stores.tx.startCompression(COMPRESSION_OPTIONS);
+	chainStore.stores.tx.startCompression(COMPRESSION_OPTIONS);
 }

@@ -188,7 +188,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	public readonly path: string;
 	public readonly entry: T;
 	public readonly cursor: C;
-	public readonly maxChunkSize: number;
+	public readonly chunkSize: number;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;
@@ -200,7 +200,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		this.path = options.path;
 		this.entry = options.entry;
 		this.cursor = options.cursor;
-		this.maxChunkSize = options.chunkSize;
+		this.chunkSize = options.chunkSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
 		this.zstdDecompressSyncOptions = {
@@ -222,7 +222,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		deleteTmpFiles(self.path);
 
 		const cursorSize = self.readCursor();
-		const tailIndex = Math.floor(cursorSize / self.maxChunkSize);
+		const tailIndex = Math.floor(cursorSize / self.chunkSize);
 
 		const indexSet = new Set<number>();
 		for (const file of Deno.readDirSync(self.path)) {
@@ -248,8 +248,8 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			}
 			if (hasRaw) {
 				const size = Deno.statSync(chunkPath(self.path, index)).size;
-				if (size !== self.maxChunkSize) {
-					throw new Error(`chunk ${index} has a weird size size=${size}, expected exactly ${self.maxChunkSize}`);
+				if (size !== self.chunkSize) {
+					throw new Error(`chunk ${index} has a weird size size=${size}, expected exactly ${self.chunkSize}`);
 				}
 				continue;
 			}
@@ -257,7 +257,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		}
 
 		// The tail is always raw — self-heal it into existence (e.g. brand-new store).
-		ensureChunkFile(self.path, tailIndex, self.maxChunkSize);
+		ensureChunkFile(self.path, tailIndex, self.chunkSize);
 
 		return self;
 	}
@@ -327,8 +327,8 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		if (pointer >= size) {
 			throw new Error(`yeah you wanna read from offset=${pointer}, but all i have is size=${size}`);
 		}
-		const index = Math.floor(pointer / this.maxChunkSize);
-		const start = pointer % this.maxChunkSize;
+		const index = Math.floor(pointer / this.chunkSize);
+		const start = pointer % this.chunkSize;
 
 		let map = this.getChunkMap(index);
 		if (!map) {
@@ -346,8 +346,8 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		if (pointer >= size) {
 			throw new Error(`yeah you wanna read from offset=${pointer}, but all i have is size=${size}`);
 		}
-		const index = Math.floor(pointer / this.maxChunkSize);
-		const start = pointer % this.maxChunkSize;
+		const index = Math.floor(pointer / this.chunkSize);
+		const start = pointer % this.chunkSize;
 
 		let map = this.getChunkMap(index);
 		if (!map) {
@@ -368,22 +368,22 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	 */
 	append(data: Codec.InferInput<T>): number {
 		const bytes = this.entry.encode(data);
-		if (bytes.length > this.maxChunkSize) {
-			throw new Error(`record of ${bytes.length} bytes exceeds maxChunkSize=${this.maxChunkSize}; can't fit in a chunk`);
+		if (bytes.length > this.chunkSize) {
+			throw new Error(`record of ${bytes.length} bytes exceeds maxChunkSize=${this.chunkSize}; can't fit in a chunk`);
 		}
 
 		const pointer = this.withCursorLock((current) => {
 			let position = current;
-			let index = Math.floor(position / this.maxChunkSize);
-			const taken = position % this.maxChunkSize;
-			const available = this.maxChunkSize - taken;
+			let index = Math.floor(position / this.chunkSize);
+			const taken = position % this.chunkSize;
+			const available = this.chunkSize - taken;
 
 			if (bytes.length > available) {
 				position += available;
 				index += 1;
 			}
 
-			ensureChunkFile(this.path, index, this.maxChunkSize);
+			ensureChunkFile(this.path, index, this.chunkSize);
 
 			return { size: position + bytes.length, result: position };
 		});
@@ -400,7 +400,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	 * have workers fill disjoint sub-ranges, then advance `CURSOR` past them.
 	 * Single-chunk only; provisions the target chunk if it doesn't exist yet.
 	 */
-	writeInto(offset: number, bytes: Uint8Array): void {
+	writeInto(offset: number, bytes: Uint8Array): number {
 		const size = this.readCursor();
 		if (offset < size) {
 			throw new Error(
@@ -408,25 +408,52 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			);
 		}
 
-		const index = Math.floor(offset / this.maxChunkSize);
-		const start = offset % this.maxChunkSize;
-		const available = this.maxChunkSize - start;
+		const index = Math.floor(offset / this.chunkSize);
+		const start = offset % this.chunkSize;
+		const available = this.chunkSize - start;
 		if (bytes.length > available) {
 			throw new Error(
 				`writeInto of ${bytes.length} bytes at offset=${offset} doesn't fit in chunk ${index}'s remaining ${available} bytes — a write may never straddle a chunk boundary`,
 			);
 		}
 
-		ensureChunkFile(this.path, index, this.maxChunkSize);
+		ensureChunkFile(this.path, index, this.chunkSize);
 		this.writeIntoMap(offset, bytes);
+
+		return bytes.byteLength;
+	}
+
+	unsafeMap(begin?: number, length?: number) {
+		const size = this.readCursor();
+		begin ??= size;
+		if (begin < size) {
+			throw new Error(
+				`writeInto begin=${begin} is behind the cursor (size=${size}); writeInto can only fill space at or in front of the cursor, never overwrite live data`,
+			);
+		}
+
+		const index = Math.floor(begin / this.chunkSize);
+		const start = begin % this.chunkSize;
+		const available = this.chunkSize - start;
+		length ??= available;
+		if (length > available || length < 0) {
+			throw new Error(
+				`writeInto of ${length} bytes at offset=${begin} doesn't fit in chunk ${index}'s remaining ${available} bytes — a write may never straddle a chunk boundary`,
+			);
+		}
+
+		ensureChunkFile(this.path, index, this.chunkSize);
+		const map = this.getChunkMap(index);
+		if (!map) throw new Error(`chunk ${index} missing its raw file for a write at offset=${begin}`);
+		return map.bytes.subarray(begin, begin + length);
 	}
 
 	// Unchecked byte-copy shared by `append` and `writeInto`: store straight
 	// into the chunk's writable mapping (MAP_SHARED). Callers guarantee the
 	// offset is at/above the cursor and within a single existing chunk.
 	private writeIntoMap(offset: number, bytes: Uint8Array): void {
-		const index = Math.floor(offset / this.maxChunkSize);
-		const start = offset % this.maxChunkSize;
+		const index = Math.floor(offset / this.chunkSize);
+		const start = offset % this.chunkSize;
 		const map = this.getChunkMap(index);
 		if (!map) throw new Error(`chunk ${index} missing its raw file for a write at offset=${offset}`);
 		map.bytes.set(bytes, start);
@@ -452,15 +479,15 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 
 		this.withCursorLock((current) => {
 			if (size > current) {
-				const oldTailIndex = Math.floor(current / this.maxChunkSize);
-				const newTailIndex = Math.floor(size / this.maxChunkSize);
+				const oldTailIndex = Math.floor(current / this.chunkSize);
+				const newTailIndex = Math.floor(size / this.chunkSize);
 				for (let index = oldTailIndex; index <= newTailIndex; index++) {
-					ensureChunkFile(this.path, index, this.maxChunkSize);
+					ensureChunkFile(this.path, index, this.chunkSize);
 				}
 			} else if (size < current) {
-				const oldTailIndex = Math.floor(current / this.maxChunkSize);
-				const newTailIndex = Math.floor(size / this.maxChunkSize);
-				const tailEnd = size % this.maxChunkSize;
+				const oldTailIndex = Math.floor(current / this.chunkSize);
+				const newTailIndex = Math.floor(size / this.chunkSize);
+				const tailEnd = size % this.chunkSize;
 
 				// Delete high-to-low so a crash leaves a contiguous prefix [0..k],
 				// never a gap — a gap would brick recovery (open() throws).
@@ -483,9 +510,9 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 					this.inflatedTimers.delete(newTailIndex);
 				}
 				if (existsSync(chunkZstPath(this.path, newTailIndex))) Deno.removeSync(chunkZstPath(this.path, newTailIndex));
-				ensureChunkFile(this.path, newTailIndex, this.maxChunkSize);
+				ensureChunkFile(this.path, newTailIndex, this.chunkSize);
 				Deno.truncateSync(chunkPath(this.path, newTailIndex), tailEnd);
-				Deno.truncateSync(chunkPath(this.path, newTailIndex), this.maxChunkSize);
+				Deno.truncateSync(chunkPath(this.path, newTailIndex), this.chunkSize);
 			}
 
 			return { size, result: undefined };
@@ -691,7 +718,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		try {
 			while (!this.disposed) {
 				let dispatchedSomething = false;
-				const tailIndex = Math.floor(this.readCursor() / this.maxChunkSize);
+				const tailIndex = Math.floor(this.readCursor() / this.chunkSize);
 
 				for (let index = 0; index < tailIndex && !this.disposed; index++) {
 					if (inFlight.has(index)) continue;

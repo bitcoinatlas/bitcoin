@@ -1,13 +1,13 @@
 import { decodeHex } from "@std/encoding";
 import { endpointRouter } from "~/app/router.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { chainStorage } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStorage.ts";
 
 const MAX_BLOCK_TAKE = 210;
 const MAX_TX_TAKE = 50;
 
 endpointRouter.registerHandler("GET /v1/block?from=:from&take=:take", async ({ params }) => {
-	chainStorage.refresh();
+	chainStore.refresh();
 	const from = Math.max(0, Number(params.search.from));
 	if (isNaN(from)) {
 		return { status: "BadRequest", message: "Invalid 'from' parameter" };
@@ -16,11 +16,11 @@ endpointRouter.registerHandler("GET /v1/block?from=:from&take=:take", async ({ p
 	if (isNaN(take)) {
 		return { status: "BadRequest", message: "Invalid 'take' parameter" };
 	}
-	return { status: "OK", data: await chainStorage.getHeaderByRangeAsync(from, from + take - 1) };
+	return { status: "OK", data: await chainStore.getHeaderByRangeAsync(from, from + take - 1) };
 });
 
 endpointRouter.registerHandler("GET /v1/block?to=:to&take=:take", async ({ params }) => {
-	chainStorage.refresh();
+	chainStore.refresh();
 	const to = Math.max(0, Number(params.search.to));
 	if (isNaN(to)) {
 		return { status: "BadRequest", message: "Invalid 'to' parameter" };
@@ -29,12 +29,12 @@ endpointRouter.registerHandler("GET /v1/block?to=:to&take=:take", async ({ param
 	if (isNaN(take)) {
 		return { status: "BadRequest", message: "Invalid 'take' parameter" };
 	}
-	return { status: "OK", data: await chainStorage.getHeaderByRangeAsync(Math.max(0, to - take + 1), to) };
+	return { status: "OK", data: await chainStore.getHeaderByRangeAsync(Math.max(0, to - take + 1), to) };
 });
 
 endpointRouter.registerHandler("GET /v1/block/tip", async () => {
-	chainStorage.refresh();
-	const tip = await chainStorage.getChainTipAsync();
+	chainStore.refresh();
+	const tip = await chainStore.getChainTipAsync();
 	if (!tip) return { status: "OK", data: null };
 	return { status: "OK", data: tip };
 });
@@ -49,13 +49,13 @@ function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { 
 function resolveHeight(raw: string): number | undefined {
 	const parsed = parseHashOrHeight(raw);
 	if (parsed.kind === "height") return Number.isInteger(parsed.height) ? parsed.height : undefined;
-	return chainStorage.getHeightByHash(parsed.hash);
+	return chainStore.getHeightByHash(parsed.hash);
 }
 
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params }) => {
 	const height = resolveHeight(params.pathname.hashOrHeight);
 	if (height === undefined) return { status: "OK", data: null };
-	const header = await chainStorage.getHeaderByHeightAsync(height);
+	const header = await chainStore.getHeaderByHeightAsync(height);
 	if (!header) return { status: "OK", data: null };
 	return { status: "OK", data: header };
 });
@@ -64,7 +64,7 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/summary", async ({ p
 	const height = resolveHeight(params.pathname.hashOrHeight);
 	if (height === undefined) return { status: "OK", data: null };
 
-	const txs = await chainStorage.getTxsByBlockHeightAsync(height);
+	const txs = await chainStore.getTxsByBlockHeightAsync(height);
 	if (!txs || txs.length === 0) return { status: "OK", data: null };
 
 	const coinbase = txs[0]!;
@@ -84,7 +84,7 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/summary", async ({ p
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ params }) => {
 	const height = resolveHeight(params.pathname.hashOrHeight);
 	if (height === undefined) return { status: "OK", data: [] };
-	const txs = await chainStorage.getTxsByBlockHeightAsync(height);
+	const txs = await chainStore.getTxsByBlockHeightAsync(height);
 	if (!txs) return { status: "OK", data: [] };
 
 	const fromRaw = params.search && "from" in params.search ? Number(params.search["from"]) : 0;
@@ -94,12 +94,12 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 
 	// Only reconstruct the requested window — toWire is O(inputs + outputs) random reads per tx.
 	const slice = txs.slice(from, from + take);
-	return { status: "OK", data: slice.map((tx) => StoredTx.toWire(tx, chainStorage)) };
+	return { status: "OK", data: slice.map((tx) => StoredTx.toWire(tx, chainStore)) };
 });
 
 endpointRouter.registerHandler("GET /v1/tx/:txId", async ({ params }) => {
 	const txId = Uint8Array.from(decodeHex(params.pathname.txId).reverse());
-	const tx = await chainStorage.getTxByIdAsync(txId);
+	const tx = await chainStore.getTxByIdAsync(txId);
 	if (!tx) return { status: "OK", data: null };
-	return { status: "OK", data: StoredTx.toWire(tx, chainStorage) };
+	return { status: "OK", data: StoredTx.toWire(tx, chainStore) };
 });
