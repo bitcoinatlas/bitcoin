@@ -1,13 +1,13 @@
-import { StructCodec, U32, VarInt, Void } from "@nomadshiba/codec";
+import { StructCodec, U32, VarInt } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { U40 } from "~/codec/primitives/U40.ts";
 import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
-import { StoredPubkeyCursor } from "~/codec/stored/StoredPubkeyCursor.ts";
 import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
-import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
+import { StoredPubkeyCursor } from "~/codec/stored/StoredPubkeyCursor.ts";
 import { StoredTxCursor } from "~/codec/stored/StoredTxCursor.ts";
+import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
 import { COINBASE_TXID, GB, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
@@ -15,6 +15,7 @@ import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
 import { HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
+import { StoredTxIdCursor } from "~/codec/stored/StoredTxIdCursor.ts";
 
 const COMPRESSION_OPTIONS: CompressionOptions = {
 	maxInflatedChunkAge: 15 * MINUTE,
@@ -50,7 +51,7 @@ export class ChainStorage {
 			}),
 			block: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "block"),
-				item: StoredTxCursor, // cursor to txid hashmap store to first tx (txid only exists there)
+				item: StoredTxIdCursor, // pointer to txid hashmap store to first tx (txid only exists there)
 				cursor: U40,
 				minChunkSize: 1 * GB,
 			}),
@@ -64,27 +65,27 @@ export class ChainStorage {
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
 				entry: StoredTxs,
-				cursor: U48,
+				cursor: StoredTxCursor,
 				chunkSize: 1 * GB,
 			}),
 			txid: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txid"),
 				key: Bytes32, // tx id
-				value: U48, // cursor to tx block store
-				pointer: StoredTxCursor,
+				value: StoredTxCursor, // pointer to tx block store
+				pointer: StoredTxIdCursor,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
 			pubkey: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkey"),
 				key: StoredPubKey,
-				value: StoredTxCursor, // cursor to last tx of the pubkey at txid hashmap store
+				value: StoredTxIdCursor, // pointer to last tx of the pubkey at txid hashmap store
 				pointer: StoredPubkeyCursor,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
 			spender: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "spender"),
-				key: new StructCodec({ tx: StoredTxCursor, output: VarInt }),
-				value: StoredTxCursor, // spender tx
+				key: new StructCodec({ tx: StoredTxIdCursor, output: VarInt }),
+				value: StoredTxIdCursor, // spender tx
 				pointer: U48,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 			}),
