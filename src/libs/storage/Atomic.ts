@@ -36,6 +36,7 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 		try {
 			this.db.execute("BEGIN IMMEDIATE;");
 			for (const [name, store] of this.storeMap) {
+				store.sync();
 				this.pinQuery.execute({ name, size: store.size() });
 			}
 			this.db.execute("COMMIT;");

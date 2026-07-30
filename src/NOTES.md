@@ -1,3 +1,21 @@
+## 7 
+
+ok so we now have a rewritten version of consume path, i think first thing we need to do is make this make this start working again.
+
+then we can make it parallel again and speed it up.
+
+on that note so most of our complexity with pointers were coming from pointers were pointing to places basically random in blobstore.
+
+but now most tx pointers point to the txid hashmapstore now, so its fixed sized, fixed steps. so based on tx count we know the offset.
+
+so another thing is, consumer should do everything, find, push etc.
+
+sync points to main chain worker (master) exists so workers can exchange their offsets/bytelengths/counts/etc, and then append/put/push in parallel again.
+
+so we shouldnt transfer buffers back and forth.
+
+also if posibble try to encodeInto directly to the mmap so we dont allocatate any buffers, objects, or arrays for shape or encoding.
+
 ## 6
 
 ok so i think frontend has enough FOR NOW, i will change the the design of the BlockView and stuff later

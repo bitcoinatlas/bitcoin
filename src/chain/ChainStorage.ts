@@ -101,13 +101,10 @@ export class ChainStore {
 	}
 
 	public getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
-		const { kind, value } = input.prevOut.txId;
-		if (kind === "pointer") {
-			const [key] = this.stores.txid.getKey(value);
-			return key;
-		}
-		if (kind === "coinbase") return COINBASE_TXID;
-		throw new Error(`getPrevOutTxId doesn't handle txId kind: ${kind satisfies never}`);
+		const txId = input.prevOut.txId;
+		if (txId === null) return COINBASE_TXID;
+		const [key] = this.stores.txid.getKey(txId);
+		return key;
 	}
 }
 

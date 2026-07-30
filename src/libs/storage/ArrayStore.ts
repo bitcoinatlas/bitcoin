@@ -11,7 +11,6 @@ export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 
 export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
 	public readonly path: string;
-
 	public readonly blob: BlobStore<T, C>;
 	public readonly codec: T;
 
@@ -106,6 +105,10 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 
 	resize(length: number): void {
 		return this.blob.resize(length * this.codec.stride.size);
+	}
+
+	override sync(): void {
+		this.blob.sync();
 	}
 
 	close(): void {

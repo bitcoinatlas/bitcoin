@@ -77,16 +77,16 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
  * mmap, flushed on `close`/`rehash`); on reopen the orphaned tail is simply
  * not counted.
  */
-export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
+export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
 
-	private readonly pointer: pointer;
+	private readonly pointer: Pointer;
 	private readonly key: Key;
 	private readonly value: Value;
 	private readonly entry: TupleCodec<[key: Key, value: Value]>;
-	private readonly header: StructCodec<{ previous: pointer; key: Key }>;
-	private readonly item: StructCodec<{ previous: pointer; key: Key; value: Value }>;
-	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: pointer; entriesCount: pointer }>;
+	private readonly header: StructCodec<{ previous: Pointer; key: Key }>;
+	private readonly item: StructCodec<{ previous: Pointer; key: Key; value: Value }>;
+	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: Pointer; entriesCount: Pointer }>;
 	private readonly targetLoadFactor: number;
 	private readonly maxLoadFactorDrift: number;
 
@@ -110,7 +110,7 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 	private metaMap: MappedFile | undefined;
 	private stale = true;
 
-	private constructor(options: HashMapStoreOptions<pointer, Key, Value>) {
+	private constructor(options: HashMapStoreOptions<Pointer, Key, Value>) {
 		super();
 		this.path = options.path;
 		this.pointer = options.pointer;
@@ -464,11 +464,15 @@ export class HashMapStore<pointer extends FixedCodec<number>, Key extends Codec,
 		this.rehash();
 	}
 
-	close(): void {
+	override sync(): void {
 		this.writeMeta();
 		this.metaMap?.mapping.flush();
 		this.entriesMap?.mapping.flush();
 		this.bucketsMap?.mapping.flush();
+	}
+
+	close(): void {
+		this.sync();
 		this.entriesMap?.mapping.close();
 		this.bucketsMap?.mapping.close();
 		this.metaMap?.mapping.close();
