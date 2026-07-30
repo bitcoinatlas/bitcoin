@@ -34,6 +34,7 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 	}
 
 	static open<T extends AtomicStores>(options: AtomicOptions<T>) {
+		Deno.mkdirSync(options.path, { recursive: true });
 		return new Atomic<T>(options);
 	}
 
