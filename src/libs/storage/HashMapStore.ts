@@ -38,8 +38,6 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
 	key: Key;
 	value: Value;
 	loadFactor: LoadFactorOptions;
-	/** Bucket count a brand-new store starts with (the load-factor math takes over from there). Must be an integer >= 1. */
-	initialBuckets: number;
 	/** Pre-growth policy for the entries file. */
 	growth: GrowthOptions;
 };
@@ -130,7 +128,6 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	private readonly meta: StructCodec<{ stale: typeof Bool; entriesSize: Pointer; entriesCount: Pointer }>;
 	private readonly targetLoadFactor: number;
 	private readonly maxLoadFactorDrift: number;
-	private readonly initialBuckets: number;
 	private readonly growthHeadroom: number;
 	private readonly growthAmount: number;
 
@@ -164,7 +161,6 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.value = options.value;
 		this.targetLoadFactor = options.loadFactor.target;
 		this.maxLoadFactorDrift = options.loadFactor.maxDrift;
-		this.initialBuckets = options.initialBuckets;
 		this.growthHeadroom = options.growth.headroom;
 		this.growthAmount = options.growth.amount;
 		this.entriesPath = join(options.path, "entries");
@@ -197,9 +193,6 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		}
 		if (options.loadFactor.target <= 0) throw new Error("loadFactor.target must be > 0");
 		if (options.loadFactor.maxDrift < 0) throw new Error("loadFactor.maxDrift must be >= 0");
-		if (!Number.isInteger(options.initialBuckets) || options.initialBuckets < 1) {
-			throw new Error("initialBuckets must be an integer >= 1");
-		}
 		if (!Number.isInteger(options.growth.headroom) || options.growth.headroom < 0) {
 			throw new Error("growth.headroom must be an integer >= 0");
 		}
@@ -280,7 +273,6 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			self.stale = false;
 			self.entriesSize = 0;
 			self.entriesCount = 0;
-			self.resizeBuckets(self.initialBuckets);
 			self.writeMeta();
 			self.metaMap.mapping.flush();
 			return self;

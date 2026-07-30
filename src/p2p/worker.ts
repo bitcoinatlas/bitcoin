@@ -104,6 +104,9 @@ async function drainMessages(): Promise<void> {
 	let message;
 	while ((message = messageQueue.dequeue())) {
 		if (!started && message.type === "start") {
+			// TODO: all these needs a rewrite too. We can see the headers from the start anyway using the mmap.
+			// We dont have to load or transfer the headers around.
+
 			const [headers] = WireBlockHeaders.decode(message.data);
 			await start(headers);
 			continue;
