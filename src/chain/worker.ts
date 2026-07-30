@@ -71,24 +71,22 @@ async function consumeChunks(): Promise<void> {
 
 		// tx is a raw BlobStore. writeInto() fills bytes AHEAD of the cursor
 		// without moving it, so we track the offset ourselves and advance the
-		// cursor once at the end (see the resize() below). Starting point is the
-		// live cursor = end of the last committed round.
-		let txStoreOffset = chainStore.stores.tx.size();
+		// cursor once at the end (see the resize() below). Start at the next slot.
+		let txStoreOffset = chainStore.stores.tx.nextItemPointer();
 
 		let offset = 0;
 		while (offset < chunk.length) {
 			const [block, size] = WireTxs.decode(chunk.subarray(offset));
 			offset += size;
 
+			// Align to a block slot: nextItemPointer bumps us to the next chunk if
+			// this one has less than a max block left, so the whole block region
+			// (count + every tx) lands contiguously in one chunk — no straddle.
+			txStoreOffset = chainStore.stores.tx.nextItemPointer(txStoreOffset);
+
 			// block[height] -> pointer to this block's first txid entry.
 			chainStore.stores.block.push(chainStore.stores.txid.size());
 
-			// NOTE (known limitation): writeInto throws if a record straddles a
-			// chunkSize (1 GiB) boundary — this stopgap does NOT seal early, so it
-			// will throw once tx data first crosses that boundary. Clean straddle
-			// handling needs the offset to come from append() (or a reserve pass),
-			// which is exactly what the parallel commit-phase rewrite does. Fine
-			// for bring-up (first ~1 GiB of tx data).
 			txStoreOffset += chainStore.stores.tx.writeInto(txStoreOffset, WireTxs.counter.encode(block.length));
 
 			for (const tx of block) {

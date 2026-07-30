@@ -9,7 +9,7 @@ import { StoredPubkeyCursor } from "~/codec/stored/StoredPubkeyCursor.ts";
 import { StoredTxCursor } from "~/codec/stored/StoredTxCursor.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
-import { COINBASE_TXID, GB, MINUTE } from "~/constants.ts";
+import { COINBASE_TXID, GB, MAX_BLOCK_SIZE, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
@@ -73,6 +73,10 @@ export class ChainStore {
 				entry: StoredTxs,
 				cursor: StoredTxCursor,
 				chunkSize: 1 * GB,
+				// A whole block's StoredTxs is the record that must stay contiguous.
+				// Seal a chunk once it has less than a max block left, so a block's
+				// region always fits in one chunk (writeInto never straddles).
+				maxItemSize: MAX_BLOCK_SIZE,
 			}),
 			txid: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txid"),

@@ -46,6 +46,16 @@ export type BlobStoreOptions<T extends Codec, C extends Codec<number>> = {
 	/** Codec for the on-disk cursor (the store's logical size). */
 	cursor: C;
 	chunkSize: number;
+	/**
+	 * Largest a single record can be. A chunk is sealed as soon as its remaining
+	 * room drops below this — the next record starts at the next chunk. That makes
+	 * the seal point a function of geometry, not of the bytes being written: the
+	 * offset a record will land at (`nextItemPointer`) is computable WITHOUT
+	 * knowing its size, so out-of-order/parallel `writeInto` fills can be laid out
+	 * ahead of time and a record can never straddle a chunk boundary. Cost is up
+	 * to `maxItemSize` of padding at the tail of each chunk.
+	 */
+	maxItemSize: number;
 };
 
 /** Map `{ compressionLevel: 19, ... }` -> `{ [ZSTD_c_compressionLevel]: 19 }`. */
@@ -200,6 +210,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	public readonly entry: T;
 	public readonly cursor: C;
 	public readonly chunkSize: number;
+	public readonly maxItemSize: number;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;
@@ -212,6 +223,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		this.entry = options.entry;
 		this.cursor = options.cursor;
 		this.chunkSize = options.chunkSize;
+		this.maxItemSize = options.maxItemSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
 		this.zstdDecompressSyncOptions = {
@@ -228,6 +240,9 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	}
 
 	static open<T extends Codec, C extends Codec<number>>(options: BlobStoreOptions<T, C>): BlobStore<T, C> {
+		if (!(options.maxItemSize > 0) || options.maxItemSize > options.chunkSize) {
+			throw new RangeError(`maxItemSize must be in (0, chunkSize=${options.chunkSize}], got ${options.maxItemSize}`);
+		}
 		const self = new BlobStore(options);
 		Deno.mkdirSync(self.path, { recursive: true });
 		deleteTmpFiles(self.path);
@@ -410,29 +425,32 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	}
 
 	/**
-	 * Append `data` as one atomic record and return its pointer. A record never
-	 * straddles a chunk boundary — if it doesn't fit the remainder, the chunk
-	 * is sealed early and the record starts at the next chunk. The returned
-	 * pointer is NOT necessarily the pre-call `size()` — it may be past a gap.
+	 * Where the next record will actually land: `from` (default `size()`), bumped
+	 * to the start of the next chunk when the current chunk has less than
+	 * `maxItemSize` room left. Deterministic — it doesn't depend on the record's
+	 * bytes — so a caller doing out-of-order `writeInto` fills can compute each
+	 * slot ahead of time and know nothing will straddle. `append` uses it too.
+	 */
+	nextItemPointer(from: number = this.size()): number {
+		const room = this.chunkSize - (from % this.chunkSize);
+		return room < this.maxItemSize ? from + room : from;
+	}
+
+	/**
+	 * Append `data` as one atomic record and return its pointer. The record never
+	 * straddles a chunk boundary — the seal point is fixed by `maxItemSize` (see
+	 * `nextItemPointer`), so the returned pointer may be past a padding gap. NOT
+	 * necessarily the pre-call `size()`.
 	 */
 	append(data: Codec.InferInput<T>): number {
 		const bytes = this.entry.encode(data);
-		if (bytes.length > this.chunkSize) {
-			throw new Error(`record of ${bytes.length} bytes exceeds maxChunkSize=${this.chunkSize}; can't fit in a chunk`);
+		if (bytes.length > this.maxItemSize) {
+			throw new Error(`record of ${bytes.length} bytes exceeds maxItemSize=${this.maxItemSize}`);
 		}
 
 		return this.withCursorLock((current) => {
-			let position = current;
-			let index = Math.floor(position / this.chunkSize);
-			const taken = position % this.chunkSize;
-			const available = this.chunkSize - taken;
-
-			if (bytes.length > available) {
-				position += available;
-				index += 1;
-			}
-
-			ensureChunkFile(this.path, index, this.chunkSize);
+			const position = this.nextItemPointer(current);
+			ensureChunkFile(this.path, Math.floor(position / this.chunkSize), this.chunkSize);
 
 			// Copy the record in BEFORE returning — the size is published (the
 			// rename) only after withCursorLock gets this back, so the fence never

@@ -33,6 +33,9 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 			cursor: options.cursor,
 			entry: options.item,
 			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
+			// Fixed-stride items: chunkSize is stride-aligned, so this never actually
+			// forces a gap — it just states the record size for the straddle guard.
+			maxItemSize: options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);
 	}
