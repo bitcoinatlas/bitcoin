@@ -7,7 +7,6 @@ import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { MiB, SECOND } from "~/constants.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { readFileSync, writeFileSync } from "~/libs/fs/mod.ts";
 import { Store } from "~/libs/storage/Store.ts";
 import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
@@ -90,6 +89,15 @@ function chunkInflateLockPath(root: string, index: number): string {
 
 function cursorPath(root: string): string {
 	return join(root, "CURSOR");
+}
+// Stable mutex inode (never renamed) — decoupled from the value file so the size
+// publish can atomically rename over CURSOR without disturbing the lock.
+function cursorLockPath(root: string): string {
+	return join(root, "CURSOR.lock");
+}
+// New size staged here, then renamed over CURSOR (atomic publish).
+function cursorTmpPath(root: string): string {
+	return `${cursorPath(root)}.tmp`;
 }
 
 // Create (if missing) and/or grow chunk_N to exactly `maxChunkSize`, zero-filled. Idempotent.
@@ -282,29 +290,33 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	 * `mutate` should do any chunk provisioning/cleanup before returning.
 	 */
 	private withCursorLock<R>(mutate: (current: number) => { size: number; result: R }): R {
-		const file = Deno.openSync(cursorPath(this.path), { read: true, write: true, create: true });
+		// Serialise on a STABLE lock file (never renamed) so the publish below can
+		// rename over CURSOR without pulling the mutex inode out from under a
+		// waiting writer. Single-writer per store today; this keeps it correct if
+		// that changes.
+		const lock = Deno.openSync(cursorLockPath(this.path), { read: true, write: true, create: true });
 		try {
-			file.lockSync(true);
-			const stat = file.statSync();
-			let current = 0;
-			if (stat.size > 0) {
-				file.seekSync(0, Deno.SeekMode.Start);
-				current = this.cursor.decode(readFileSync(file, stat.size), 0)[0];
-			}
+			lock.lockSync(true);
 
+			const current = this.readCursor();
 			const { size, result } = mutate(current);
 
-			const encoded = this.cursor.encode(size);
-			file.truncateSync(0);
-			file.seekSync(0, Deno.SeekMode.Start);
-			writeFileSync(file, encoded);
+			// Publish the new size ATOMICALLY: stage it in a tmp file, then rename
+			// over CURSOR. rename() is atomic, so a reader sees the whole old value
+			// or the whole new one — never an empty (mid-truncate) or half-written
+			// file. That's the fence: size only advances once, all-or-nothing, and
+			// (for append) only after the bytes are already in the map. Crash-safe
+			// too — a torn CURSOR can never exist on disk.
+			const tmp = cursorTmpPath(this.path);
+			Deno.writeFileSync(tmp, this.cursor.encode(size));
+			Deno.renameSync(tmp, cursorPath(this.path));
 
 			return result;
 		} finally {
 			try {
-				file.unlockSync();
+				lock.unlockSync();
 			} catch { /* fd closing drops the lock anyway */ }
-			file.close();
+			lock.close();
 		}
 	}
 
@@ -372,7 +384,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 			throw new Error(`record of ${bytes.length} bytes exceeds maxChunkSize=${this.chunkSize}; can't fit in a chunk`);
 		}
 
-		const pointer = this.withCursorLock((current) => {
+		return this.withCursorLock((current) => {
 			let position = current;
 			let index = Math.floor(position / this.chunkSize);
 			const taken = position % this.chunkSize;
@@ -385,11 +397,13 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 
 			ensureChunkFile(this.path, index, this.chunkSize);
 
+			// Copy the record in BEFORE returning — the size is published (the
+			// rename) only after withCursorLock gets this back, so the fence never
+			// exposes a reserved-but-unfilled slot to another worker. "size last".
+			this.writeIntoMap(position, bytes);
+
 			return { size: position + bytes.length, result: position };
 		});
-
-		this.writeIntoMap(pointer, bytes);
-		return pointer;
 	}
 
 	/**
