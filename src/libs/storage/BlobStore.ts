@@ -6,7 +6,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
 import { MiB, SECOND } from "~/constants.ts";
-import { PARALLELISM_THREADS } from "~/env.ts";
+import { DEV, PARALLELISM_THREADS } from "~/env.ts";
 import { Store } from "~/libs/storage/Store.ts";
 import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
@@ -99,6 +99,9 @@ function cursorLockPath(root: string): string {
 function cursorTmpPath(root: string): string {
 	return `${cursorPath(root)}.tmp`;
 }
+// DEV write-guard: a lock older than this is treated as crash-left and reclaimed
+// (a real publish critical section is sub-millisecond, never close to this).
+const CURSOR_LOCK_STALE_MS = 5 * SECOND;
 
 // Create (if missing) and/or grow chunk_N to exactly `maxChunkSize`, zero-filled. Idempotent.
 // Throws if the chunk is somehow bigger than maxChunkSize (corruption).
@@ -290,14 +293,12 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	 * `mutate` should do any chunk provisioning/cleanup before returning.
 	 */
 	private withCursorLock<R>(mutate: (current: number) => { size: number; result: R }): R {
-		// Serialise on a STABLE lock file (never renamed) so the publish below can
-		// rename over CURSOR without pulling the mutex inode out from under a
-		// waiting writer. Single-writer per store today; this keeps it correct if
-		// that changes.
-		const lock = Deno.openSync(cursorLockPath(this.path), { read: true, write: true, create: true });
+		// Single-writer per store is an INVARIANT, not something we synchronise on:
+		// in production no lock is taken at all. In DEV we assert it — acquireWriteGuard
+		// throws (never blocks) if another worker is publishing this cursor right now,
+		// so a violation surfaces loudly instead of silently corrupting.
+		if (DEV) this.acquireWriteGuard();
 		try {
-			lock.lockSync(true);
-
 			const current = this.readCursor();
 			const { size, result } = mutate(current);
 
@@ -313,11 +314,47 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 
 			return result;
 		} finally {
-			try {
-				lock.unlockSync();
-			} catch { /* fd closing drops the lock anyway */ }
-			lock.close();
+			if (DEV) this.releaseWriteGuard();
 		}
+	}
+
+	/**
+	 * DEV-only assertion of the single-writer invariant. Create the lock file
+	 * exclusively — that's a non-blocking test-and-set. If it already exists and is
+	 * FRESH, another worker is mid-publish → throw (a real bug; never wait on it).
+	 * A lock older than CURSOR_LOCK_STALE_MS is crash-left (a genuine publish is
+	 * sub-millisecond), so reclaim it. Not compiled into the production path.
+	 */
+	private acquireWriteGuard(): void {
+		const path = cursorLockPath(this.path);
+		try {
+			Deno.openSync(path, { createNew: true, write: true }).close();
+			return;
+		} catch (e) {
+			if (!(e instanceof Deno.errors.AlreadyExists)) throw e;
+		}
+
+		let ageMs = Infinity;
+		try {
+			const mtime = Deno.statSync(path).mtime;
+			if (mtime) ageMs = Date.now() - mtime.getTime();
+		} catch { /* vanished between open and stat — treat as reclaimable */ }
+
+		if (ageMs < CURSOR_LOCK_STALE_MS) {
+			throw new Error(
+				`[BlobStore] concurrent cursor write on ${this.path} — single-writer invariant violated (two workers writing the same store).`,
+			);
+		}
+
+		// stale (crash-left): reclaim, then take it.
+		try { Deno.removeSync(path); } catch { /* raced another reclaimer */ }
+		Deno.openSync(path, { createNew: true, write: true }).close();
+	}
+
+	private releaseWriteGuard(): void {
+		try {
+			Deno.removeSync(cursorLockPath(this.path));
+		} catch { /* already gone */ }
 	}
 
 	get(pointer: number): [Codec.InferOutput<T>, number];
