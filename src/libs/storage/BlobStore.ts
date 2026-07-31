@@ -40,22 +40,10 @@ export type CompressionOptions = {
 	};
 };
 
-export type BlobStoreOptions<T extends Codec, C extends Codec<number>> = {
+export type BlobStoreOptions<C extends Codec<number>> = {
 	path: string;
-	entry: T;
-	/** Codec for the on-disk cursor (the store's logical size). */
 	cursor: C;
 	chunkSize: number;
-	/**
-	 * Largest a single record can be. A chunk is sealed as soon as its remaining
-	 * room drops below this — the next record starts at the next chunk. That makes
-	 * the seal point a function of geometry, not of the bytes being written: the
-	 * offset a record will land at (`nextItemPointer`) is computable WITHOUT
-	 * knowing its size, so out-of-order/parallel `writeInto` fills can be laid out
-	 * ahead of time and a record can never straddle a chunk boundary. Cost is up
-	 * to `maxItemSize` of padding at the tail of each chunk.
-	 */
-	maxItemSize: number;
 };
 
 /** Map `{ compressionLevel: 19, ... }` -> `{ [ZSTD_c_compressionLevel]: 19 }`. */
@@ -205,25 +193,21 @@ function discardStaleCompressedForm(root: string, index: number): void {
  * A live mapping crashes the process (uncatchable) if the file shrinks/is
  * removed under it. Every site that shrinks/removes a raw chunk unmaps it first.
  */
-export class BlobStore<T extends Codec, C extends Codec<number>> extends Store implements Disposable {
+export class BlobStore<C extends Codec<number>> extends Store implements Disposable {
 	public readonly path: string;
-	public readonly entry: T;
 	public readonly cursor: C;
 	public readonly chunkSize: number;
-	public readonly maxItemSize: number;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;
 	private zstdDecompressSyncOptions: zlib.ZstdOptions;
 	private zstdDecompressStreamOptions: zlib.ZstdOptions;
 
-	private constructor(options: BlobStoreOptions<T, C>) {
+	private constructor(options: BlobStoreOptions<C>) {
 		super();
 		this.path = options.path;
-		this.entry = options.entry;
 		this.cursor = options.cursor;
 		this.chunkSize = options.chunkSize;
-		this.maxItemSize = options.maxItemSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
 		this.zstdDecompressSyncOptions = {
@@ -239,10 +223,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		};
 	}
 
-	static open<T extends Codec, C extends Codec<number>>(options: BlobStoreOptions<T, C>): BlobStore<T, C> {
-		if (!(options.maxItemSize > 0) || options.maxItemSize > options.chunkSize) {
-			throw new RangeError(`maxItemSize must be in (0, chunkSize=${options.chunkSize}], got ${options.maxItemSize}`);
-		}
+	static open<C extends Codec<number>>(options: BlobStoreOptions<C>): BlobStore<C> {
 		const self = new BlobStore(options);
 		Deno.mkdirSync(self.path, { recursive: true });
 		deleteTmpFiles(self.path);
@@ -362,7 +343,9 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		}
 
 		// stale (crash-left): reclaim, then take it.
-		try { Deno.removeSync(path); } catch { /* raced another reclaimer */ }
+		try {
+			Deno.removeSync(path);
+		} catch { /* raced another reclaimer */ }
 		Deno.openSync(path, { createNew: true, write: true }).close();
 	}
 
@@ -372,16 +355,13 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 		} catch { /* already gone */ }
 	}
 
-	get(pointer: number): [Codec.InferOutput<T>, number];
-	get<T extends Codec>(pointer: number, codec: T): [Codec.InferOutput<T>, number];
-	get(pointer: number, codec: Codec = this.entry): [unknown, number] {
+	get<T extends Codec>(pointer: number, codec: T): [Codec.InferOutput<T>, number] {
 		const [bytes, offset] = this.view(pointer);
 		return codec.decode(bytes, offset);
 	}
 
-	async getAsync(pointer: number): Promise<[Codec.InferOutput<T>, number]>;
-	async getAsync<T extends Codec>(pointer: number, codec: T): Promise<[Codec.InferOutput<T>, number]>;
-	async getAsync(pointer: number, codec: Codec = this.entry): Promise<[unknown, number]> {
+	// TODO: do we even need this as async anymore????
+	async getAsync<T extends Codec>(pointer: number, codec: T): Promise<[Codec.InferOutput<T>, number]> {
 		const [bytes, offset] = await this.viewAsync(pointer);
 		return codec.decode(bytes, offset);
 	}
@@ -431,34 +411,9 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	 * bytes — so a caller doing out-of-order `writeInto` fills can compute each
 	 * slot ahead of time and know nothing will straddle. `append` uses it too.
 	 */
-	nextItemPointer(from: number = this.size()): number {
+	nextItemPointer(maxItemSize: number, from: number = this.size()): number {
 		const room = this.chunkSize - (from % this.chunkSize);
-		return room < this.maxItemSize ? from + room : from;
-	}
-
-	/**
-	 * Append `data` as one atomic record and return its pointer. The record never
-	 * straddles a chunk boundary — the seal point is fixed by `maxItemSize` (see
-	 * `nextItemPointer`), so the returned pointer may be past a padding gap. NOT
-	 * necessarily the pre-call `size()`.
-	 */
-	append(data: Codec.InferInput<T>): number {
-		const bytes = this.entry.encode(data);
-		if (bytes.length > this.maxItemSize) {
-			throw new Error(`record of ${bytes.length} bytes exceeds maxItemSize=${this.maxItemSize}`);
-		}
-
-		return this.withCursorLock((current) => {
-			const position = this.nextItemPointer(current);
-			ensureChunkFile(this.path, Math.floor(position / this.chunkSize), this.chunkSize);
-
-			// Copy the record in BEFORE returning — the size is published (the
-			// rename) only after withCursorLock gets this back, so the fence never
-			// exposes a reserved-but-unfilled slot to another worker. "size last".
-			this.writeIntoMap(position, bytes);
-
-			return { size: position + bytes.length, result: position };
-		});
+		return room < maxItemSize ? from + room : from;
 	}
 
 	/**
@@ -546,6 +501,7 @@ export class BlobStore<T extends Codec, C extends Codec<number>> extends Store i
 	resize(size: number): void {
 		if (size < 0) throw new Error(`resize size must be >= 0, got ${size}`);
 
+		// TODO: withCursorLock is only used where, why is it a seperate method???
 		this.withCursorLock((current) => {
 			if (size > current) {
 				const oldTailIndex = Math.floor(current / this.chunkSize);

@@ -1,6 +1,6 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
-import { chainStore } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStore.ts";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
 import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
@@ -18,6 +18,11 @@ import { GetHeadersMessage } from "~/p2p/messages/GetHeaders.ts";
 import { HeadersMessage } from "~/p2p/messages/Headers.ts";
 import { Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { handshake } from "~/p2p/peers.ts";
+
+console.log("[p2p] booting");
+self.addEventListener("unhandledrejection", (e) => {
+	console.error("[p2p] unhandledrejection:", (e as PromiseRejectionEvent).reason);
+});
 
 // ── protocol / peers ─────────────────────────────────────────────────────────
 const PROTOCOL_VERSION = 70015;
@@ -574,6 +579,7 @@ self.addEventListener("message", (event) => {
 	port = event.ports[0]!;
 	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
 	port.start();
+	console.log("[p2p] sync port received");
 }, { once: true });
 
 while (true) {

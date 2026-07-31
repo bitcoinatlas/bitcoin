@@ -1,12 +1,12 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 
-export class U56Codec extends Codec<bigint> {
+export class U56Codec extends Codec<number> {
 	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 7 };
 
-	public encoder(value: bigint, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	public encoder(value: bigint, target: Uint8Array, offset: number): number;
-	public encoder(value: bigint, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
-		if (value < 0n || value > 0x00ffffffffffffffn) {
+	public encoder(value: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(value: number, target: Uint8Array, offset: number): number;
+	public encoder(value: number, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+		if (!Number.isSafeInteger(value) || value < 0) {
 			throw new RangeError("Value out of range for U56");
 		}
 		if (target === undefined) {
@@ -14,17 +14,23 @@ export class U56Codec extends Codec<bigint> {
 			this.encoder(value, arr, 0);
 			return arr;
 		}
-		for (let i = 0; i < 7; i++) {
-			target[offset! + i] = Number((value >> BigInt((6 - i) * 8)) & 0xffn);
+		let remaining = value;
+		for (let i = 6; i >= 0; i--) {
+			const byte = remaining % 256;
+			target[offset! + i] = byte;
+			remaining = (remaining - byte) / 256;
 		}
 		return 7;
 	}
 
-	public decoder(data: Uint8Array, offset: number): [bigint, number] {
+	public decoder(data: Uint8Array, offset: number): [number, number] {
 		if (data.length - offset < 7) throw new Error("Not enough bytes for U56");
-		let value = 0n;
+		let value = 0;
 		for (let i = 0; i < 7; i++) {
-			value |= BigInt(data[offset + i]!) << BigInt((6 - i) * 8);
+			value = value * 256 + data[offset + i]!;
+		}
+		if (!Number.isSafeInteger(value)) {
+			throw new RangeError("Decoded value exceeds Number.MAX_SAFE_INTEGER");
 		}
 		return [value, 7];
 	}

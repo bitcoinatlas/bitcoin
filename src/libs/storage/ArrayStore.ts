@@ -11,10 +11,10 @@ export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
 
 export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
 	public readonly path: string;
-	public readonly blob: BlobStore<T, C>;
+	public readonly blob: BlobStore<C>;
 	public readonly codec: T;
 
-	private constructor(blob: BlobStore<T, C>, options: ArrayStoreOptions<T, C>) {
+	private constructor(blob: BlobStore<C>, options: ArrayStoreOptions<T, C>) {
 		super();
 		this.blob = blob;
 		this.codec = options.item;
@@ -31,11 +31,7 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 		const blob = BlobStore.open({
 			path: options.path,
 			cursor: options.cursor,
-			entry: options.item,
 			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
-			// Fixed-stride items: chunkSize is stride-aligned, so this never actually
-			// forces a gap — it just states the record size for the straddle guard.
-			maxItemSize: options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);
 	}
@@ -92,7 +88,9 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 	}
 
 	push(item: Codec.InferInput<T>): number {
-		const pointer = this.blob.append(this.codec.encode(item));
+		const pointer = this.blob.nextItemPointer(this.codec.stride.size);
+		const size = pointer + this.blob.writeInto(pointer, this.codec.encode(item));
+		this.blob.resize(size);
 		return pointer / this.codec.stride.size;
 	}
 

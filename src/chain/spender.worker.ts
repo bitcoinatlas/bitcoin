@@ -1,6 +1,6 @@
 import { BytesCodec, VarInt } from "@nomadshiba/codec";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
-import { chainStore } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStore.ts";
 
 /**
  * spender.worker — indexes who spends each output, in parallel, off the IBD

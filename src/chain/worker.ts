@@ -1,15 +1,21 @@
 import { Codec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { delay } from "@std/async";
-import { chainStore } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStore.ts";
 import { StoredPrevOutTxId } from "~/codec/stored/StoredPrevOutTxId.ts";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
-import { COINBASE_TXID } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_SIZE } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
+import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+
+console.log("[chain] booting");
+self.addEventListener("unhandledrejection", (e) => {
+	console.error("[chain] unhandledrejection:", (e as PromiseRejectionEvent).reason);
+});
 
 // Stores this worker OWNS: it is the only writer, and it pins ONLY these. The
 // header / blockhash stores belong to the p2p worker's domain — this worker
@@ -30,6 +36,7 @@ function prepare(port: MessagePortLike): void {
 	// (Headers are p2p's own domain now — it reads them from mmap, we don't send
 	// or receive any header messages here.)
 	const target = chainStore.stores.block.size() - 1;
+	console.log(`[chain] sync port received, blocks committed up to height ${target}, requesting from p2p`);
 	port.postMessage({ type: "seek", data: target });
 	port.postMessage({ type: "start" });
 }
@@ -72,7 +79,7 @@ async function consumeChunks(): Promise<void> {
 		// tx is a raw BlobStore. writeInto() fills bytes AHEAD of the cursor
 		// without moving it, so we track the offset ourselves and advance the
 		// cursor once at the end (see the resize() below). Start at the next slot.
-		let txStoreOffset = chainStore.stores.tx.nextItemPointer();
+		let txStoreOffset = chainStore.stores.tx.nextItemPointer(MAX_BLOCK_SIZE);
 
 		let offset = 0;
 		while (offset < chunk.length) {
@@ -82,12 +89,15 @@ async function consumeChunks(): Promise<void> {
 			// Align to a block slot: nextItemPointer bumps us to the next chunk if
 			// this one has less than a max block left, so the whole block region
 			// (count + every tx) lands contiguously in one chunk — no straddle.
-			txStoreOffset = chainStore.stores.tx.nextItemPointer(txStoreOffset);
+			txStoreOffset = chainStore.stores.tx.nextItemPointer(MAX_BLOCK_SIZE, txStoreOffset);
 
 			// block[height] -> pointer to this block's first txid entry.
-			chainStore.stores.block.push(chainStore.stores.txid.size());
-
-			txStoreOffset += chainStore.stores.tx.writeInto(txStoreOffset, WireTxs.counter.encode(block.length));
+			chainStore.stores.block.push({
+				txPointer: txStoreOffset,
+				wireSize: size + WireBlockHeader.stride.size,
+				txCount: block.length,
+				reward: 123, // TODO: calculate later.
+			});
 
 			for (const tx of block) {
 				const txIdPointer = chainStore.stores.txid.put(tx.txId, txStoreOffset);

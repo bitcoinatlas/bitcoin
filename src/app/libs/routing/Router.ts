@@ -4,10 +4,10 @@ import { _, PromiseOrValue } from "~/types.ts";
 import { OptionalizeEmpty } from "~/app/libs/types/utils.ts";
 
 type SchemaKeyGeneric = `${string} /${string}`;
-export type Schema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };
+export type RouterSchema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };
 
-export namespace Schema {
-	export type Key<TSchema extends Schema = Schema> = Extract<keyof TSchema, SchemaKeyGeneric>;
+export namespace RouterSchema {
+	export type Key<TSchema extends RouterSchema = RouterSchema> = Extract<keyof TSchema, SchemaKeyGeneric>;
 
 	export type InferParamsInput<TKey extends Key> = OptionalizeEmpty<{
 		pathname: Record<MapPathParams<InferPattern<TKey>["Path"]>[number], string | bigint | number>;
@@ -18,18 +18,22 @@ export namespace Schema {
 		search: Record<MapSearchParams<InferPattern<TKey>["Search"]>[number], string>;
 	}>;
 
-	export type InferDataInput<TSchema extends Schema, TKey extends keyof TSchema> = Codec.InferInput<InferItem<TSchema, TKey>["input"]>;
-	export type InferDataOutput<TSchema extends Schema, TKey extends keyof TSchema> = Codec.InferOutput<
+	export type InferDataInput<TSchema extends RouterSchema, TKey extends keyof TSchema> = Codec.InferInput<
+		InferItem<TSchema, TKey>["input"]
+	>;
+	export type InferDataOutput<TSchema extends RouterSchema, TKey extends keyof TSchema> = Codec.InferOutput<
 		InferItem<TSchema, TKey>["input"]
 	>;
 
-	export type InferResultInput<TSchema extends Schema, TKey extends keyof TSchema> = Codec.InferInput<InferItem<TSchema, TKey>["output"]>;
-	export type InferResultOutput<TSchema extends Schema, TKey extends keyof TSchema> = Codec.InferOutput<
+	export type InferResultInput<TSchema extends RouterSchema, TKey extends keyof TSchema> = Codec.InferInput<
+		InferItem<TSchema, TKey>["output"]
+	>;
+	export type InferResultOutput<TSchema extends RouterSchema, TKey extends keyof TSchema> = Codec.InferOutput<
 		InferItem<TSchema, TKey>["output"]
 	>;
 
 	// Internal Helpers
-	type InferItem<T extends Schema, K extends keyof T> = Extract<T[K], Schema[keyof Schema]>;
+	type InferItem<T extends RouterSchema, K extends keyof T> = Extract<T[K], RouterSchema[keyof RouterSchema]>;
 	type IsParam<T extends string> = T extends `:${infer U}` ? U : never;
 	type InferPattern<K extends Key> = K extends `${string} ${infer Path}?${infer Search}` ? { Path: Path; Search: Search }
 		: K extends `${string} ${infer Path}` ? { Path: Path; Search: "" }
@@ -47,32 +51,32 @@ type RouteEvent = { request: Request; url: URL };
 type OmitCodec<T> = T extends { data: unknown } ? Omit<T, "codec"> : T;
 
 type RouteHandler<
-	TSchema extends Schema = _,
-	TKey extends Schema.Key<TSchema> = _,
+	TSchema extends RouterSchema = _,
+	TKey extends RouterSchema.Key<TSchema> = _,
 	TMeta = _,
 > = (
 	options: RouteHandlerOptions<TSchema, TKey, TMeta>,
 ) => PromiseOrValue<RouteHandlerResult<TSchema, TKey>>;
 
 type RouteHandlerOptions<
-	TSchema extends Schema,
-	TKey extends Schema.Key<TSchema>,
+	TSchema extends RouterSchema,
+	TKey extends RouterSchema.Key<TSchema>,
 	TMeta,
 > = {
 	event: RouteEvent;
-	params: Schema.InferParamsOutput<TKey>;
-	data: Schema.InferDataOutput<TSchema, Schema.Key<TSchema>>;
+	params: RouterSchema.InferParamsOutput<TKey>;
+	data: RouterSchema.InferDataOutput<TSchema, RouterSchema.Key<TSchema>>;
 	meta: TMeta;
 };
 
-type RouteHandlerResult<TSchema extends Schema, TKey extends Schema.Key<TSchema>> = OmitCodec<
-	RouteResponseOptions<Schema.InferResultInput<TSchema, TKey>>
+type RouteHandlerResult<TSchema extends RouterSchema, TKey extends RouterSchema.Key<TSchema>> = OmitCodec<
+	RouteResponseOptions<RouterSchema.InferResultInput<TSchema, TKey>>
 >;
 
-type RouteMiddlewareOptions<TSchema extends Schema = _> = {
+type RouteMiddlewareOptions<TSchema extends RouterSchema = _> = {
 	event: RouteEvent;
-	params: Schema.InferParamsOutput<Schema.Key<TSchema>>;
-	data: Schema.InferDataOutput<TSchema, Schema.Key<TSchema>>;
+	params: RouterSchema.InferParamsOutput<RouterSchema.Key<TSchema>>;
+	data: RouterSchema.InferDataOutput<TSchema, RouterSchema.Key<TSchema>>;
 };
 
 type RouteMiddlewareResult<TMeta = _> = { meta: TMeta };
@@ -85,7 +89,7 @@ type Bucket = {
 		handler: RouteHandler | null;
 	}>;
 }[];
-export class Router<const TSchema extends Schema, TMeta> {
+export class Router<const TSchema extends RouterSchema, TMeta> {
 	private readonly metaMiddleware?: (
 		options: RouteMiddlewareOptions,
 	) => PromiseOrValue<RouteMiddlewareResult>;
@@ -130,7 +134,7 @@ export class Router<const TSchema extends Schema, TMeta> {
 			.sort(([a], [b]) => b.split("/").length - a.split("/").length);
 	}
 
-	registerHandler<TKey extends Schema.Key<TSchema>>(
+	registerHandler<TKey extends RouterSchema.Key<TSchema>>(
 		key: TKey,
 		handler: RouteHandler<TSchema, TKey, TMeta>,
 	) {

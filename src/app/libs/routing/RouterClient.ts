@@ -1,12 +1,12 @@
-import { Schema } from "~/app/libs/routing/Router.ts";
+import { RouterSchema } from "~/app/libs/routing/Router.ts";
 import { OptionalizeEmpty } from "~/app/libs/types/utils.ts";
 
 export type RouterClientRequestOptions<
-	TSchema extends Schema,
-	TKey extends Schema.Key<TSchema>,
+	TSchema extends RouterSchema,
+	TKey extends RouterSchema.Key<TSchema>,
 > = OptionalizeEmpty<{
-	params: Schema.InferParamsInput<TKey>;
-	data: Schema.InferDataInput<TSchema, TKey>;
+	params: RouterSchema.InferParamsInput<TKey>;
+	data: RouterSchema.InferDataInput<TSchema, TKey>;
 	request?: RequestInit;
 }>;
 
@@ -17,14 +17,14 @@ export class RouterClientError extends Error {
 	}
 }
 
-export class RouterClient<const TSchema extends Schema> {
+export class RouterClient<const TSchema extends RouterSchema> {
 	private constructor(
 		public readonly schema: TSchema,
 		private readonly baseUrl: string,
 		private readonly fetchFn: typeof fetch,
 	) {}
 
-	static create<const TSchema extends Schema>(params: {
+	static create<const TSchema extends RouterSchema>(params: {
 		baseUrl: string | URL;
 		schema: TSchema;
 		fetch?: typeof fetch;
@@ -36,11 +36,11 @@ export class RouterClient<const TSchema extends Schema> {
 		);
 	}
 
-	async fetch<TKey extends Schema.Key<TSchema>>(
+	async fetch<TKey extends RouterSchema.Key<TSchema>>(
 		key: TKey,
 		options: RouterClientRequestOptions<TSchema, TKey>,
-	): Promise<Schema.InferResultOutput<TSchema, TKey>> {
-		const item = this.schema[key] as Schema[keyof Schema];
+	): Promise<RouterSchema.InferResultOutput<TSchema, TKey>> {
+		const item = this.schema[key] as RouterSchema[keyof RouterSchema];
 		const [method, pattern] = key.split(" ") as [string, string];
 		const [pathnameTemplate] = pattern.split("?") as [string, string] | [string];
 

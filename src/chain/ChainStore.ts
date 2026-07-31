@@ -4,18 +4,18 @@ import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { U40 } from "~/codec/primitives/U40.ts";
 import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
+import { StoredBlockInfo } from "~/codec/stored/StoredBlockInfo.ts";
 import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
-import { StoredPubkeyCursor } from "~/codec/stored/StoredPubkeyCursor.ts";
-import { StoredTxCursor } from "~/codec/stored/StoredTxCursor.ts";
+import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
+import { StoredTxIdPointer } from "~/codec/stored/StoredTxIdPointer.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
-import { StoredTxs } from "~/codec/stored/StoredTxs.ts";
-import { COINBASE_TXID, GB, MAX_BLOCK_SIZE, MINUTE } from "~/constants.ts";
+import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
+import { COINBASE_TXID, GB, MINUTE } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
 import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
 import { GrowthOptions, HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
-import { StoredTxIdCursor } from "~/codec/stored/StoredTxIdCursor.ts";
 
 const COMPRESSION_OPTIONS: CompressionOptions = {
 	maxInflatedChunkAge: 15 * MINUTE,
@@ -56,7 +56,7 @@ export class ChainStore {
 			}),
 			block: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "block"),
-				item: StoredTxIdCursor, // pointer to txid hashmap store to first tx (txid only exists there)
+				item: StoredBlockInfo,
 				cursor: U40,
 				minChunkSize: 1 * GB,
 			}),
@@ -70,34 +70,29 @@ export class ChainStore {
 			}),
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
-				entry: StoredTxs,
-				cursor: StoredTxCursor,
+				cursor: StoredTxPointer,
 				chunkSize: 1 * GB,
-				// A whole block's StoredTxs is the record that must stay contiguous.
-				// Seal a chunk once it has less than a max block left, so a block's
-				// region always fits in one chunk (writeInto never straddles).
-				maxItemSize: MAX_BLOCK_SIZE,
 			}),
 			txid: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txid"),
 				key: Bytes32, // tx id
-				value: StoredTxCursor, // pointer to tx block store
-				pointer: StoredTxIdCursor,
+				value: StoredTxPointer, // pointer to tx block store
+				pointer: StoredTxIdPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 				growth: GROWTH_OPTIONS,
 			}),
 			pubkey: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkey"),
 				key: StoredPubKey,
-				value: StoredTxIdCursor, // pointer to last tx of the pubkey at txid hashmap store
-				pointer: StoredPubkeyCursor,
+				value: StoredTxIdPointer, // pointer to last tx of the pubkey at txid hashmap store
+				pointer: StoredPubkeyPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 				growth: GROWTH_OPTIONS,
 			}),
 			spender: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "spender"),
-				key: new StructCodec({ tx: StoredTxIdCursor, output: VarInt }),
-				value: StoredTxIdCursor, // spender tx
+				key: new StructCodec({ tx: StoredTxIdPointer, output: VarInt }),
+				value: StoredTxIdPointer, // spender tx
 				pointer: U48,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 				growth: GROWTH_OPTIONS,

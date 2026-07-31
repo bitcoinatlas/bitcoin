@@ -1,8 +1,8 @@
 import { RouterClient } from "~/app/libs/routing/RouterClient.ts";
-import { ROUTES_SCHEMA } from "~/app/routes.ts";
+import { SCHEMA } from "~/app/routes.ts";
 
-export const api = RouterClient.create<typeof ROUTES_SCHEMA>({
+export const api = RouterClient.create<typeof SCHEMA>({
 	baseUrl: new URL("/", location.href),
-	schema: ROUTES_SCHEMA,
+	schema: SCHEMA,
 	fetch: (...args) => fetch(...args),
 });

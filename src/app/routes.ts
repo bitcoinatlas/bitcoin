@@ -1,26 +1,42 @@
-import { ArrayCodec, Bytes, Codec, NullableCodec, StructCodec, U32, U64, VarInt, Void } from "@nomadshiba/codec";
-import { Schema } from "~/app/libs/routing/Router.ts";
+import { ArrayCodec, Bytes, Codec, NullableCodec, StructCodec, U32, VarInt, Void } from "@nomadshiba/codec";
+import { RouterSchema } from "~/app/libs/routing/Router.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
+import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+
+export type BlockInfo = Codec.InferOutput<typeof BlockInfo>;
+export const BlockInfo = new StructCodec({
+	wireSize: U32,
+	reward: VarInt,
+	txCount: VarInt,
+	coinbaseScriptSig: Bytes,
+});
 
 export type Block = Codec.InferOutput<typeof Block>;
 export const Block = new StructCodec({
 	header: WireBlockHeader,
 	height: U32,
-	size: new NullableCodec(U32),
-	txCount: U32,
-	reward: U64,
-	coinbaseScriptSig: Bytes,
+	info: new NullableCodec(BlockInfo),
 });
 
-export type RoutesSchema = typeof ROUTES_SCHEMA;
-export const ROUTES_SCHEMA = {
+export type TxSummary = Codec.InferOutput<typeof TxSummary>;
+export const TxSummary = new StructCodec({
+	txId: Bytes32,
+	inputs: VarInt,
+	outputs: VarInt,
+	wireSize: VarInt,
+});
+
+export type Tx = Codec.InferOutput<typeof Tx>;
+export const Tx = WireTx;
+
+export type Schema = typeof SCHEMA;
+export const SCHEMA = {
 	"GET /v1/block?from=:from&take=:take": { input: Void, output: new ArrayCodec(Block) },
 	"GET /v1/block?to=:to&take=:take": { input: Void, output: new ArrayCodec(Block) },
 	"GET /v1/block/tip": { input: Void, output: new NullableCodec(Block) },
 	"GET /v1/block/:hashOrHeight": { input: Void, output: new NullableCodec(Block) },
-	"GET /v1/block/:hashOrHeight/summary": { input: Void, output: new NullableCodec(Block) },
-	"GET /v1/block/:hashOrHeight/txs": { input: Void, output: new ArrayCodec(WireTx) },
-	"GET /v1/tx/:txId": { input: Void, output: new NullableCodec(WireTx) },
+	"GET /v1/block/:hashOrHeight/txs": { input: Void, output: new ArrayCodec(TxSummary) },
+	"GET /v1/tx/:txId": { input: Void, output: new NullableCodec(Tx) },
 	"GET /exit": { input: Void, output: Void },
-} as const satisfies Schema;
+} as const satisfies RouterSchema;

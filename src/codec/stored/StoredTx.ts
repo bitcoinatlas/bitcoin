@@ -1,5 +1,5 @@
 import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
-import { ChainStore } from "~/chain/ChainStorage.ts";
+import { ChainStore } from "~/chain/ChainStore.ts";
 import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";

@@ -1,6 +1,6 @@
 import { U48 } from "~/codec/primitives/U48.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { chainStore } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStore.ts";
 
 /**
  * SpenderIndexer — chain-thread orchestrator for the detached spender index.

@@ -8,7 +8,7 @@ import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
-import { chainStore } from "~/chain/ChainStorage.ts";
+import { chainStore } from "~/chain/ChainStore.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 
