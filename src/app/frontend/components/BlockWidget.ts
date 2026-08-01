@@ -16,7 +16,8 @@ export function BlockWidget(props: {
 
 	const hash = block.header.hash().toReversed();
 
-	const t = (block.size ?? 0) / MAX_BLOCK_SIZE;
+	const wireSize = block.info?.wireSize ?? 0;
+	const t = wireSize / MAX_BLOCK_SIZE;
 	const self = a().href(`#/block/${encodeHex(hash)}`)
 		.$bind(BlockWidgetStyle.useScope())
 		.$bind(useStyleProperty("--filled", `${t}`));
@@ -35,7 +36,7 @@ export function BlockWidget(props: {
 				),
 				div({ class: "size" }).append$(
 					dt().textContent("Size"),
-					dd().textContent(block.size ? formatBytesDecimal(block.size) : "unknown"),
+					dd().textContent(block.info ? formatBytesDecimal(wireSize) : "unknown"),
 				),
 				div({ class: "difficulty" }).append$(
 					dt().textContent("Difficulty"),

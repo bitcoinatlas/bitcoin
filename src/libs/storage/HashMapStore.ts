@@ -2,6 +2,7 @@ import { Bool, Codec, FixedCodec, StructCodec, TupleCodec, TupleOutput } from "@
 import { Mmap } from "@nomadshiba/mmap";
 import { equals } from "@std/bytes/equals";
 import { join } from "@std/path";
+import { Seqlock } from "~/libs/storage/Seqlock.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
 /**
@@ -16,6 +17,16 @@ type MappedFile = { mapping: Mmap; bytes: Uint8Array };
 function mapFile(path: string): MappedFile {
 	const mapping = Mmap.openSync(path, { write: true });
 	return { mapping, bytes: mapping.bytes() };
+}
+
+/** File size on disk, or `fallback` if the file doesn't exist. */
+function statSizeOr(path: string, fallback: number): number {
+	try {
+		return Deno.statSync(path).size;
+	} catch (e) {
+		if (e instanceof Deno.errors.NotFound) return fallback;
+		throw e;
+	}
 }
 
 export type LoadFactorOptions = {
@@ -150,7 +161,10 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	private bucketsMap!: MappedFile;
 	private bucketsCount = 0;
 
-	private metaMap!: MappedFile;
+	// The meta ({stale, entriesSize, entriesCount}) lives in a fixed-size
+	// seqlock: the writer publishes under it, a separate reader worker gets a
+	// tear-free snapshot without blocking the writer (see Seqlock).
+	private metaLock!: Seqlock;
 	private stale = true;
 
 	private constructor(options: HashMapStoreOptions<Pointer, Key, Value>) {
@@ -213,31 +227,16 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			}
 		};
 
-		// Meta
-		let metaExists = true;
-		try {
-			const stat = Deno.statSync(self.metaPath);
-			if (stat.size !== self.metaSize) {
-				throw new Error(
-					`HashMapStore: meta size mismatch (expected ${self.metaSize}, got ${stat.size}) — wrong pointer codec or corrupted store`,
-				);
-			}
-		} catch (e) {
-			if (!(e instanceof Deno.errors.NotFound)) throw e;
-			metaExists = false;
+		// Meta — a fixed-size seqlock file. Absent means a brand-new store; but
+		// refuse to reinitialize over orphaned data files (wrong path or a
+		// deleted meta), or a fresh zeroed meta would hide them.
+		const metaExists = existsNonEmpty(self.metaPath);
+		if (!metaExists && (existsNonEmpty(self.entriesPath) || existsNonEmpty(self.bucketsPath))) {
+			throw new Error("HashMapStore: meta file is missing but data files exist — refusing to reinitialize over them");
 		}
-		if (!metaExists) {
-			// Refuse to reinitialize over orphaned data files (wrong path or a
-			// deleted meta) — a fresh meta would hide them behind zeroed sizes.
-			if (existsNonEmpty(self.entriesPath) || existsNonEmpty(self.bucketsPath)) {
-				throw new Error("HashMapStore: meta file is missing but data files exist — refusing to reinitialize over them");
-			}
-			Deno.openSync(self.metaPath, { create: true, write: true }).close();
-			Deno.truncateSync(self.metaPath, self.metaSize);
-		}
-		self.metaMap = mapFile(self.metaPath);
+		self.metaLock = Seqlock.open(self.metaPath, self.metaSize, self.metaPath);
 		if (metaExists) {
-			const [meta] = self.meta.decode(self.metaMap.bytes);
+			const meta = self.readMeta();
 			self.stale = meta.stale;
 			self.entriesSize = meta.entriesSize;
 			self.entriesCount = meta.entriesCount;
@@ -268,13 +267,14 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		self.entriesMap = mapFile(self.entriesPath);
 
 		if (!metaExists) {
-			// Brand-new store: create the buckets file at the configured initial
-			// count and persist a clean meta.
+			// Brand-new store: persist a clean meta and create the buckets file.
+			// rehash() on an empty log does exactly that (sizes buckets off the
+			// entry count, floors at 1) and leaves stale=false — same end state
+			// as the recovery path below, just with nothing to replay.
 			self.stale = false;
 			self.entriesSize = 0;
 			self.entriesCount = 0;
-			self.writeMeta();
-			self.metaMap.mapping.flush();
+			self.rehash();
 			return self;
 		}
 
@@ -305,8 +305,14 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 	// ── meta ───────────────────────────────────────────────────────────────
 
+	/** Publish the writer's current meta through the seqlock (tear-free for readers). */
 	private writeMeta(): void {
-		this.metaMap.bytes.set(this.meta.encode({ stale: this.stale, entriesSize: this.entriesSize, entriesCount: this.entriesCount }));
+		this.metaLock.write(this.meta.encode({ stale: this.stale, entriesSize: this.entriesSize, entriesCount: this.entriesCount }));
+	}
+
+	/** Tear-free snapshot of the committed meta from the seqlock. */
+	private readMeta(): { stale: boolean; entriesSize: number; entriesCount: number } {
+		return this.metaLock.read((bytes) => this.meta.decode(bytes, 0)[0]);
 	}
 
 	// ── entries file (pre-grown, mmap'd) ───────────────────────────────────
@@ -392,14 +398,38 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	}
 
 	// ── read path ──────────────────────────────────────────────────────────
+	//
+	// Reads go through the mmaps (fast, zero-copy, shared page cache), but stay
+	// FRESH across workers by re-syncing first: the committed sizes come from
+	// the meta seqlock (tear-free), and `ensureReadViews()` re-maps the buckets
+	// or entries file whenever the writer grew or rehashed it (a rehash delete+
+	// recreates the buckets file, so its size changes and we pick up the new
+	// inode). For the single writer, on-disk size always matches its own live
+	// mapping, so this is a no-op and it keeps using the maps it already holds.
+
+	/** Re-map buckets/entries if the writer advanced them, and refresh `bucketsCount`. */
+	private ensureReadViews(): void {
+		const bucketsSize = statSizeOr(this.bucketsPath, 0);
+		if (this.bucketsCount === 0 || bucketsSize !== this.bucketsMap.bytes.length) {
+			if (this.bucketsCount > 0) this.bucketsMap.mapping.close();
+			this.bucketsMap = mapFile(this.bucketsPath);
+			this.bucketsCount = Math.floor(this.bucketsMap.bytes.length / this.pointer.stride.size);
+		}
+		const entriesSize = statSizeOr(this.entriesPath, 0);
+		if (entriesSize !== this.entriesMap.bytes.length) {
+			this.entriesMap.mapping.close();
+			this.entriesMap = mapFile(this.entriesPath);
+		}
+	}
 
 	/**
 	 * Find the entry for an encoded key. Compares the query bytes against the
-	 * raw key bytes stored in the log (key length = prefixSize - pointerSize)
-	 * — the query key is encoded once by the caller, stored keys are never
+	 * raw key bytes stored in the log (key length = prefixSize - pointerSize) —
+	 * the query key is encoded once by the caller, stored keys are never
 	 * decoded-then-re-encoded. Returns the 0-based offset and header size.
 	 */
 	private findEntry(keyBytes: Uint8Array): { offset: number; prefixSize: number } | undefined {
+		this.ensureReadViews();
 		if (this.bucketsCount === 0) return undefined;
 		const pointerSize = this.pointer.stride.size;
 		let pointer = this.readBucket(this.bucketIndexOf(keyBytes));
@@ -436,10 +466,12 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	}
 
 	getEntry(pointer: number): [TupleOutput<[key: Key, value: Value]>, offset: number] {
+		this.ensureReadViews();
 		return this.entry.decode(this.entriesMap.bytes, pointer + this.pointer.stride.size);
 	}
 
 	getKey(pointer: number): [Codec.InferOutput<Key>, offset: number] {
+		this.ensureReadViews();
 		return this.key.decode(this.entriesMap.bytes, pointer + this.pointer.stride.size);
 	}
 
@@ -610,12 +642,12 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// crash mid-rehash, the recovery rescan must cover every entry that was
 		// reachable when we started (meta on disk could otherwise lag the heads).
 		this.writeMeta();
-		this.metaMap.mapping.flush();
+		this.metaLock.flush();
 
 		// (1) mark stale + flush
 		this.stale = true;
 		this.writeMeta();
-		this.metaMap.mapping.flush();
+		this.metaLock.flush();
 
 		const total = this.entriesSize;
 
@@ -655,14 +687,18 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// (5) clear stale + flush
 		this.stale = false;
 		this.writeMeta();
-		this.metaMap.mapping.flush();
+		this.metaLock.flush();
 	}
 
 	// ── Store contract ─────────────────────────────────────────────────────
 
-	/** Size == byte length of the entries log. */
+	/**
+	 * Size == byte length of the entries log. Read tear-free from the meta
+	 * seqlock every call (like BlobStore's CURSOR) so a separate reader worker
+	 * sees a concurrent writer's latest committed size, never a frozen cache.
+	 */
 	override size(): number {
-		return this.entriesSize;
+		return this.readMeta().entriesSize;
 	}
 
 	/**
@@ -733,7 +769,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 
 	override sync(): void {
 		this.writeMeta();
-		this.metaMap.mapping.flush();
+		this.metaLock.flush();
 		this.entriesMap.mapping.flush();
 		this.bucketsMap.mapping.flush();
 	}
@@ -742,7 +778,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.sync();
 		this.entriesMap.mapping.close();
 		this.bucketsMap.mapping.close();
-		this.metaMap.mapping.close();
+		this.metaLock.close();
 	}
 
 	[Symbol.dispose](): void {

@@ -13,7 +13,7 @@ const MAX_TX_TAKE = 50;
 
 function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { kind: "hash"; hash: Uint8Array } {
 	if (raw.length === 64) {
-		return { kind: "hash", hash: Uint8Array.from(decodeHex(raw).reverse()) };
+		return { kind: "hash", hash: decodeHex(raw).reverse() };
 	}
 	return { kind: "height", height: Number(raw) };
 }
@@ -28,7 +28,7 @@ async function getBlockByHeight(height: number): Promise<RouterSchema.InferResul
 	const header = await chainStore.stores.header.getAsync(height);
 	if (!header) return null;
 	const block = await chainStore.stores.block.getAsync(height);
-	if (!block) return null;
+	if (!block) return { header, height, info: null };
 	const [coinbaseTx] = await chainStore.stores.tx.getAsync(block.txPointer, StoredTx);
 	return {
 		header,
@@ -91,6 +91,7 @@ endpointRouter.registerHandler("GET /v1/block?to=:to&take=:take", async ({ param
 
 endpointRouter.registerHandler("GET /v1/block/tip", async () => {
 	const height = chainStore.stores.header.size() - 1;
+	if (height < 0) throw new Error("not suppose to happen");
 	return { status: "OK", data: await getBlockByHeight(height) };
 });
 

@@ -1,9 +1,11 @@
 import { ARGS } from "~/env.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
+import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
 
 // Surface anything a worker throws — at load or at runtime. Without this an
 // uncaught error in a worker dies silently and you see nothing at all.
-function wireWorker(name: string, worker: Worker): Worker {
+function wireWorker(name: string, url: URL): Worker {
+	const worker = new Worker(url, { type: "module", name });
 	worker.addEventListener("error", (e) => {
 		console.error(
 			`[main] worker "${name}" error:`,
@@ -27,9 +29,21 @@ if (import.meta.main) {
 	console.log("[main] rolling back to last pinned sizes");
 	chainStore.atomic.rollback();
 
+	if (chainStore.stores.header.size() === 0) {
+		const height = chainStore.stores.header.push(GENESIS_BLOCK_HEADER_DECODED);
+		chainStore.stores.blockhash.put(GENESIS_BLOCK_HASH, height);
+		chainStore.atomic.pin(["header", "blockhash"]);
+		console.log("[main] seeded genesis header");
+	}
+
 	console.log("[main] spawning p2p + chain workers");
-	const p2pWorker = wireWorker("p2p", new Worker(new URL("./p2p/worker.ts", import.meta.url), { type: "module", name: "p2p" }));
-	const chainWorker = wireWorker("chain", new Worker(new URL("./chain/worker.ts", import.meta.url), { type: "module", name: "chain" }));
+	const p2pWorker = wireWorker("p2p", new URL("./p2p/worker.ts", import.meta.url));
+	const chainWorker = wireWorker("chain", new URL("./chain/worker.ts", import.meta.url));
+
+	await Promise.all([
+		new Promise((resolve) => p2pWorker.addEventListener("message", resolve, { once: true })),
+		new Promise((resolve) => chainWorker.addEventListener("message", resolve, { once: true })),
+	]);
 
 	// Hand each worker its end of the sync channel immediately. Messages posted to
 	// a worker before its listener attaches are queued by the runtime, so there's
@@ -39,15 +53,12 @@ if (import.meta.main) {
 	chainWorker.postMessage(null, [syncMessageChannel.port2]);
 	console.log("[main] sync ports handed over");
 
-	const serverWorker = wireWorker(
-		"server",
-		new Worker(new URL("./app/app.worker.ts", import.meta.url), { type: "module", name: "server" }),
-	);
+	const serverWorker = wireWorker("server", new URL("./app/app.worker.ts", import.meta.url));
 	await new Promise((resolve) => serverWorker.addEventListener("message", resolve, { once: true }));
 	console.log("[main] server worker up");
 
 	if (!ARGS.background) {
-		wireWorker("gui", new Worker(new URL("./app/gui.worker.ts", import.meta.url), { type: "module", name: "gui" }));
+		wireWorker("gui", new URL("./app/gui.worker.ts", import.meta.url));
 	}
 	console.log("[main] startup complete");
 }

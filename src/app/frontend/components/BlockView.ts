@@ -1,8 +1,5 @@
 import { tags } from "@purifyjs/core";
 import { encodeHex } from "@std/encoding";
-import { api } from "~/app/frontend/api.ts";
-import { awaited } from "~/app/frontend/utils/dom/awaited.ts";
-import { useReplaceChildren } from "~/app/frontend/utils/dom/bind.ts";
 import { css } from "~/app/frontend/utils/dom/css.ts";
 import {
 	formatBitcoin,
@@ -25,10 +22,8 @@ export function BlockView(block: Block) {
 	const prevHashHex = formatHash(block.header.prevHash);
 	const timestamp = new Date(block.header.timestamp * SECOND);
 
-	// The summary (tx count, reward, coinbase scriptSig) is fetched separately.
-	const summary = awaited(
-		api.fetch("GET /v1/block/:hashOrHeight/summary", { params: { pathname: { hashOrHeight: hashHex } } }),
-	);
+	// Summary (tx count, reward, coinbase scriptSig) now lives in block.info.
+	const info = block.info;
 
 	const row = (term: string, ...value: Parameters<ReturnType<typeof dd>["append$"]>) =>
 		div().append$(dt().textContent(term), dd().append$(...value));
@@ -49,7 +44,7 @@ export function BlockView(block: Block) {
 				row("Difficulty", formatDifficulty(difficultyFromHeader(block.header))),
 				row("Bits", `0x${block.header.bits.toString(16)}`),
 				row("Nonce", `${block.header.nonce}`),
-				row("Size", block.size ? formatBytesDecimal(block.size) : "unknown"),
+				row("Size", info ? formatBytesDecimal(info.wireSize) : "unknown"),
 				row("Merkle root", code({ class: "hash" }).textContent(formatHash(block.header.merkleRoot))),
 				row(
 					"Previous block",
@@ -59,20 +54,20 @@ export function BlockView(block: Block) {
 		),
 		section().append$(
 			h2().textContent("Summary"),
-			dl().$bind(useReplaceChildren(summary.derive((data) => {
-				if (!data) return div({ class: "empty" }).textContent("No summary available");
-				console.log(data);
-				return div({ class: "summary-rows" }).append$(
-					row("Transactions", formatBlockHeight(data.txCount)),
-					row("Reward", formatBitcoin(data.reward)),
-					row(
-						"Coinbase",
-						code({ class: "hash" }).textContent(
-							data.coinbaseScriptSig.length ? new TextDecoder().decode(data.coinbaseScriptSig) : "(empty)",
+			dl().append$(
+				info
+					? div({ class: "summary-rows" }).append$(
+						row("Transactions", formatBlockHeight(info.txCount)),
+						row("Reward", formatBitcoin(BigInt(info.reward))),
+						row(
+							"Coinbase",
+							code({ class: "hash" }).textContent(
+								info.coinbaseScriptSig.length ? new TextDecoder().decode(info.coinbaseScriptSig) : "(empty)",
+							),
 						),
-					),
-				);
-			}))),
+					)
+					: div({ class: "empty" }).textContent("No summary available"),
+			),
 		),
 	);
 

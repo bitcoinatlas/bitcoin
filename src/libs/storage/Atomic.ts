@@ -1,4 +1,4 @@
-import { DB, PreparedQuery } from "@pomdtr/sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { join } from "@std/path";
 import { Store } from "~/libs/storage/Store.ts";
 
@@ -11,25 +11,31 @@ export type AtomicOptions<T extends AtomicStores> = {
 export class Atomic<T extends AtomicStores> implements Disposable {
 	public readonly stores: T;
 	public readonly path: string;
-	private readonly db: DB;
+	private readonly db: DatabaseSync;
 	private readonly storeMap: ReadonlyMap<string, Store>;
-	private readonly pinQuery: PreparedQuery<never, never, { name: string; size: number }>;
-	private readonly getPinsQuery: PreparedQuery<[string, number]>;
+	private readonly pinQuery: StatementSync;
+	private readonly getPinsQuery: StatementSync;
 
 	private constructor(options: AtomicOptions<T>) {
 		this.path = options.path;
 		this.stores = options.stores;
 		this.storeMap = new Map(Object.entries(this.stores));
-		this.db = new DB(join(this.path, "db.sqlite"), { mode: "create" });
+		this.db = new DatabaseSync(join(this.path, "db.sqlite"));
 		// Multiple workers open the SAME db.sqlite (p2p pins the header domain,
-		// chain pins the block/index domain). IF NOT EXISTS so the second opener
-		// doesn't throw, and busy_timeout so their BEGIN IMMEDIATE transactions
-		// wait for each other instead of failing with SQLITE_BUSY.
-		this.db.execute(`CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, size INTEGER NOT NULL);`);
-		this.db.execute(`PRAGMA busy_timeout = 5000;`);
-		this.getPinsQuery = this.db.prepareQuery("SELECT name, size FROM pins");
-		this.pinQuery = this.db.prepareQuery(
-			"INSERT INTO pins (name, size) VALUES (?,?) ON CONFLICT(name) DO UPDATE SET size = excluded.size;",
+		// chain pins the block/index domain) as separate connections in the same
+		// process. WAL is REQUIRED here: without it, a completed read on one
+		// connection deadlocks a BEGIN IMMEDIATE/COMMIT on the other, and
+		// busy_timeout can't break an intra-process lock cycle. node:sqlite is the
+		// native build (the WASM build can't enable WAL); WAL lets readers and a
+		// single writer run concurrently without blocking. IF NOT EXISTS so the
+		// second opener doesn't throw; busy_timeout still guards the rare
+		// writer-vs-writer overlap across the two disjoint domains.
+		this.db.exec(`PRAGMA journal_mode = WAL;`);
+		this.db.exec(`PRAGMA busy_timeout = 5000;`);
+		this.db.exec(`CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, size INTEGER NOT NULL);`);
+		this.getPinsQuery = this.db.prepare("SELECT name, size FROM pins");
+		this.pinQuery = this.db.prepare(
+			"INSERT INTO pins (name, size) VALUES (:name, :size) ON CONFLICT(name) DO UPDATE SET size = excluded.size;",
 		);
 	}
 
@@ -46,6 +52,7 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 	 * mid-writing. With no argument, pins every store (single-writer / recovery
 	 * setup).
 	 */
+	pin(names?: readonly (keyof T)[]): void;
 	pin(names?: readonly string[]) {
 		const targets: [string, Store][] = [];
 		if (names) {
@@ -59,21 +66,21 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 		}
 
 		try {
-			this.db.execute("BEGIN IMMEDIATE;");
+			this.db.exec("BEGIN IMMEDIATE;");
 			for (const [name, store] of targets) {
 				store.sync();
-				this.pinQuery.execute({ name, size: store.size() });
+				this.pinQuery.run({ name, size: store.size() });
 			}
-			this.db.execute("COMMIT;");
+			this.db.exec("COMMIT;");
 		} catch (reason) {
-			this.db.execute("ROLLBACK;");
+			this.db.exec("ROLLBACK;");
 			throw reason;
 		}
 	}
 
 	rollback(): void {
-		const pins = this.getPinsQuery.all();
-		for (const [name, size] of pins) {
+		const pins = this.getPinsQuery.all() as { name: string; size: number }[];
+		for (const { name, size } of pins) {
 			const store = this.storeMap.get(name);
 			if (!store) {
 				throw new Error(`Pinned store "${name}" does not exist.`);
@@ -83,8 +90,6 @@ export class Atomic<T extends AtomicStores> implements Disposable {
 	}
 
 	close() {
-		this.pinQuery.finalize();
-		this.getPinsQuery.finalize();
 		this.db.close();
 	}
 

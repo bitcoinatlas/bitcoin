@@ -1,7 +1,7 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
 import { chainStore } from "~/chain/ChainStore.ts";
-import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
+import { GENESIS_BLOCK_HASH } from "~/chain/genesis.ts";
 import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
@@ -20,9 +20,6 @@ import { Peer, type PeerMessageEvent } from "~/p2p/Peer.ts";
 import { handshake } from "~/p2p/peers.ts";
 
 console.log("[p2p] booting");
-self.addEventListener("unhandledrejection", (e) => {
-	console.error("[p2p] unhandledrejection:", (e as PromiseRejectionEvent).reason);
-});
 
 // ── protocol / peers ─────────────────────────────────────────────────────────
 const PROTOCOL_VERSION = 70015;
@@ -77,6 +74,25 @@ const blockPool = new Map<number, Uint8Array>(); // height -> raw block-body pay
 const blockInFlight = new Map<number, { peer: Peer; at: number }>(); // height -> who + when
 const blockUnlisten = new Map<Peer, () => void>(); // attached block listeners
 const lastBlockAt = new Map<Peer, number>(); // peer -> last delivered-a-wanted-block time
+
+self.onmessage = async (event) => {
+	console.log("[p2p] main-port message event, ports:", event.ports.length, "data:", event.data);
+	port = event.ports[0]!;
+	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
+	port.start();
+	console.log("[p2p] sync port received");
+
+	while (true) {
+		await delay(10);
+		await drainMessages();
+	}
+};
+
+self.onunhandledrejection = (e) => {
+	console.error("[p2p] unhandledrejection:", e.reason);
+};
+
+self.postMessage(null);
 
 function keepDownloading(): boolean {
 	return (postedChunks - consumedChunks) < PARALLELISM_THREADS * MAX_QUEUED_ROUNDS;
@@ -321,6 +337,10 @@ async function syncBlocks(): Promise<void> {
 		if (!payload) {
 			ensureHeadRequested(live, packHeight, rr); // head-of-line: must always be re-requestable
 			reapTimedOut();
+			// Don't stall a non-empty chunk waiting on the next body: ship what's
+			// packed so the chain worker keeps making progress (and throughput
+			// stays measurable). An empty chunk has nothing to ship yet — wait.
+			if (chunkLen > 0) break;
 			await delay(DOWNLOAD_IDLE_MS);
 			continue;
 		}
@@ -531,15 +551,6 @@ async function connectAndMaintain(addr: { host: string; port: number }): Promise
 }
 
 async function start(): Promise<void> {
-	// Seed genesis into the header domain on a brand-new store so height 0 exists
-	// before we ever append or build a locator.
-	if (chainStore.stores.header.size() === 0) {
-		const height = chainStore.stores.header.push(GENESIS_BLOCK_HEADER_DECODED);
-		chainStore.stores.blockhash.put(GENESIS_BLOCK_HASH, height);
-		chainStore.atomic.pin(HEADER_STORES);
-		console.log("[p2p] seeded genesis header");
-	}
-
 	// Bring at least one peer up before starting the loops so the first header
 	// pass has someone to talk to.
 	const firstConnects = PEER_ADDRESSES.map((addr) => connectAndMaintain(addr));
@@ -572,17 +583,4 @@ async function drainMessages(): Promise<void> {
 			continue;
 		}
 	}
-}
-
-// ── entry ─────────────────────────────────────────────────────────────────────
-self.addEventListener("message", (event) => {
-	port = event.ports[0]!;
-	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
-	port.start();
-	console.log("[p2p] sync port received");
-}, { once: true });
-
-while (true) {
-	await delay(10);
-	await drainMessages();
 }
