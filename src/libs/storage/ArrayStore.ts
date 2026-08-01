@@ -2,26 +2,26 @@ import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
 import { BlobStore } from "./BlobStore.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
-export type ArrayStoreOptions<T extends FixedCodec, C extends Codec<number>> = {
+export type ArrayStoreOptions<T extends FixedCodec> = {
 	path: string;
 	item: T;
-	cursor: C;
+	readonly: boolean;
 	minChunkSize: number;
 };
 
-export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends Store implements Disposable {
+export class ArrayStore<T extends FixedCodec> extends Store implements Disposable {
 	public readonly path: string;
-	public readonly blob: BlobStore<C>;
+	public readonly blob: BlobStore;
 	public readonly codec: T;
 
-	private constructor(blob: BlobStore<C>, options: ArrayStoreOptions<T, C>) {
+	private constructor(blob: BlobStore, options: ArrayStoreOptions<T>) {
 		super();
 		this.blob = blob;
 		this.codec = options.item;
 		this.path = options.path;
 	}
 
-	static open<T extends FixedCodec, C extends Codec<number>>(options: ArrayStoreOptions<T, C>): ArrayStore<T, C> {
+	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
 		if (options.minChunkSize < 0) {
 			throw new RangeError(`minChunkSize must be non-negative, got ${options.minChunkSize}`);
 		}
@@ -30,14 +30,30 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 		}
 		const blob = BlobStore.open({
 			path: options.path,
-			cursor: options.cursor,
+			readonly: options.readonly,
 			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);
 	}
 
+	isReadOnly(): boolean {
+		return this.blob.isReadOnly();
+	}
+
 	size(): number {
 		return this.blob.size() / this.codec.stride.size;
+	}
+
+	reveal(size: number): void {
+		return this.blob.reveal(size * this.codec.stride.size);
+	}
+
+	truncate(size: number): void {
+		return this.blob.truncate(size * this.codec.stride.size);
+	}
+
+	next(offset = this.size()): number {
+		return this.blob.next(this.codec.stride.size, offset * this.codec.stride.size) / this.codec.stride.size;
 	}
 
 	get(index: number): Codec.InferOutput<T> | undefined {
@@ -76,39 +92,36 @@ export class ArrayStore<T extends FixedCodec, C extends Codec<number>> extends S
 	}
 
 	async sliceAsync(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
-		const length = this.size();
-		if (end > length) end = length;
+		const size = this.size();
+		if (end > size) end = size;
 		if (start < 0) {
-			throw new RangeError(`slice out of bounds start=${start} end=${end} length=${length}`);
+			throw new RangeError(`slice out of bounds start=${start} end=${end} size=${size}`);
 		}
-		if (start > length) start = length;
+		if (start > size) start = size;
 		if (end <= start) return [];
 		const [value] = await this.blob.getAsync(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
 		return value;
 	}
 
 	push(item: Codec.InferInput<T>): number {
-		const pointer = this.blob.nextItemPointer(this.codec.stride.size);
-		const size = pointer + this.blob.writeInto(pointer, this.codec.encode(item));
-		this.blob.resize(size);
+		const pointer = this.blob.next(this.codec.stride.size);
+		const size = pointer + this.blob.write(pointer, this.codec.encode(item));
+		this.blob.reveal(size);
 		return pointer / this.codec.stride.size;
 	}
 
 	set(index: number, item: Codec.InferInput<T>): void {
-		const length = this.size();
-		if (index < length) {
-			throw new RangeError(
-				`set index=${index} is behind the cursor (length=${length}); set can only fill space at or in front of the cursor`,
-			);
+		const size = this.size();
+		if (index < size) {
+			throw new RangeError([
+				`set index=${index} is behind the cursor (size=${size}).`,
+				`set can only fill space at or in front of the cursor`,
+			].join("\n"));
 		}
-		this.blob.writeInto(index * this.codec.stride.size, this.codec.encode(item));
+		this.blob.write(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
-	resize(length: number): void {
-		return this.blob.resize(length * this.codec.stride.size);
-	}
-
-	override sync(): void {
+	sync(): void {
 		this.blob.sync();
 	}
 

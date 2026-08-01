@@ -2,7 +2,6 @@ import { Bool, Codec, FixedCodec, StructCodec, TupleCodec, TupleOutput } from "@
 import { Mmap } from "@nomadshiba/mmap";
 import { equals } from "@std/bytes/equals";
 import { join } from "@std/path";
-import { Seqlock } from "~/libs/storage/Seqlock.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
 /*
@@ -65,13 +64,6 @@ import { Store } from "~/libs/storage/Store.ts";
 	since we will not need compaction we can just use the BlobStore, which is more consistent with mmap because of the chunking.
 */
 
-/**
- * A memory mapping paired with its `bytes()` view, taken once at open time and
- * reused for every access. `Mmap.bytes()` allocates a fresh `Uint8Array` (over
- * a fresh `ArrayBuffer`) on every call, so caching it here keeps the hot read/
- * write loops allocation-free. The two always travel together: whenever the
- * mapping is (re)opened the `bytes` snapshot is refreshed alongside it.
- */
 type MappedFile = { mapping: Mmap; bytes: Uint8Array };
 
 function mapFile(path: string): MappedFile {
@@ -113,80 +105,6 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
 	growth: GrowthOptions;
 };
 
-/**
- * On-disk hash map with its own mmap'd buckets + entries files (no BlobStore,
- * no ArrayStore, no chunks, no compression).
- *
- * ## Layout
- * - `entries` (`path/entries`): append-only log. Each entry is
- *   `previous ++ key ++ value` (a struct). `previous` is the fixed-width first
- *   field so it can be patched in place during rehash. Links backwards to the
- *   previous entry in the same bucket (per-bucket singly-linked list).
- *   Kept ahead of its logical size by the `growth` policy (see options);
- *   the logical size is tracked in `meta`.
- * - `buckets` (`path/buckets`): flat array of fixed-width pointer slots.
- *   `buckets[hash(key) % count]` = head (newest entry) of that bucket.
- * - `meta` (`path/meta`): `{ stale, entriesSize, entriesCount }`. `stale` is
- *   set during rehash for crash safety; `entriesSize` is the entries file's
- *   logical size (bytes); `entriesCount` is the number of entries, kept for
- *   the load-factor math (see `loadFactor`) since entries are variable-length
- *   and byte size alone is a poor proxy for chain length.
- *
- * All three files are created in `open()` — a brand-new entries file has 0
- * bytes, so the normal `growth` rule grows it right there (buckets start at
- * `initialBuckets`) — so the memory mappings exist for the store's whole
- * lifetime, never absent.
- *
- * ## Pointers
- * Persisted pointers (bucket slots and the inline `previous` field) are stored
- * +1, so 0 = empty slot / end of chain. That +1 form is purely internal: every
- * public method (`put`, `getPointer`, `getValueAndPointer`, `getEntry`,
- * `getKey`, `setValue`, `putValue`) speaks in raw 0-based byte offsets into
- * the entries log. Note that offset `0` is a valid pointer (the first entry)
- * — always test lookup results with `=== undefined`, never truthiness.
- *
- * ## Load factor
- * `loadFactor.target` is the standard `entryCount / bucketCount` ratio (same
- * meaning as e.g. Java `HashMap`'s load factor) — NOT buckets per entry.
- * `bucketCount` is kept at `entryCount / loadFactor.target`, so `target = 1`
- * aims for ~1 entry/bucket, `target = 4` aims for ~4 (fewer, cheaper buckets,
- * longer chains). `loadFactor.maxDrift` bounds how far the live value may
- * wander before a rehash corrects it.
- *
- * ## Rehash
- * Replays entries oldest-first, patching inline `previous` links and rebuilding
- * heads. Also recomputes `entriesCount` from scratch (see "Load factor" above)
- * — it's the one place that field is allowed to go stale (`resize()` shrinking
- * truncates by byte offset alone) and gets corrected. Crash-safe via the
- * `stale` flag — a crash mid-rehash is detected on `open` and re-run. Current
- * sizes are flushed to meta BEFORE `stale` is set, so the recovery rescan
- * always covers every entry that was reachable when the rehash started.
- *
- * ## Crash safety of `put`
- * `put` writes, in order: entry bytes → bucket head → meta (`entriesSize` /
- * `entriesCount`). A crash before the head update leaves uncommitted bytes
- * past `entriesSize` — unreachable, and the next `put` simply overwrites
- * them. A crash after the head update but before meta is flushed leaves a
- * head pointing past `entriesSize`; `open` detects this in `recoverTail()`
- * (cheap check of bucket heads first) and walks the chains to extend
- * `entriesSize` / `entriesCount` over the committed tail.
- *
- * ## Staging bytes ahead of the log (`putValue` + growing `resize`)
- * `putValue(pointer, value)` writes an encoded value at an absolute offset at
- * or past `entriesSize` — without updating meta or buckets. Staged bytes
- * become live only when `resize()` grows `entriesSize` to cover them: the new
- * region must decode as a sequence of whole entries landing exactly on the
- * new size, then EVERYTHING is rehashed, hashing and bulk-indexing the staged
- * entries. If you never grow over staged bytes, the next `put` appends at
- * `entriesSize` and overwrites them.
- *
- * Shrinking `resize(size)` only truncates the logical view: `previous` links
- * always point backwards (to older entries), so surviving chains stay intact
- * and only dangling bucket heads are re-pointed to the newest surviving entry
- * of their chain. `size` must land on an entry boundary (e.g. a value earlier
- * returned by `size()`); a mid-entry cut is detected and rejected before
- * anything is modified.
- */
 export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
 

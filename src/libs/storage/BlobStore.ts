@@ -13,14 +13,6 @@ import zlib from "node:zlib";
 
 const COMPRESS_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor(PARALLELISM_THREADS * .5)));
 
-/**
- * A chunk's memory mapping paired with its `bytes()` view, taken once at open
- * time and reused. `Mmap.bytes()` builds a fresh `Uint8Array` on every call, so
- * caching it here keeps the read/write hot paths allocation-free. The pair is
- * always created and discarded together.
- */
-type MappedChunk = { mapping: Mmap; bytes: Uint8Array };
-
 // node:zlib streams default to 16 KiB chunks — ~65k event-loop hops per ~1 GiB
 // chunk. 8 MiB buffers cut that to ~130.
 const INFLATE_STREAM_BUFFER_SIZE = 8 * MiB;
@@ -29,23 +21,6 @@ const INFLATE_STREAM_BUFFER_SIZE = 8 * MiB;
 const INFLATE_SYNC_CHUNK_SIZE = 64 * MiB;
 
 const { constants } = zlib;
-
-export type CompressionOptions = {
-	/** How long (ms) an inflated-then-evicted chunk's raw form is kept before reverting to compressed-only. Each read re-arms the timer. */
-	maxInflatedChunkAge: number;
-	/** Hard cap on simultaneously-inflated chunks. Eviction is LRU. Set >= 2 so a read straddling two chunks never evicts one it's still walking. */
-	maxInflatedChunks: number;
-	zstd: {
-		compress: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
-		decompress: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
-	};
-};
-
-export type BlobStoreOptions<C extends Codec<number>> = {
-	path: string;
-	cursor: C;
-	chunkSize: number;
-};
 
 /** Map `{ compressionLevel: 19, ... }` -> `{ [ZSTD_c_compressionLevel]: 19 }`. */
 function mapZstdParams(params: Record<string, number | undefined>, prefix: "ZSTD_c_" | "ZSTD_d_"): Record<number, number> {
@@ -84,12 +59,6 @@ function chunkRawTmpPath(root: string, index: number): string {
 // Serialises inflate across workers/processes.
 function chunkInflateLockPath(root: string, index: number): string {
 	return `${chunkPath(root, index)}.lock`;
-}
-
-// The logical size lives in this file as a seqlock: writers publish under it,
-// readers get a tear-free snapshot without blocking the writer (see Seqlock).
-function cursorPath(root: string): string {
-	return join(root, "CURSOR");
 }
 
 // Create (if missing) and/or grow chunk_N to exactly `maxChunkSize`, zero-filled. Idempotent.
@@ -135,77 +104,44 @@ function discardStaleCompressedForm(root: string, index: number): void {
 	Deno.removeSync(chunkInflateLockPath(root, index), { recursive: true });
 }
 
-/**
- * Chunked, append-only blob store. Records are addressed by absolute byte
- * `pointer` and read/written through memory maps of on-disk `chunk_N` files.
- *
- * ## Fixed-size chunks
- * Every `chunk_N` is created at exactly `maxChunkSize` bytes (zero-filled) and
- * never resized afterward — so its memory map is opened once and never goes
- * stale. Physical file size can't tell you how much is real data vs zero
- * padding; that's what `CURSOR` is for.
- *
- * ## The cursor
- * `CURSOR` (encoded via the `cursor` codec) holds the store's logical size in
- * a memory-mapped {@link Seqlock}. There is NO in-memory cache of it — every
- * size check reads it fresh through the seqlock, so a separate reader worker
- * always sees the latest published size and never a torn one. Only `resize()`
- * writes it; single-writer per store is an invariant.
- *
- * ## No straddle
- * `append()` never lets a record straddle a chunk boundary — if it doesn't
- * fit the remainder, the chunk is sealed early (padding gap) and the record
- * starts at the next chunk. `writeInto` has the same single-chunk rule.
- *
- * ## writeInto vs append
- * The store is append-only: live data (below the cursor) is never mutated.
- * Both writers only put bytes at or in front of the cursor:
- * - `append` reserves under the cursor lock (bump `CURSOR` past the record),
- *   then copies bytes straight into the mapping — unlocked.
- * - `writeInto(offset, bytes)` throws unless `offset >= cursor` — it only
- *   fills not-yet-live space. It's the primitive for parallel/out-of-order
- *   fills: reserve a region ahead of the cursor (via `resize`), have workers
- *   `writeInto` disjoint sub-ranges, then advance `CURSOR` past them.
- *
- * ## Compression
- * Reading a compressed chunk always works (inflated back to a raw file on
- * disk, never in memory). `startCompression(options)` starts a background loop
- * that proactively seals non-tail chunks into `.zst`. Throws if called twice.
- * Without it, inflated raw files are permanent (the .zst is deleted); with it,
- * they're tracked with a TTL + LRU cap.
- *
- * ## writeInto vs compression
- * No contention to synchronize: compression only touches chunks STRICTLY BELOW
- * the tail, both writers only touch space AT OR ABOVE the cursor — they can
- * never touch the same chunk. `compressChunk` reads+compresses with no lock
- * held and commits unconditionally. The only per-chunk lock (`chunkInflateLock
- * Path`) serialises inflate against a concurrent compress-commit.
- *
- * ## SIGBUS safety
- * A live mapping crashes the process (uncatchable) if the file shrinks/is
- * removed under it. Every site that shrinks/removes a raw chunk unmaps it first.
- */
-export class BlobStore<C extends Codec<number>> extends Store implements Disposable {
+export type CompressionOptions = {
+	maxInflatedChunkAge: number;
+	maxInflatedChunks: number;
+	zstd: {
+		compress: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
+		decompress: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
+	};
+};
+
+export type BlobStoreOptions = {
+	path: string;
+	chunkSize: number;
+	readonly: boolean;
+};
+
+type MappedChunk = { mapping: Mmap; bytes: Uint8Array };
+
+export class BlobStore extends Store implements Disposable {
 	public readonly path: string;
-	public readonly cursor: C;
 	public readonly chunkSize: number;
+	private cursor: number;
+	private readonly: boolean;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;
 	private zstdDecompressSyncOptions: zlib.ZstdOptions;
 	private zstdDecompressStreamOptions: zlib.ZstdOptions;
 
-	private constructor(options: BlobStoreOptions<C>) {
+	private constructor(options: BlobStoreOptions) {
 		super();
+		this.cursor = 0;
+		this.readonly = options.readonly;
 		this.path = options.path;
-		this.cursor = options.cursor;
 		this.chunkSize = options.chunkSize;
 		this.zstdCompressOptions = {};
 		this.zstdDecompressOptions = {};
 		this.zstdDecompressSyncOptions = {
 			chunkSize: INFLATE_SYNC_CHUNK_SIZE,
-			// Sealed raw chunks are always exactly maxChunkSize — a hard output
-			// bound is free corruption detection on top of the frame checksum.
 			maxOutputLength: options.chunkSize,
 			params: this.zstdDecompressOptions,
 		};
@@ -215,72 +151,83 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		};
 	}
 
-	static open<C extends Codec<number>>(options: BlobStoreOptions<C>): BlobStore<C> {
+	static open(options: BlobStoreOptions): BlobStore {
 		const self = new BlobStore(options);
-		if (self.cursor.stride.kind !== "fixed") {
-			throw new Error("BlobStore cursor codec must be fixed-stride");
-		}
 		Deno.mkdirSync(self.path, { recursive: true });
 		deleteTmpFiles(self.path);
-		self.cursorLock = Seqlock.open(cursorPath(self.path), self.cursor.stride.size, cursorPath(self.path));
-
-		const cursorSize = self.readCursor();
-		const tailIndex = Math.floor(cursorSize / self.chunkSize);
-
-		const indexSet = new Set<number>();
-		for (const file of Deno.readDirSync(self.path)) {
-			if (!file.isFile) continue;
-			if (!file.name.startsWith("chunk_")) continue;
-			if (file.name.endsWith(".tmp")) continue;
-			const name = file.name.endsWith(".zst") ? file.name.slice(0, -".zst".length) : file.name;
-			const index = Number(name.slice("chunk_".length));
-			if (!Number.isInteger(index)) continue;
-			indexSet.add(index);
-		}
-
-		for (let index = 0; index < tailIndex; index++) {
-			if (!indexSet.has(index)) throw new Error("bro your chunks are fucked, has some gaps and stuff");
-
-			const hasZst = existsSync(chunkZstPath(self.path, index));
-			const hasRaw = existsSync(chunkPath(self.path, index));
-
-			// Both present: raw always wins — drop the zst (crash-left half-committed compress).
-			if (hasZst && hasRaw) {
-				discardStaleCompressedForm(self.path, index);
-				continue;
-			}
-			if (hasRaw) {
-				const size = Deno.statSync(chunkPath(self.path, index)).size;
-				if (size !== self.chunkSize) {
-					throw new Error(`chunk ${index} has a weird size size=${size}, expected exactly ${self.chunkSize}`);
-				}
-				continue;
-			}
-			if (!hasZst) throw new Error(`chunk ${index} is missing both raw and compressed forms`);
-		}
-
-		// The tail is always raw — self-heal it into existence (e.g. brand-new store).
-		ensureChunkFile(self.path, tailIndex, self.chunkSize);
-
 		return self;
 	}
 
-	/** Tear-free read of the current logical size through the cursor seqlock. */
-	private readCursor(): number {
-		return this.cursorLock.read((bytes) => this.cursor.decode(bytes, 0)[0]);
+	isReadOnly(): boolean {
+		return this.readonly;
 	}
 
-	/**
-	 * Hand the current size to `mutate` and publish whatever size it returns
-	 * through the cursor seqlock. The ONLY place the cursor is written; readers
-	 * see the new size all-at-once, never torn. `mutate` should do any chunk
-	 * provisioning/cleanup before returning. Single-writer is an invariant.
-	 */
-	private withCursorLock<R>(mutate: (current: number) => { size: number; result: R }): R {
-		const current = this.readCursor();
-		const { size, result } = mutate(current);
-		this.cursorLock.write(this.cursor.encode(size));
-		return result;
+	sync() {
+		for (const map of this.chunkMaps) map?.mapping.flush();
+	}
+
+	size(): number {
+		return this.cursor;
+	}
+
+	next(maxItemSize: number, from: number = this.size()): number {
+		const room = this.chunkSize - (from % this.chunkSize);
+		return room < maxItemSize ? from + room : from;
+	}
+
+	reveal(size: number): void {
+		const current = this.size();
+		if (size < current) {
+			throw new RangeError([
+				`reveal size=${size} is behind the cursor (size=${current}).`,
+				`reveal can only move the cursor forward, never backward`,
+			].join("\n"));
+		}
+		const oldTailIndex = Math.floor(current / this.chunkSize);
+		const newTailIndex = Math.floor(size / this.chunkSize);
+		for (let index = oldTailIndex; index <= newTailIndex; index++) {
+			const hasZst = existsSync(chunkZstPath(this.path, index));
+			const hasRaw = existsSync(chunkPath(this.path, index));
+			if (hasZst && hasRaw) {
+				discardStaleCompressedForm(this.path, index);
+				continue;
+			}
+			ensureChunkFile(this.path, index, this.chunkSize);
+		}
+		this.cursor = size;
+	}
+
+	truncate(size: number): void {
+		if (size < 0) throw new RangeError(`truncate size=${size} must be non-negative`);
+		const current = this.size();
+		const oldTailIndex = Math.floor(current / this.chunkSize);
+		const newTailIndex = Math.floor(size / this.chunkSize);
+		const tailEnd = size % this.chunkSize;
+
+		// Delete high-to-low so a crash leaves a contiguous prefix [0..k],
+		// never a gap — a gap would brick recovery (open() throws).
+		for (let index = oldTailIndex; index > newTailIndex; index--) {
+			this.closeChunkMap(index);
+			const timer = this.inflatedTimers.get(index);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				this.inflatedTimers.delete(index);
+			}
+			removeAllChunkForms(this.path, index);
+		}
+
+		// Zero the surviving tail's stale bytes: truncate down to tailEnd
+		// (drops them), then back up to maxChunkSize (zero-fills).
+		this.closeChunkMap(newTailIndex);
+		const timer = this.inflatedTimers.get(newTailIndex);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.inflatedTimers.delete(newTailIndex);
+		}
+		if (existsSync(chunkZstPath(this.path, newTailIndex))) Deno.removeSync(chunkZstPath(this.path, newTailIndex));
+		ensureChunkFile(this.path, newTailIndex, this.chunkSize);
+		Deno.truncateSync(chunkPath(this.path, newTailIndex), tailEnd);
+		Deno.truncateSync(chunkPath(this.path, newTailIndex), this.chunkSize);
 	}
 
 	get<T extends Codec>(pointer: number, codec: T): [Codec.InferOutput<T>, number] {
@@ -288,14 +235,13 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		return codec.decode(bytes, offset);
 	}
 
-	// TODO: do we even need this as async anymore????
 	async getAsync<T extends Codec>(pointer: number, codec: T): Promise<[Codec.InferOutput<T>, number]> {
 		const [bytes, offset] = await this.viewAsync(pointer);
 		return codec.decode(bytes, offset);
 	}
 
 	private view(pointer: number): [bytes: Uint8Array, offset: number] {
-		const size = this.readCursor();
+		const size = this.size();
 		if (pointer >= size) {
 			throw new Error(`yeah you wanna read from offset=${pointer}, but all i have is size=${size}`);
 		}
@@ -314,7 +260,7 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 	}
 
 	private async viewAsync(pointer: number): Promise<[bytes: Uint8Array, offset: number]> {
-		const size = this.readCursor();
+		const size = this.size();
 		if (pointer >= size) {
 			throw new Error(`yeah you wanna read from offset=${pointer}, but all i have is size=${size}`);
 		}
@@ -332,28 +278,8 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		return [map.bytes, start];
 	}
 
-	/**
-	 * Where the next record will actually land: `from` (default `size()`), bumped
-	 * to the start of the next chunk when the current chunk has less than
-	 * `maxItemSize` room left. Deterministic — it doesn't depend on the record's
-	 * bytes — so a caller doing out-of-order `writeInto` fills can compute each
-	 * slot ahead of time and know nothing will straddle. `append` uses it too.
-	 */
-	nextItemPointer(maxItemSize: number, from: number = this.size()): number {
-		const room = this.chunkSize - (from % this.chunkSize);
-		return room < maxItemSize ? from + room : from;
-	}
-
-	/**
-	 * Write `bytes` at `offset`, which must be AT OR IN FRONT OF the current
-	 * cursor (`offset >= size()`). Throws otherwise — this can only fill
-	 * not-yet-live space, never overwrite committed data. The primitive for
-	 * parallel/out-of-order fills: reserve ahead of the cursor (via `resize`),
-	 * have workers fill disjoint sub-ranges, then advance `CURSOR` past them.
-	 * Single-chunk only; provisions the target chunk if it doesn't exist yet.
-	 */
-	writeInto(offset: number, bytes: Uint8Array): number {
-		const size = this.readCursor();
+	write(offset: number, bytes: Uint8Array): number {
+		const size = this.size();
 		if (offset < size) {
 			throw new Error(
 				`writeInto offset=${offset} is behind the cursor (size=${size}); writeInto can only fill space at or in front of the cursor, never overwrite live data`,
@@ -370,13 +296,15 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		}
 
 		ensureChunkFile(this.path, index, this.chunkSize);
-		this.writeIntoMap(offset, bytes);
+		const map = this.getChunkMap(index);
+		if (!map) throw new Error(`chunk ${index} missing its raw file for a write at offset=${offset}`);
+		map.bytes.set(bytes, start);
 
 		return bytes.byteLength;
 	}
 
-	unsafeMap(begin?: number, length?: number) {
-		const size = this.readCursor();
+	mmap(begin?: number, length?: number) {
+		const size = this.size();
 		begin ??= size;
 		if (begin < size) {
 			throw new Error(
@@ -398,79 +326,6 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		const map = this.getChunkMap(index);
 		if (!map) throw new Error(`chunk ${index} missing its raw file for a write at offset=${begin}`);
 		return map.bytes.subarray(begin, begin + length);
-	}
-
-	// Unchecked byte-copy shared by `append` and `writeInto`: store straight
-	// into the chunk's writable mapping (MAP_SHARED). Callers guarantee the
-	// offset is at/above the cursor and within a single existing chunk.
-	private writeIntoMap(offset: number, bytes: Uint8Array): void {
-		const index = Math.floor(offset / this.chunkSize);
-		const start = offset % this.chunkSize;
-		const map = this.getChunkMap(index);
-		if (!map) throw new Error(`chunk ${index} missing its raw file for a write at offset=${offset}`);
-		map.bytes.set(bytes, start);
-	}
-
-	sync() {
-		this.cursorLock.flush();
-		for (const map of this.chunkMaps) map?.mapping.flush();
-	}
-
-	size(): number {
-		return this.readCursor();
-	}
-
-	/**
-	 * Move the cursor to `size`, growing or shrinking the store. Growing just
-	 * provisions the new chunk file(s). Shrinking deletes orphaned higher-index
-	 * chunks and zeroes the new tail's stale bytes past the new logical end.
-	 * Only closes/unmaps the specific chunks being deleted/resized — the store
-	 * stays usable and the compression loop is left alone.
-	 */
-	resize(size: number): void {
-		if (size < 0) throw new Error(`resize size must be >= 0, got ${size}`);
-
-		// TODO: withCursorLock is only used where, why is it a seperate method???
-		this.withCursorLock((current) => {
-			if (size > current) {
-				const oldTailIndex = Math.floor(current / this.chunkSize);
-				const newTailIndex = Math.floor(size / this.chunkSize);
-				for (let index = oldTailIndex; index <= newTailIndex; index++) {
-					ensureChunkFile(this.path, index, this.chunkSize);
-				}
-			} else if (size < current) {
-				const oldTailIndex = Math.floor(current / this.chunkSize);
-				const newTailIndex = Math.floor(size / this.chunkSize);
-				const tailEnd = size % this.chunkSize;
-
-				// Delete high-to-low so a crash leaves a contiguous prefix [0..k],
-				// never a gap — a gap would brick recovery (open() throws).
-				for (let index = oldTailIndex; index > newTailIndex; index--) {
-					this.closeChunkMap(index);
-					const timer = this.inflatedTimers.get(index);
-					if (timer !== undefined) {
-						clearTimeout(timer);
-						this.inflatedTimers.delete(index);
-					}
-					removeAllChunkForms(this.path, index);
-				}
-
-				// Zero the surviving tail's stale bytes: truncate down to tailEnd
-				// (drops them), then back up to maxChunkSize (zero-fills).
-				this.closeChunkMap(newTailIndex);
-				const timer = this.inflatedTimers.get(newTailIndex);
-				if (timer !== undefined) {
-					clearTimeout(timer);
-					this.inflatedTimers.delete(newTailIndex);
-				}
-				if (existsSync(chunkZstPath(this.path, newTailIndex))) Deno.removeSync(chunkZstPath(this.path, newTailIndex));
-				ensureChunkFile(this.path, newTailIndex, this.chunkSize);
-				Deno.truncateSync(chunkPath(this.path, newTailIndex), tailEnd);
-				Deno.truncateSync(chunkPath(this.path, newTailIndex), this.chunkSize);
-			}
-
-			return { size, result: undefined };
-		});
 	}
 
 	// undefined = never probed. null = probed, raw file absent (compressed, not
@@ -672,7 +527,7 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		try {
 			while (!this.disposed) {
 				let dispatchedSomething = false;
-				const tailIndex = Math.floor(this.readCursor() / this.chunkSize);
+				const tailIndex = Math.floor(this.size() / this.chunkSize);
 
 				for (let index = 0; index < tailIndex && !this.disposed; index++) {
 					if (inFlight.has(index)) continue;
@@ -751,7 +606,6 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 		this.disposed = true;
 		this.compressPool?.dispose();
 		this.compressPool = undefined;
-		this.cursorLock.close();
 		for (const map of this.chunkMaps) map?.mapping.close();
 		this.chunkMaps.length = 0;
 		for (const timer of this.inflatedTimers.values()) clearTimeout(timer);

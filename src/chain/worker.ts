@@ -14,7 +14,7 @@ import { COINBASE_TXID, MAX_BLOCK_SIZE, MINUTE } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
-import { Atomic } from "~/libs/storage/Atomic.ts";
+import { Manifest } from "~/libs/storage/Manifest.ts";
 
 console.log("[chain] booting");
 
@@ -242,7 +242,7 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 					}),
 				};
 
-				txStoreOffset += chainStore.stores.tx.writeInto(txStoreOffset, StoredTx.encode(storedTx));
+				txStoreOffset += chainStore.stores.tx.write(txStoreOffset, StoredTx.encode(storedTx));
 			}
 		}
 

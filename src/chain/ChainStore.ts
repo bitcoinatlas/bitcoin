@@ -13,7 +13,7 @@ import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
 import { COINBASE_TXID, GB } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
-import { Atomic } from "~/libs/storage/Atomic.ts";
+import { Manifest } from "~/libs/storage/Manifest.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { GrowthOptions, HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
 
@@ -29,7 +29,7 @@ const GROWTH_OPTIONS: GrowthOptions = {
 
 export class ChainStore {
 	public readonly atomicSharedArrayBuffer: SharedArrayBuffer;
-	public readonly atomic = Atomic.open({
+	public readonly atomic = Manifest.open({
 		path: join(BASE_DATA_DIR, "meta"),
 		stores: {
 			header: ArrayStore.open({
