@@ -5,7 +5,7 @@ import { Store } from "~/libs/storage/Store.ts";
 export type ArrayStoreOptions<T extends FixedCodec> = {
 	path: string;
 	item: T;
-	readonly: boolean;
+	readOnly: boolean;
 	minChunkSize: number;
 };
 
@@ -30,7 +30,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		}
 		const blob = BlobStore.open({
 			path: options.path,
-			readonly: options.readonly,
+			readOnly: options.readOnly,
 			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);

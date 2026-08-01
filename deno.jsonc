@@ -24,9 +24,8 @@
 	"tasks": {
 		"test": "deno test -A src",
 		"check": "deno check src && deno lint src && deno task test",
-		"cache": "deno cache src/main.ts",
 		"bundle": "deno bundle --output=src/app/frontend/dist/app.js src/app/frontend/app.ts", // or add --watch
-		"start": "deno run --v8-flags=--expose-gc -A src/main.ts",
+		"start": "deno run --v8-flags=--expose-gc -A src/main.ts", // or add --watch
 		"inspect": "deno run --v8-flags=--expose-gc -A --inspect-brk src/main.ts",
 		"profile": "deno run --v8-flags=--expose-gc -A --cpu-prof src/main.ts",
 		"compile": "deno compile -A --output=out/bitcoin src/main.ts"

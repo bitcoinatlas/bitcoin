@@ -116,7 +116,7 @@ export type CompressionOptions = {
 export type BlobStoreOptions = {
 	path: string;
 	chunkSize: number;
-	readonly: boolean;
+	readOnly: boolean;
 };
 
 type MappedChunk = { mapping: Mmap; bytes: Uint8Array };
@@ -125,7 +125,7 @@ export class BlobStore extends Store implements Disposable {
 	public readonly path: string;
 	public readonly chunkSize: number;
 	private cursor: number;
-	private readonly: boolean;
+	private readOnly: boolean;
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;
@@ -135,7 +135,7 @@ export class BlobStore extends Store implements Disposable {
 	private constructor(options: BlobStoreOptions) {
 		super();
 		this.cursor = 0;
-		this.readonly = options.readonly;
+		this.readOnly = options.readOnly;
 		this.path = options.path;
 		this.chunkSize = options.chunkSize;
 		this.zstdCompressOptions = {};
@@ -159,7 +159,7 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	isReadOnly(): boolean {
-		return this.readonly;
+		return this.readOnly;
 	}
 
 	sync() {

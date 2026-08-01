@@ -71,7 +71,6 @@ function mapFile(path: string): MappedFile {
 	return { mapping, bytes: mapping.bytes() };
 }
 
-/** File size on disk, or `fallback` if the file doesn't exist. */
 function statSizeOr(path: string, fallback: number): number {
 	try {
 		return Deno.statSync(path).size;
@@ -82,17 +81,8 @@ function statSizeOr(path: string, fallback: number): number {
 }
 
 export type LoadFactorOptions = {
-	/** Target average entries per bucket (`entryCount / bucketCount`) — same meaning as e.g. Java `HashMap`'s load factor. `1` aims for ~1 entry/bucket, `4` aims for ~4 (fewer, cheaper buckets; longer chains). Must be > 0. */
 	target: number;
-	/** How far the live load factor may drift from `target` before a rehash. Must be >= 0. */
 	maxDrift: number;
-};
-
-export type GrowthOptions = {
-	/** WHEN to grow: whenever the entries file's free space (physical − logical size) would drop below this many bytes — including at `open()` (a brand-new file has 0 bytes, so creation itself triggers a grow). Must be an integer >= 0; `0` = grow only when full. */
-	headroom: number;
-	/** HOW MUCH to grow: bytes added to the entries file's physical size per grow (repeated until the pending write fits with headroom to spare). Must be an integer > 0. */
-	amount: number;
 };
 
 export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> = {
@@ -101,8 +91,6 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
 	key: Key;
 	value: Value;
 	loadFactor: LoadFactorOptions;
-	/** Pre-growth policy for the entries file. */
-	growth: GrowthOptions;
 };
 
 export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
