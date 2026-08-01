@@ -47,6 +47,22 @@ import { Store } from "~/libs/storage/Store.ts";
 	IndexedBlobStore, that can accept multiple indexes, and can accept unique or non-unique indexes.
 	it probably cant accept any codec, maybe only StructCodec shapes because it should be able to differentiate between the fields.
 	or have some kind of middleware function that lets us do any kind of indexing logic ever.
+
+	ok idea, each store including hashmap ones should be appendonly only, and truncate safe without compaction. so we can have a compaction.
+	we need a IndexedStore that has fields, it can modify fields based on what they are.
+
+	if you have a unique index on a field you dont have to move the value on the field else where. it can stay where at where its.
+	if its not unique it has to move it somewhere else and point back to it OR point to the first instance.
+
+	it should basically change the way things are encoded on the disk. by adding linked list or like chaging the shape of things,
+		while also managing the buckets and cursors, etc...
+		or we can have primitives and build our own stuff around it basically.
+
+	so if non works while maximizing ease and storage.
+	we can just say fuck it make a buckets primitive.
+	and design a special ChainStore that handles everything.
+
+	since we will not need compaction we can just use the BlobStore, which is more consistent with mmap because of the chunking.
 */
 
 /**
