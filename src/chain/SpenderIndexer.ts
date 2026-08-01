@@ -1,3 +1,4 @@
+import { controlSab } from "~/libs/storage/control.ts";
 import { U48 } from "~/codec/primitives/U48.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
@@ -76,6 +77,7 @@ export class SpenderIndexer {
 				Deno.kill(Deno.pid);
 			});
 			worker.addEventListener("message", (event) => this.onMessage(i, event.data));
+			worker.postMessage({ control: controlSab() }); // fence the spender isolate before any index task
 			this.workers[i] = worker;
 			this.tasks[i] = null;
 		}

@@ -10,29 +10,12 @@ import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxIdPointer } from "~/codec/stored/StoredTxIdPointer.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { COINBASE_TXID, GB, MINUTE } from "~/constants.ts";
+import { COINBASE_TXID, GB } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Atomic } from "~/libs/storage/Atomic.ts";
-import { BlobStore, CompressionOptions } from "~/libs/storage/BlobStore.ts";
+import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { GrowthOptions, HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
-
-const COMPRESSION_OPTIONS: CompressionOptions = {
-	maxInflatedChunkAge: 15 * MINUTE,
-	maxInflatedChunks: 8,
-	zstd: {
-		compress: {
-			compressionLevel: 19,
-			enableLongDistanceMatching: 1,
-			windowLog: 27, // maybe make it 24 later?
-			checksumFlag: 1, // 4-byte frame checksum, cheap integrity guard
-			contentSizeFlag: 1, // size in frame header — works on the sync path,
-		},
-		decompress: {
-			windowLogMax: 27,
-		},
-	},
-};
 
 const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	target: .7,
@@ -45,6 +28,7 @@ const GROWTH_OPTIONS: GrowthOptions = {
 };
 
 export class ChainStore {
+	public readonly atomicSharedArrayBuffer: SharedArrayBuffer;
 	public readonly atomic = Atomic.open({
 		path: join(BASE_DATA_DIR, "meta"),
 		stores: {
@@ -101,11 +85,12 @@ export class ChainStore {
 	});
 	public readonly stores = this.atomic.stores;
 
-	private constructor() {}
+	private constructor(atomicSharedArrayBuffer?: SharedArrayBuffer) {
+		this.atomicSharedArrayBuffer = atomicSharedArrayBuffer ?? new SharedArrayBuffer();
+	}
 
-	private static main_: ChainStore;
-	public static main() {
-		return this.main_ ??= new ChainStore();
+	public static open(atomicSharedArrayBuffer?: SharedArrayBuffer) {
+		return new ChainStore(atomicSharedArrayBuffer);
 	}
 
 	public getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
@@ -116,7 +101,4 @@ export class ChainStore {
 	}
 }
 
-export const chainStore = ChainStore.main();
-if (self.name === "chain") {
-	chainStore.stores.tx.startCompression(COMPRESSION_OPTIONS);
-}
+export const chainStore = ChainStore.open();

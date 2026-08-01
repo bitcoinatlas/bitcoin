@@ -2,14 +2,14 @@ import { Codec } from "@nomadshiba/codec";
 import { Advice, Mmap } from "@nomadshiba/mmap";
 import { existsSync } from "@std/fs";
 import { join } from "@std/path";
+import { MiB, SECOND } from "~/constants.ts";
+import { PARALLELISM_THREADS } from "~/env.ts";
+import { Store } from "~/libs/storage/Store.ts";
+import { CompressWorkerPool } from "./CompressWorkerPool.ts";
+
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import zlib from "node:zlib";
-import { MiB, SECOND } from "~/constants.ts";
-import { PARALLELISM_THREADS } from "~/env.ts";
-import { Seqlock } from "~/libs/storage/Seqlock.ts";
-import { Store } from "~/libs/storage/Store.ts";
-import { CompressWorkerPool } from "./CompressWorkerPool.ts";
 
 const COMPRESS_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor(PARALLELISM_THREADS * .5)));
 
@@ -189,7 +189,6 @@ export class BlobStore<C extends Codec<number>> extends Store implements Disposa
 	public readonly path: string;
 	public readonly cursor: C;
 	public readonly chunkSize: number;
-	private cursorLock!: Seqlock; // opened in open(); holds the logical size
 	private compression: CompressionOptions | undefined;
 	private zstdCompressOptions: Record<number, number>;
 	private zstdDecompressOptions: Record<number, number>;

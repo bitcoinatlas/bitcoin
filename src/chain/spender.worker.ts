@@ -1,3 +1,4 @@
+import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { BytesCodec, VarInt } from "@nomadshiba/codec";
 import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
@@ -34,6 +35,7 @@ const ms = (t: number) => (performance.now() - t) | 0;
 const { block, tx, spender } = chainStore.stores;
 
 self.addEventListener("message", (event) => {
+	if (tryAdoptControl(event.data)) return; // control block arrives before any index task
 	const { type, from, to } = event.data as { type: string; from: number; to: number };
 	if (type !== "index") return;
 	try {

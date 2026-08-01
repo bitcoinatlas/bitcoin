@@ -1,3 +1,4 @@
+import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
 import { chainStore } from "~/chain/ChainStore.ts";
@@ -77,6 +78,7 @@ const lastBlockAt = new Map<Peer, number>(); // peer -> last delivered-a-wanted-
 
 self.onmessage = async (event) => {
 	console.log("[p2p] main-port message event, ports:", event.ports.length, "data:", event.data);
+	tryAdoptControl(event.data); // fence this isolate's seqlocks before touching stores
 	port = event.ports[0]!;
 	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
 	port.start();

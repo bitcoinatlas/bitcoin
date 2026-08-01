@@ -1,6 +1,7 @@
 import { ARGS } from "~/env.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
+import { controlSab, initRootControl, markReady } from "~/libs/storage/control.ts";
 
 // Surface anything a worker throws — at load or at runtime. Without this an
 // uncaught error in a worker dies silently and you see nothing at all.
@@ -26,6 +27,12 @@ if (import.meta.main) {
 		Deno.kill(Deno.pid, "SIGKILL");
 	});
 
+	// The one shared-memory control block for the whole process. Created before
+	// any store access so main's own reads/writes are fenced; its `.sab` is
+	// forwarded to every worker that touches a store below.
+	initRootControl();
+	markReady();
+
 	console.log("[main] rolling back to last pinned sizes");
 	chainStore.atomic.rollback();
 
@@ -49,12 +56,13 @@ if (import.meta.main) {
 	// a worker before its listener attaches are queued by the runtime, so there's
 	// nothing to wait for — the workers just start the moment they have the port.
 	const syncMessageChannel = new MessageChannel();
-	p2pWorker.postMessage(null, [syncMessageChannel.port1]);
-	chainWorker.postMessage(null, [syncMessageChannel.port2]);
+	p2pWorker.postMessage({ control: controlSab() }, [syncMessageChannel.port1]);
+	chainWorker.postMessage({ control: controlSab() }, [syncMessageChannel.port2]);
 	console.log("[main] sync ports handed over");
 
 	const serverWorker = wireWorker("server", new URL("./app/app.worker.ts", import.meta.url));
 	await new Promise((resolve) => serverWorker.addEventListener("message", resolve, { once: true }));
+	serverWorker.postMessage({ control: controlSab() });
 	console.log("[main] server worker up");
 
 	if (!ARGS.background) {

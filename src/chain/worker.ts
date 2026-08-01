@@ -1,3 +1,4 @@
+import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { Codec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { delay } from "@std/async";
@@ -9,10 +10,11 @@ import { StoredTx } from "~/codec/stored/StoredTx.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
-import { COINBASE_TXID, MAX_BLOCK_SIZE } from "~/constants.ts";
+import { COINBASE_TXID, MAX_BLOCK_SIZE, MINUTE } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+import { Atomic } from "~/libs/storage/Atomic.ts";
 
 console.log("[chain] booting");
 
@@ -52,9 +54,27 @@ function recordBlocks(n: number, tipHeight: number): void {
 
 self.onmessage = async (event) => {
 	console.log("[chain] main-port message event, ports:", event.ports.length, "data:", event.data);
+	tryAdoptControl(event.data); // fence this isolate's seqlocks before touching stores
 	const port = event.ports[0]!;
 	prepare(port);
 	port.start();
+
+	chainStore.stores.tx.startCompression({
+		maxInflatedChunkAge: 15 * MINUTE,
+		maxInflatedChunks: 8,
+		zstd: {
+			compress: {
+				compressionLevel: 19,
+				enableLongDistanceMatching: 1,
+				windowLog: 27, // maybe make it 24 later?
+				checksumFlag: 1, // 4-byte frame checksum, cheap integrity guard
+				contentSizeFlag: 1, // size in frame header — works on the sync path,
+			},
+			decompress: {
+				windowLogMax: 27,
+			},
+		},
+	});
 
 	while (true) {
 		try {
