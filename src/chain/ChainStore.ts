@@ -15,16 +15,11 @@ import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Manifest } from "~/libs/storage/Manifest.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
-import { GrowthOptions, HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
+import { HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
 
 const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	target: .7,
 	maxDrift: .15,
-};
-
-const GROWTH_OPTIONS: GrowthOptions = {
-	amount: 1 * GB,
-	headroom: 1 * GB,
 };
 
 export class ChainStore {
@@ -35,13 +30,11 @@ export class ChainStore {
 			header: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "header"),
 				item: StoredBlockHeader,
-				cursor: U40,
 				minChunkSize: 1 * GB,
 			}),
 			block: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "block"),
 				item: StoredBlockInfo,
-				cursor: U40,
 				minChunkSize: 1 * GB,
 			}),
 			blockhash: HashMapStore.open({
@@ -50,11 +43,10 @@ export class ChainStore {
 				value: U32, // block height
 				pointer: U40,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				growth: GROWTH_OPTIONS,
+				writable: self.name === "p2p",
 			}),
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
-				cursor: StoredTxPointer,
 				chunkSize: 1 * GB,
 			}),
 			txid: HashMapStore.open({
@@ -63,7 +55,7 @@ export class ChainStore {
 				value: StoredTxPointer, // pointer to tx block store
 				pointer: StoredTxIdPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				growth: GROWTH_OPTIONS,
+				writable: self.name === "chain",
 			}),
 			pubkey: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkey"),
@@ -71,7 +63,7 @@ export class ChainStore {
 				value: StoredTxIdPointer, // pointer to last tx of the pubkey at txid hashmap store
 				pointer: StoredPubkeyPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				growth: GROWTH_OPTIONS,
+				writable: self.name === "chain",
 			}),
 			spender: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "spender"),
@@ -79,7 +71,7 @@ export class ChainStore {
 				value: StoredTxIdPointer, // spender tx
 				pointer: U48,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				growth: GROWTH_OPTIONS,
+				writable: self.name === "chain",
 			}),
 		},
 	});

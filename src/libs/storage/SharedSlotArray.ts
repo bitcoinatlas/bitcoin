@@ -55,7 +55,7 @@ export class SharedSlotArray {
 		return Number(Atomics.load(this.cursor, 0));
 	}
 
-	grow(count: number): number {
+	resize(count: number): number {
 		if (this.readOnly) throw new Error("SharedSlotArray is read-only");
 		return Number(Atomics.add(this.cursor, 0, BigInt(count)));
 	}

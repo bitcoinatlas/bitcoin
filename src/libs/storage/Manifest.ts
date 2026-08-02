@@ -32,7 +32,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				return [name, { store, channel }];
 			}),
 		);
-		this.db = new DatabaseSync(join(this.path, "db.sqlite"));
+		this.db = new DatabaseSync(join(this.path, "manifest.sqlite"));
 		this.db.exec(`PRAGMA journal_mode = WAL;`);
 		this.db.exec(`PRAGMA busy_timeout = 5000;`);
 		this.db.exec(`CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, size INTEGER NOT NULL);`);

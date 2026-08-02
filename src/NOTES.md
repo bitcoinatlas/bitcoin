@@ -1,3 +1,18 @@
+## 8
+
+after current WIP is done, create a root dir called project/ and in it create other project dirs with their own child deno.json
+
+then use deno workspaces and seperate things better.
+
+probably workspaces like:
+```
+shared/
+node/
+app/
+app/frontend/
+app/backend/
+```
+
 ## 7 
 
 ok so we now have a rewritten version of consume path, i think first thing we need to do is make this make this start working again.

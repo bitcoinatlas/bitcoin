@@ -1,5 +1,4 @@
 export abstract class Store {
-	abstract isReadOnly(): boolean;
 	/** size or length or count etc */
 	abstract size(): number;
 	/** reveal the underlying storage by moving cursors */

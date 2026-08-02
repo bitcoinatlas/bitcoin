@@ -5,7 +5,6 @@ import { Store } from "~/libs/storage/Store.ts";
 export type ArrayStoreOptions<T extends FixedCodec> = {
 	path: string;
 	item: T;
-	readOnly: boolean;
 	minChunkSize: number;
 };
 
@@ -30,14 +29,9 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		}
 		const blob = BlobStore.open({
 			path: options.path,
-			readOnly: options.readOnly,
 			chunkSize: (Math.ceil(options.minChunkSize / options.item.stride.size) * options.item.stride.size) || options.item.stride.size,
 		});
 		return new ArrayStore(blob, options);
-	}
-
-	isReadOnly(): boolean {
-		return this.blob.isReadOnly();
 	}
 
 	size(): number {
@@ -103,14 +97,18 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return value;
 	}
 
+	mmap(index: number) {
+		return this.blob.mmap(index * this.codec.stride.size, this.codec.stride.size);
+	}
+
 	push(item: Codec.InferInput<T>): number {
 		const pointer = this.blob.next(this.codec.stride.size);
-		const size = pointer + this.blob.write(pointer, this.codec.encode(item));
+		const size = pointer + this.blob.prepare(pointer, this.codec.encode(item));
 		this.blob.reveal(size);
 		return pointer / this.codec.stride.size;
 	}
 
-	set(index: number, item: Codec.InferInput<T>): void {
+	prepare(index: number, item: Codec.InferInput<T>): void {
 		const size = this.size();
 		if (index < size) {
 			throw new RangeError([
@@ -118,7 +116,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 				`set can only fill space at or in front of the cursor`,
 			].join("\n"));
 		}
-		this.blob.write(index * this.codec.stride.size, this.codec.encode(item));
+		this.blob.prepare(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
 	sync(): void {
