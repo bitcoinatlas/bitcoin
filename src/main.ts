@@ -23,7 +23,7 @@ if (import.meta.main) {
 	Deno.addSignalListener("SIGINT", () => Deno.kill(Deno.pid, "SIGKILL"));
 
 	console.log("[main] rolling back to last pinned sizes");
-	chainStore.atomic.rollback();
+	chainStore.atomic.recover();
 
 	if (chainStore.stores.header.size() === 0) {
 		const height = chainStore.stores.header.push(GENESIS_BLOCK_HEADER_DECODED);

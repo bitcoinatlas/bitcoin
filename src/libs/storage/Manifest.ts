@@ -17,7 +17,8 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 	private readonly db: DatabaseSync;
 	private readonly storeMap: ReadonlyMap<string, { store: Store; channel: BroadcastChannel }>;
 	private readonly pinQuery: StatementSync;
-	private readonly getPinsQuery: StatementSync;
+	private readonly revealQuery: StatementSync;
+	private readonly getSizesQuery: StatementSync;
 
 	private constructor(options: ManifestOptions<T>) {
 		this.path = options.path;
@@ -35,10 +36,15 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		this.db = new DatabaseSync(join(this.path, "manifest.sqlite"));
 		this.db.exec(`PRAGMA journal_mode = WAL;`);
 		this.db.exec(`PRAGMA busy_timeout = 5000;`);
-		this.db.exec(`CREATE TABLE IF NOT EXISTS pins (name TEXT PRIMARY KEY, size INTEGER NOT NULL);`);
-		this.getPinsQuery = this.db.prepare("SELECT name, size FROM pins");
+		this.db.exec(
+			`CREATE TABLE IF NOT EXISTS sizes (name TEXT PRIMARY KEY, pin INTEGER NOT NULL DEFAULT 0, reveal INTEGER NOT NULL DEFAULT 0);`,
+		);
+		this.getSizesQuery = this.db.prepare("SELECT * FROM sizes");
 		this.pinQuery = this.db.prepare(
-			"INSERT INTO pins (name, size) VALUES (:name, :size) ON CONFLICT(name) DO UPDATE SET size = excluded.size;",
+			`INSERT INTO sizes (name, pin) VALUES (:name, :size) ON CONFLICT(name) DO UPDATE SET pin = excluded.pin;`,
+		);
+		this.revealQuery = this.db.prepare(
+			`INSERT INTO sizes (name, reveal) VALUES (:name, :size) ON CONFLICT(name) DO UPDATE SET reveal = excluded.reveal;`,
 		);
 	}
 
@@ -54,9 +60,24 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 			for (const name of names) {
 				const value = this.storeMap.get(name);
 				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
-				const { store, channel } = value;
+				const { store } = value;
 				store.sync();
 				const size = store.size();
+				this.revealQuery.run({ name, size });
+			}
+			this.db.exec("COMMIT;");
+		} catch (reason) {
+			this.db.exec("ROLLBACK;");
+			throw reason;
+		}
+		try {
+			this.db.exec("BEGIN IMMEDIATE;");
+			for (const name of names) {
+				const value = this.storeMap.get(name);
+				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
+				const { store, channel } = value;
+				const size = store.size();
+				store.persist();
 				this.pinQuery.run({ name, size });
 				channel.postMessage(size);
 			}
@@ -67,17 +88,15 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		}
 	}
 
-	rollback(): void {
-		const pins = this.getPinsQuery.all() as { name: string; size: number }[];
-		for (const { name, size } of pins) {
+	recover(): void {
+		const pins = this.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
+		for (const { name, pin, reveal } of pins) {
 			const value = this.storeMap.get(name);
-			if (!value) {
-				throw new Error(`Pinned store "${name}" does not exist.`);
-			}
+			if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
 			const { store } = value;
-			const current = store.size();
-			if (size > current) store.reveal(size);
-			else if (size < current) store.truncate(size);
+			store.reveal(reveal);
+			if (pin === reveal) continue;
+			store.truncate(pin);
 		}
 	}
 

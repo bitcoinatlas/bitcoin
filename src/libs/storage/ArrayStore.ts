@@ -42,6 +42,10 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return this.blob.reveal(size * this.codec.stride.size);
 	}
 
+	persist(): void {
+		return this.blob.persist();
+	}
+
 	truncate(size: number): void {
 		return this.blob.truncate(size * this.codec.stride.size);
 	}

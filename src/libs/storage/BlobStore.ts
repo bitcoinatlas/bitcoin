@@ -81,6 +81,8 @@ export class BlobStore extends Store implements Disposable {
 		this.cursor = size;
 	}
 
+	persist(): void {}
+
 	truncate(size: number): void {
 		if (size < 0) throw new RangeError(`truncate size=${size} must be non-negative`);
 		const current = this.size();
