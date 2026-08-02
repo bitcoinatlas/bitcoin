@@ -79,26 +79,21 @@ import { Store } from "~/libs/storage/Store.ts";
 	also like idk how much forward i should use recovery.
 	so we might actually have two methods?
 
-	reveal() and persist()
+	UPDATE:
+	so the Manifest now knows our previous size and what we were trying to reveal.
+	so now during Manifest.recover() it manifest first calls reveal(reveal) to what we were trying to pin() to.
+	then after that it calls truncate(pin) IF `pin != reveal` so truncate basically means undo so it basically tells us.
+	act like this is your size, and undo this part. without telling it to use directly. which makes sense.
 
-	both take a size value, difference is reveal() just updates the size, decides how much should be revealed.
-	and persist() gurannted to be called
+	---
 
-	...
+	and also now pin() calls persist() on the store, so persist() only gets called on the worker that called pin()
+	so it runs once, and basically lets you update derived data such as our buckets here during pinning.
+	so it lets you know pinning is happening and telling you to persist new stuff basically.
 
-	or wait wait i have an idea.
-
-	so we have truncate already right?
-
-	so truncate means undo basically.
-
-	so what can we do is, we first record soon to be revealed size.
-	then normal pin size during pin()
-
-	then during recovery, if two sizes are same its fine.
-	but if they are not same, we set soon to be reveal first.
-	THEN call truncate on it. to tell the store to undo that part securely?
-	makes sense?
+	based on logic requirements we might need to persist() at the end of recovery as well maybe?
+	so store can keep track of when was persist called last time at what size.
+	but we might need it probably. we will see.
 */
 
 /** entries per bucket */
