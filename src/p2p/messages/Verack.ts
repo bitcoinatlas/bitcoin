@@ -2,7 +2,7 @@ import { Codec, Stride } from "@nomadshiba/codec";
 import { type PeerMessage } from "~/p2p/Peer.ts";
 
 class VerackCodec extends Codec<null> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 0 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 0 };
 
 	public encoder(_data: null, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(_data: null, target: Uint8Array, offset: number): number;

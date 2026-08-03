@@ -42,7 +42,7 @@ export type WireTx = {
 };
 
 class WireTxCodec extends Codec<WireTx, WireTxIn> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(tx: WireTxIn, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(tx: WireTxIn, target: Uint8Array, offset: number): number;

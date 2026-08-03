@@ -52,7 +52,7 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		this.buckets = SharedSlotArray.open({ path: join(options.path, "buckets"), writable: options.writable, minChunkSize: 1 << 20 });
 	}
 
-	static open<Key extends Codec, Value extends Codec>(
+	public static open<Key extends Codec, Value extends Codec>(
 		options: HashMapStoreOptions<Key, Value>,
 	): HashMapStore<Key, Value> {
 		if (options.maxEntrySize <= 0) throw new Error("maxEntrySize must be positive");
@@ -70,26 +70,26 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		return this.hashKey(keyBytes) % this.bucketCount;
 	}
 
-	next(entrySize: number): number {
+	public next(entrySize: number): number {
 		return this.entries.next(entrySize + POINTER_SIZE, this.cursor);
 	}
 
-	mmap(): Uint8Array {
+	public mmap(): Uint8Array {
 		return this.entries.mmap(this.cursor);
 	}
 
-	commit(endOffset: number): void {
+	public commit(endOffset: number): void {
 		if (!this.writable) throw new Error("commit on read-only store");
 		this.cursor = endOffset;
 	}
 
-	reveal(size: number): void {
+	public reveal(size: number): void {
 		if (size < 0) throw new RangeError(`reveal ${size} must be non-negative`);
 		this.cursor = size;
 		this.persistedSize = size;
 	}
 
-	persist(newSize: number): void {
+	public persist(newSize: number): void {
 		if (!this.writable) throw new Error("persist on read-only store");
 		this.buildIncremental(newSize);
 		if (this.entryCount > 0) {
@@ -100,7 +100,7 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		}
 	}
 
-	truncate(size: number): void {
+	public truncate(size: number): void {
 		if (!this.writable) throw new Error("truncate on read-only store");
 		if (size < 0) throw new RangeError(`truncate ${size} must be non-negative`);
 		this.fullRebuild(size);
@@ -173,17 +173,17 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		return undefined;
 	}
 
-	get(key: Codec.InferInput<Key>): Codec.InferOutput<Value> | undefined {
+	public get(key: Codec.InferInput<Key>): Codec.InferOutput<Value> | undefined {
 		const found = this.findEntry(this.key.encode(key));
 		if (!found) return undefined;
 		return this.readValue(found.offset);
 	}
 
-	getPointer(key: Codec.InferInput<Key>): number | undefined {
+	public getPointer(key: Codec.InferInput<Key>): number | undefined {
 		return this.findEntry(this.key.encode(key))?.offset;
 	}
 
-	getValueAndPointer(key: Codec.InferInput<Key>): [Codec.InferOutput<Value>, number] | undefined {
+	public getValueAndPointer(key: Codec.InferInput<Key>): [Codec.InferOutput<Value>, number] | undefined {
 		const found = this.findEntry(this.key.encode(key));
 		if (!found) return undefined;
 		return [this.readValue(found.offset), found.offset];
@@ -194,7 +194,7 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		return this.keyValueCodec.decode(view, POINTER_SIZE)[0].value;
 	}
 
-	has(key: Codec.InferInput<Key>): boolean {
+	public has(key: Codec.InferInput<Key>): boolean {
 		return this.get(key) !== undefined;
 	}
 
@@ -204,19 +204,19 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		return out;
 	}
 
-	override size(): number {
+	public override size(): number {
 		return this.cursor;
 	}
 
-	override sync(): void {
+	public override sync(): void {
 		this.entries.sync();
 	}
 
-	close(): void {
+	public close(): void {
 		this.entries.close();
 	}
 
-	[Symbol.dispose](): void {
+	public [Symbol.dispose](): void {
 		this.close();
 	}
 }

@@ -4,7 +4,7 @@ export class NullableNumaric<T extends Codec<number>> extends Codec<Codec.InferO
 	public override stride: T["stride"];
 	private readonly numaric: T;
 
-	constructor(numaric: T) {
+	public constructor(numaric: T) {
 		super();
 		this.numaric = numaric;
 		this.stride = numaric.stride;

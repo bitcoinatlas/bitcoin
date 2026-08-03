@@ -27,23 +27,23 @@ export class SharedSlotArray {
 		this.slotsPerChunk = this.chunkSize / BYTES_PER_SLOT;
 
 		if (this.writable) Deno.mkdirSync(this.path, { recursive: true });
-		const cursorMapping = this.#open(join(this.path, "CURSOR"), BYTES_PER_SLOT);
+		const cursorMapping = this.open(join(this.path, "CURSOR"), BYTES_PER_SLOT);
 		this.cursor = new BigUint64Array(cursorMapping.buffer(), 0, 1);
 	}
 
-	static open(options: SharedSlotArrayOptions): SharedSlotArray {
+	public static open(options: SharedSlotArrayOptions): SharedSlotArray {
 		return new SharedSlotArray(options);
 	}
 
-	#open(file: string, bytes: number): Mmap {
+	private open(file: string, bytes: number): Mmap {
 		if (!this.writable) return Mmap.openSync(file, { write: false });
 		return Mmap.openSync(file, { write: true, ensureFileSize: bytes });
 	}
 
-	#chunk(chunkIndex: number): BigUint64Array {
+	private chunk(chunkIndex: number): BigUint64Array {
 		let chunk = this.chunks.get(chunkIndex);
 		if (!chunk) {
-			const mapping = this.#open(join(this.path, String(chunkIndex)), this.chunkSize);
+			const mapping = this.open(join(this.path, String(chunkIndex)), this.chunkSize);
 			const slots = new BigUint64Array(mapping.buffer(), 0, this.slotsPerChunk);
 			chunk = { mapping, slots };
 			this.chunks.set(chunkIndex, chunk);
@@ -51,23 +51,23 @@ export class SharedSlotArray {
 		return chunk.slots;
 	}
 
-	size(): number {
+	public size(): number {
 		return Number(Atomics.load(this.cursor, 0));
 	}
 
-	resize(count: number): number {
+	public resize(count: number): number {
 		if (!this.writable) throw new Error("SharedSlotArray is read-only");
 		return Number(Atomics.add(this.cursor, 0, BigInt(count)));
 	}
 
-	set(index: number, value: bigint): void {
+	public set(index: number, value: bigint): void {
 		if (!this.writable) throw new Error("SharedSlotArray is read-only");
 		const local = index % this.slotsPerChunk;
-		Atomics.store(this.#chunk((index - local) / this.slotsPerChunk), local, value);
+		Atomics.store(this.chunk((index - local) / this.slotsPerChunk), local, value);
 	}
 
-	get(index: number): bigint {
+	public get(index: number): bigint {
 		const local = index % this.slotsPerChunk;
-		return Atomics.load(this.#chunk((index - local) / this.slotsPerChunk), local);
+		return Atomics.load(this.chunk((index - local) / this.slotsPerChunk), local);
 	}
 }

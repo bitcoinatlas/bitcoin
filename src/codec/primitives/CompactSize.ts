@@ -3,7 +3,7 @@ import { MAX_BLOCK_WEIGHT } from "~/constants.ts";
 import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 
 export class CompactSizeCodec extends Codec<number> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(n: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(n: number, target: Uint8Array, offset: number): number;

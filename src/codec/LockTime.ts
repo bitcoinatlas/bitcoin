@@ -11,9 +11,9 @@ export type LockTime =
 // - < 500_000_000 = block height
 // - >= 500_000_000 = timestamp
 export class LockTimeCodec extends Codec<LockTime> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
 
-	static toU32(value: LockTime): number {
+	public static toU32(value: LockTime): number {
 		switch (value.kind) {
 			case "none":
 				return 0;
@@ -24,7 +24,7 @@ export class LockTimeCodec extends Codec<LockTime> {
 		}
 	}
 
-	static fromU32(value: number): LockTime {
+	public static fromU32(value: number): LockTime {
 		if (value === 0) return { kind: "none" };
 		if (value < 500_000_000) return { kind: "block", height: value };
 		return { kind: "time", timestamp: value };

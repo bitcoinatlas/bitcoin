@@ -13,7 +13,7 @@ export type RouteResponseOptions<TData = unknown> =
     | { status: keyof PickByValue<typeof STATUS_CODE, ErrorStatus>; message?: string; response?: ResponseInit };
 
 export class RouteResponse<TData = unknown> extends Response {
-    constructor(options: RouteResponseOptions<TData>) {
+    public constructor(options: RouteResponseOptions<TData>) {
         const status = STATUS_CODE[options.status];
         const headers = new Headers(options.response?.headers ?? {});
         let body: BodyInit | null = null;

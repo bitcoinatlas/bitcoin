@@ -3,7 +3,7 @@ import { type PeerMessage } from "~/p2p/Peer.ts";
 import { Uint8ArrayView } from "~/libs/collections/Uint8ArrayView.ts";
 
 class PingPongCodec extends Codec<bigint> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 8 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 8 };
 
 	public encoder(nonce: bigint, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(nonce: bigint, target: Uint8Array, offset: number): number;

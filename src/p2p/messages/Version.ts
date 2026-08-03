@@ -50,7 +50,7 @@ function decodeIP(bytes: Uint8Array): string {
 }
 
 class VersionCodec extends Codec<VersionPayload> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(data: VersionPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(data: VersionPayload, target: Uint8Array, offset: number): number;

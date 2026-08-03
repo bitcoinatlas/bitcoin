@@ -1,5 +1,5 @@
 import { ArrayCodec, type Codec, type FixedCodec } from "@nomadshiba/codec";
-import { BlobStore } from "./BlobStore.ts";
+import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
 export type ArrayStoreOptions<T extends FixedCodec> = {
@@ -20,7 +20,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		this.path = options.path;
 	}
 
-	static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
+	public static open<T extends FixedCodec>(options: ArrayStoreOptions<T>): ArrayStore<T> {
 		if (options.minChunkSize < 0) {
 			throw new RangeError(`minChunkSize must be non-negative, got ${options.minChunkSize}`);
 		}
@@ -34,27 +34,27 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return new ArrayStore(blob, options);
 	}
 
-	size(): number {
+	public size(): number {
 		return this.blob.size() / this.codec.stride.size;
 	}
 
-	reveal(size: number): void {
+	public reveal(size: number): void {
 		return this.blob.reveal(size * this.codec.stride.size);
 	}
 
-	persist(size: number): void {
+	public persist(size: number): void {
 		return this.blob.persist(size);
 	}
 
-	truncate(size: number): void {
+	public truncate(size: number): void {
 		return this.blob.truncate(size * this.codec.stride.size);
 	}
 
-	next(offset = this.size()): number {
+	public next(offset = this.size()): number {
 		return this.blob.next(this.codec.stride.size, offset * this.codec.stride.size) / this.codec.stride.size;
 	}
 
-	get(index: number): Codec.InferOutput<T> | undefined {
+	public get(index: number): Codec.InferOutput<T> | undefined {
 		const length = this.size();
 		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
@@ -64,7 +64,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return value;
 	}
 
-	async getAsync(index: number): Promise<Codec.InferOutput<T> | undefined> {
+	public async getAsync(index: number): Promise<Codec.InferOutput<T> | undefined> {
 		const length = this.size();
 		if (index < 0) {
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
@@ -77,7 +77,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return value;
 	}
 
-	slice(start: number, end: number): Codec.InferOutput<T>[] {
+	public slice(start: number, end: number): Codec.InferOutput<T>[] {
 		const length = this.size();
 		if (end > length) end = length;
 		if (start < 0) {
@@ -89,7 +89,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return value;
 	}
 
-	async sliceAsync(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
+	public async sliceAsync(start: number, end: number): Promise<Codec.InferOutput<T>[]> {
 		const size = this.size();
 		if (end > size) end = size;
 		if (start < 0) {
@@ -101,18 +101,18 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return value;
 	}
 
-	mmap(index: number) {
+	public mmap(index: number) {
 		return this.blob.mmap(index * this.codec.stride.size, this.codec.stride.size);
 	}
 
-	push(item: Codec.InferInput<T>): number {
+	public push(item: Codec.InferInput<T>): number {
 		const pointer = this.blob.next(this.codec.stride.size);
 		const size = pointer + this.blob.commit(pointer, this.codec.encode(item));
 		this.blob.reveal(size);
 		return pointer / this.codec.stride.size;
 	}
 
-	commit(index: number, item: Codec.InferInput<T>): void {
+	public commit(index: number, item: Codec.InferInput<T>): void {
 		const size = this.size();
 		if (index < size) {
 			throw new RangeError([
@@ -123,15 +123,15 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		this.blob.commit(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
-	sync(): void {
+	public sync(): void {
 		this.blob.sync();
 	}
 
-	close(): void {
+	public close(): void {
 		this.blob.close();
 	}
 
-	[Symbol.dispose](): void {
+	public [Symbol.dispose](): void {
 		this.close();
 	}
 }

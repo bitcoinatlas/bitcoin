@@ -18,7 +18,7 @@ export type GetDataPayload = {
 };
 
 class GetDataCodec extends Codec<GetDataPayload> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(data: GetDataPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(data: GetDataPayload, target: Uint8Array, offset: number): number;

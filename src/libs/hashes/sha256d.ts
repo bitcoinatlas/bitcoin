@@ -37,7 +37,7 @@ export class SHA256D extends Hash<SHA256D> {
 		return to;
 	}
 
-	override clone(): SHA256D {
+	public override clone(): SHA256D {
 		return this._cloneInto();
 	}
 }

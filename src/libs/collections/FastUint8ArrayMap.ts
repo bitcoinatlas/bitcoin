@@ -44,7 +44,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	private threshold: number;
 	private size_ = 0;
 
-	constructor(capacity = 16) {
+	public constructor(capacity = 16) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(Math.max(1, capacity))));
 		this.keySlots = new Array(pow2);
 		this.hashes = new Uint32Array(pow2);
@@ -53,16 +53,16 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		this.threshold = (pow2 * LOAD) | 0;
 	}
 
-	[Symbol.iterator](): Iterator<[Uint8Array, V]> {
+	public [Symbol.iterator](): Iterator<[Uint8Array, V]> {
 		return this.entries();
 	}
 
-	size() {
+	public size() {
 		return this.size_;
 	}
 
 	// Append a unique key/value. No existence check, no copy.
-	put(key: Uint8Array, value: V): void {
+	public put(key: Uint8Array, value: V): void {
 		if (this.size_ >= this.threshold) this.grow();
 		const hash = hashKeyU32(key);
 		let slot = hash & this.mask;
@@ -76,7 +76,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	// Like put, but overwrites any existing value for the same key. Falls back
 	// to append-only put if the key is not already present, so callers don't have
 	// to know whether a key exists yet.
-	set(key: Uint8Array, value: V): void {
+	public set(key: Uint8Array, value: V): void {
 		const hash = hashKeyU32(key);
 		const keySlots = this.keySlots;
 		const hashes = this.hashes;
@@ -103,7 +103,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		this.size_++;
 	}
 
-	get(key: Uint8Array): V | undefined {
+	public get(key: Uint8Array): V | undefined {
 		const hash = hashKeyU32(key);
 		const keySlots = this.keySlots;
 		const hashes = this.hashes;
@@ -117,7 +117,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		return undefined;
 	}
 
-	has(key: Uint8Array): boolean {
+	public has(key: Uint8Array): boolean {
 		return this.get(key) !== undefined;
 	}
 
@@ -148,14 +148,14 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 
 	// Empty every slot. Keeps the grown capacity so a reorg reindex refills
 	// without immediately re-growing.
-	clear(): void {
+	public clear(): void {
 		this.keySlots.fill(undefined);
 		this.vals.fill(undefined);
 		this.hashes.fill(0);
 		this.size_ = 0;
 	}
 
-	*entries(): Generator<[Uint8Array, V]> {
+	public *entries(): Generator<[Uint8Array, V]> {
 		const keySlots = this.keySlots;
 		for (let i = 0; i < keySlots.length; i++) {
 			const k = keySlots[i];
@@ -163,7 +163,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		}
 	}
 
-	*keys(): Generator<Uint8Array> {
+	public *keys(): Generator<Uint8Array> {
 		const keySlots = this.keySlots;
 		for (let i = 0; i < keySlots.length; i++) {
 			const k = keySlots[i];
@@ -171,7 +171,7 @@ export class FastUint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		}
 	}
 
-	*values(): Generator<V> {
+	public *values(): Generator<V> {
 		const keySlots = this.keySlots;
 		for (let i = 0; i < keySlots.length; i++) {
 			const k = keySlots[i];

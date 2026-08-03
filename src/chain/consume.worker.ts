@@ -1,4 +1,3 @@
-import { sha256 } from "@noble/hashes/sha2";
 import { VarInt } from "@nomadshiba/codec";
 import { equals } from "@std/bytes/equals";
 import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
@@ -7,7 +6,6 @@ import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "~/constants.ts";
-import { FastUint8ArrayMap } from "~/libs/collections/FastUint8ArrayMap.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
@@ -52,8 +50,6 @@ export type InitResult = {
 
 /** A prevOut that missed disk, pending commit-thread resolution. */
 type Deferred = { inputIndex: number; txid: Uint8Array };
-
-const PUBKEY_PENDING = -1;
 
 const unknownPubkeysSet = new FastUint8ArraySet();
 const unknownPubkeys: Uint8Array[] = [];

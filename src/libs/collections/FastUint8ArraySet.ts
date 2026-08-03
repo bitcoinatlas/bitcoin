@@ -44,7 +44,7 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 	private threshold: number;
 	private size_ = 0;
 
-	constructor(capacity = 16) {
+	public constructor(capacity = 16) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(Math.max(1, capacity))));
 		this.keySlots = new Array(pow2);
 		this.hashes = new Uint32Array(pow2);
@@ -52,17 +52,17 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 		this.threshold = (pow2 * LOAD) | 0;
 	}
 
-	[Symbol.iterator](): Iterator<Uint8Array> {
+	public [Symbol.iterator](): Iterator<Uint8Array> {
 		return this.values();
 	}
 
-	size() {
+	public size() {
 		return this.size_;
 	}
 
 	// Insert a key, deduping by reference-independent value equality. Returns
 	// true if newly added, false if it was already present. No copy.
-	add(key: Uint8Array): boolean {
+	public add(key: Uint8Array): boolean {
 		if (this.size_ >= this.threshold) this.grow();
 		const hash = hashKeyU32(key);
 		const keySlots = this.keySlots;
@@ -80,7 +80,7 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 		return true;
 	}
 
-	has(key: Uint8Array): boolean {
+	public has(key: Uint8Array): boolean {
 		const hash = hashKeyU32(key);
 		const keySlots = this.keySlots;
 		const hashes = this.hashes;
@@ -118,13 +118,13 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 
 	// Empty every slot. Keeps the grown capacity so a reorg reindex refills
 	// without immediately re-growing.
-	clear(): void {
+	public clear(): void {
 		this.keySlots.fill(undefined);
 		this.hashes.fill(0);
 		this.size_ = 0;
 	}
 
-	*values(): Generator<Uint8Array> {
+	public *values(): Generator<Uint8Array> {
 		const keySlots = this.keySlots;
 		for (let i = 0; i < keySlots.length; i++) {
 			const k = keySlots[i];
@@ -133,7 +133,7 @@ export class FastUint8ArraySet implements Iterable<Uint8Array> {
 	}
 
 	// Alias to mirror the map's surface, where callers may expect `keys()`.
-	keys(): Generator<Uint8Array> {
+	public keys(): Generator<Uint8Array> {
 		return this.values();
 	}
 }

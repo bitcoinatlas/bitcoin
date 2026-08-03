@@ -50,7 +50,7 @@
 		"useTabs": true
 	},
 	"lint": {
-		// "plugins": ["./plugins/strict_classes.ts", "./plugins/imports.ts"], activate and fix when current wip is done
+		"plugins": ["./plugins/strict_classes.ts", "./plugins/imports.ts"],
 		"rules": {
 			"exclude": [
 				"no-namespace",

@@ -240,17 +240,17 @@ export type StoredWitness = Codec.InferOutput<typeof WitnessEnum> & { raw(): Uin
 type WitnessInput = Codec.InferInput<typeof WitnessEnum> | Uint8Array[];
 
 export class StoredWitnessCodec extends Codec<StoredWitness, WitnessInput> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encoder(pattern: WitnessInput, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	encoder(pattern: WitnessInput, target: Uint8Array, offset: number): number;
-	encoder(pattern: WitnessInput, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	public encoder(pattern: WitnessInput, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(pattern: WitnessInput, target: Uint8Array, offset: number): number;
+	public encoder(pattern: WitnessInput, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		if (Array.isArray(pattern)) pattern = detectWitnessPattern(pattern);
 		if (target === undefined) return WitnessEnum.encode(pattern);
 		return WitnessEnum.encodeInto(pattern, target, offset);
 	}
 
-	decoder(bytes: Uint8Array, offset: number): [StoredWitness, number] {
+	public decoder(bytes: Uint8Array, offset: number): [StoredWitness, number] {
 		const [pattern, bytesRead] = WitnessEnum.decode(bytes, offset);
 		const stored = pattern as StoredWitness;
 		let rawCache: Uint8Array<ArrayBuffer>[] | undefined;

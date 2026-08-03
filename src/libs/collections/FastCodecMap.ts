@@ -75,8 +75,8 @@ function layoutOf(capacity: number, keyLen: number, valLen: number): Layout {
 // Occupancy is an explicit u8 array because a zeroed slot is a valid encoded
 // entry, so there's no "undefined" sentinel.
 export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
-	readonly key: K;
-	readonly value: V;
+	public readonly key: K;
+	public readonly value: V;
 	private readonly keyLen: number;
 	private readonly valLen: number;
 	// Reusable encode target for the query/insert key. Not part of `buffer`, not
@@ -84,7 +84,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	private readonly keyScratch: Uint8Array<ArrayBuffer>;
 
 	// Rebound on grow(), so not readonly.
-	buffer!: ArrayBuffer;
+	public buffer!: ArrayBuffer;
 	private header!: Uint32Array<ArrayBuffer>;
 	private hashes!: Uint32Array<ArrayBuffer>;
 	private occupied!: Uint8Array<ArrayBuffer>;
@@ -109,7 +109,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	}
 
 	// A fresh, empty map.
-	static create<K extends FixedCodec, V extends FixedCodec>(
+	public static create<K extends FixedCodec, V extends FixedCodec>(
 		options: FastCodecMapOptions<K, V>,
 	): FastCodecMap<K, V> {
 		const keyLen = options.key.stride.size;
@@ -122,7 +122,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	// Adopt a buffer produced by takeBuffer() on another worker. The codecs must
 	// be the same ones used to build it; their strides are checked against the
 	// header.
-	static fromBuffer<K extends FixedCodec, V extends FixedCodec>(
+	public static fromBuffer<K extends FixedCodec, V extends FixedCodec>(
 		buffer: ArrayBuffer,
 		key: K,
 		value: V,
@@ -163,12 +163,12 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	// Sync the mutable scalar (size) into the header and hand back the buffer for
 	// a postMessage transfer list. After the buffer is transferred this instance
 	// is dead (its views detach); the receiver calls fromBuffer with the codecs.
-	takeBuffer(): ArrayBuffer {
+	public takeBuffer(): ArrayBuffer {
 		this.writeHeader();
 		return this.buffer;
 	}
 
-	size(): number {
+	public size(): number {
 		return this.size_;
 	}
 
@@ -185,7 +185,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 
 	// Append a unique key/value. No existence check (caller guarantees the key is
 	// new); a double-set inserts a second invisible slot.
-	set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void {
+	public set(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void {
 		if (this.size_ >= this.threshold) this.grow();
 		const ks = this.keyScratch;
 		this.key.encodeInto(key, ks);
@@ -203,7 +203,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	}
 
 	// Overwrite the value for an existing key, or append-only insert if absent.
-	setOwned(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void {
+	public setOwned(key: Codec.InferInput<K>, value: Codec.InferInput<V>): void {
 		const ks = this.keyScratch;
 		this.key.encodeInto(key, ks);
 		const hash = hashKeyU32(ks);
@@ -232,7 +232,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		this.size_++;
 	}
 
-	get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined {
+	public get(key: Codec.InferInput<K>): Codec.InferOutput<V> | undefined {
 		const ks = this.keyScratch;
 		this.key.encodeInto(key, ks);
 		const hash = hashKeyU32(ks);
@@ -251,7 +251,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		return undefined;
 	}
 
-	has(key: Codec.InferInput<K>): boolean {
+	public has(key: Codec.InferInput<K>): boolean {
 		return this.get(key) !== undefined;
 	}
 
@@ -288,7 +288,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 	}
 
 	// Empty every slot, keeping the grown capacity.
-	clear(): void {
+	public clear(): void {
 		this.occupied.fill(0);
 		this.hashes.fill(0);
 		this.keyBytes.fill(0);
@@ -296,14 +296,14 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		this.size_ = 0;
 	}
 
-	[Symbol.iterator](): Generator<[Codec.InferOutput<K>, Codec.InferOutput<V>]> {
+	public [Symbol.iterator](): Generator<[Codec.InferOutput<K>, Codec.InferOutput<V>]> {
 		return this.entries();
 	}
 
 	// Decodes both key and value per entry (the codecs own whether that allocates
 	// or returns a view into the buffer — slice byte outputs to keep them past a
 	// grow/clear/transfer).
-	*entries(): Generator<[Codec.InferOutput<K>, Codec.InferOutput<V>]> {
+	public *entries(): Generator<[Codec.InferOutput<K>, Codec.InferOutput<V>]> {
 		const occupied = this.occupied;
 		const keyLen = this.keyLen;
 		const valLen = this.valLen;
@@ -317,7 +317,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		}
 	}
 
-	*keys(): Generator<Codec.InferOutput<K>> {
+	public *keys(): Generator<Codec.InferOutput<K>> {
 		const occupied = this.occupied;
 		const keyLen = this.keyLen;
 		for (let i = 0; i < this.capacity; i++) {
@@ -328,7 +328,7 @@ export class FastCodecMap<K extends FixedCodec, V extends FixedCodec> {
 		}
 	}
 
-	*values(): Generator<Codec.InferOutput<V>> {
+	public *values(): Generator<Codec.InferOutput<V>> {
 		const occupied = this.occupied;
 		const valLen = this.valLen;
 		for (let i = 0; i < this.capacity; i++) {

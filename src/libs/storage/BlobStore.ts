@@ -5,7 +5,7 @@ import { join } from "@std/path";
 import { MiB, SECOND } from "~/constants.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
 import { Store } from "~/libs/storage/Store.ts";
-import { ArchiveWorkerPool } from "./ArchiveWorkerPool.ts";
+import { ArchiveWorkerPool } from "~/libs/storage/ArchiveWorkerPool.ts";
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -55,44 +55,44 @@ export class BlobStore extends Store implements Disposable {
 		this.chunkSize = options.chunkSize;
 	}
 
-	static open(options: BlobStoreOptions): BlobStore {
+	public static open(options: BlobStoreOptions): BlobStore {
 		const self = new BlobStore(options);
 		Deno.mkdirSync(self.path, { recursive: true });
 		cleanUp(self.path);
 		return self;
 	}
 
-	sync(): void {
+	public sync(): void {
 		for (const chunk of this.chunks.values()) chunk.mapping.flush();
 	}
 
-	size(): number {
+	public size(): number {
 		return this.cursor;
 	}
 
-	next(maxItemSize: number, from: number = this.size()): number {
+	public next(maxItemSize: number, from: number = this.size()): number {
 		const room = this.chunkSize - (from % this.chunkSize);
 		return room < maxItemSize ? from + room : from;
 	}
 
-	reveal(size: number): void {
+	public reveal(size: number): void {
 		const current = this.size();
 		if (size < current) throw new RangeError(`reveal size=${size} is behind the cursor (size=${current}); reveal only moves forward`);
 		this.cursor = size;
 	}
 
-	persist(size: number): void {
+	public persist(size: number): void {
 		return this.reveal(size);
 	}
 
-	truncate(size: number): void {
+	public truncate(size: number): void {
 		if (size < 0) throw new RangeError(`truncate size=${size} must be non-negative`);
 		const current = this.size();
 		const oldTailIndex = Math.floor(current / this.chunkSize);
 		const newTailIndex = Math.floor(size / this.chunkSize);
 
 		for (let index = oldTailIndex; index > newTailIndex; index--) {
-			this.#closeChunk(index);
+			this.closeChunk(index);
 			forget(chunkPath(this.path, index));
 		}
 
@@ -106,24 +106,24 @@ export class BlobStore extends Store implements Disposable {
 		this.cursor = size;
 	}
 
-	get<T extends Codec>(pointer: number, codec: T): [Codec.InferOutput<T>, number] {
+	public get<T extends Codec>(pointer: number, codec: T): [Codec.InferOutput<T>, number] {
 		const size = this.size();
 		if (pointer >= size) throw new Error(`read at offset=${pointer} is past the cursor (size=${size})`);
 		const index = Math.floor(pointer / this.chunkSize);
-		const map = this.#chunk(index);
+		const map = this.chunk(index);
 		return codec.decode(map.bytes, pointer % this.chunkSize);
 	}
 
-	async getAsync<T extends Codec>(pointer: number, codec: T): Promise<[Codec.InferOutput<T>, number]> {
+	public async getAsync<T extends Codec>(pointer: number, codec: T): Promise<[Codec.InferOutput<T>, number]> {
 		const size = this.size();
 		if (pointer >= size) throw new Error(`read at offset=${pointer} is past the cursor (size=${size})`);
 		const index = Math.floor(pointer / this.chunkSize);
-		const map = await this.#chunkAsync(index);
+		const map = await this.chunkAsync(index);
 		return codec.decode(map.bytes, pointer % this.chunkSize);
 	}
 
 	// TODO: later get rid of this infavor of mmap()
-	commit(offset: number, bytes: Uint8Array): number {
+	public commit(offset: number, bytes: Uint8Array): number {
 		const size = this.size();
 		if (offset < size) throw new Error(`write offset=${offset} is behind the cursor (size=${size}); writes never overwrite live data`);
 		const index = Math.floor(offset / this.chunkSize);
@@ -134,12 +134,12 @@ export class BlobStore extends Store implements Disposable {
 				`write of ${bytes.length} bytes at offset=${offset} exceeds chunk ${index}'s remaining ${available} bytes; a write may never straddle a chunk boundary`,
 			);
 		}
-		const map = this.#chunk(index);
+		const map = this.chunk(index);
 		map.bytes.set(bytes, start);
 		return bytes.byteLength;
 	}
 
-	mmap(begin?: number, length?: number): Uint8Array {
+	public mmap(begin?: number, length?: number): Uint8Array {
 		const size = this.size();
 		begin ??= size;
 		if (begin < size) throw new Error(`mmap begin=${begin} is behind the cursor (size=${size}); writes never overwrite live data`);
@@ -152,42 +152,42 @@ export class BlobStore extends Store implements Disposable {
 				`mmap of ${length} bytes at offset=${begin} exceeds chunk ${index}'s remaining ${available} bytes; a write may never straddle a chunk boundary`,
 			);
 		}
-		const map = this.#chunk(index);
+		const map = this.chunk(index);
 		return map.bytes.subarray(start, start + length);
 	}
 
-	#chunk(index: number): Chunk {
+	private chunk(index: number): Chunk {
 		const cached = this.chunks.get(index);
 		if (cached) return cached;
 
 		const path = chunkPath(this.path, index);
 		if (this.pool) {
-			if (isArchived(path) && !existsSync(path)) this.#tryMakeSpace(index);
+			if (isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
 			ensureRestored(path, this.restoreSyncOptions);
 		}
-		return this.#map(index, Mmap.openSync(path, { write: true, ensureFileSize: this.chunkSize }));
+		return this.map(index, Mmap.openSync(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
 
-	async #chunkAsync(index: number): Promise<Chunk> {
+	public async chunkAsync(index: number): Promise<Chunk> {
 		const cached = this.chunks.get(index);
 		if (cached) return cached;
 
 		const path = chunkPath(this.path, index);
 		if (this.pool) {
-			if (isArchived(path) && !existsSync(path)) this.#tryMakeSpace(index);
+			if (isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
 			await ensureRestoredAsync(path, this.restoreStreamOptions, this.restoring);
 		}
-		return this.#map(index, await Mmap.open(path, { write: true, ensureFileSize: this.chunkSize }));
+		return this.map(index, await Mmap.open(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
 
-	#map(index: number, mapping: Mmap): Chunk {
+	private map(index: number, mapping: Mmap): Chunk {
 		mapping.advise(Advice.Random);
 		const chunk: Chunk = { mapping, bytes: mapping.bytes() };
 		this.chunks.set(index, chunk);
 		return chunk;
 	}
 
-	#tryMakeSpace(incoming: number): void {
+	private tryMakeSpace(incoming: number): void {
 		const restored: number[] = [];
 		for (const index of this.chunks.keys()) {
 			if (index === incoming) continue;
@@ -198,20 +198,20 @@ export class BlobStore extends Store implements Disposable {
 		let over = restored.length + 1 - this.maxRestoredChunks;
 		for (const index of restored) {
 			if (over <= 0) break;
-			this.#closeChunk(index);
+			this.closeChunk(index);
 			unrestore(chunkPath(this.path, index));
 			over--;
 		}
 	}
 
-	#closeChunk(index: number): void {
+	private closeChunk(index: number): void {
 		const chunk = this.chunks.get(index);
 		if (!chunk) return;
 		chunk.mapping.close();
 		this.chunks.delete(index);
 	}
 
-	startArchiveWorkers(options: ArchiveOptions): void {
+	public startArchiveWorkers(options: ArchiveOptions): void {
 		if (this.pool) throw new Error("archiving already started on this store");
 		if (options.maxRestoredChunks < 1) throw new Error("archive.maxRestoredChunks must be >= 1");
 
@@ -222,10 +222,10 @@ export class BlobStore extends Store implements Disposable {
 		this.restoreSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: restoreParams };
 		this.restoreStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: restoreParams };
 
-		this.#runArchiveLoop(this.pool).catch((e) => console.error("[archive] background loop died:", e));
+		this.runArchiveLoop(this.pool).catch((e) => console.error("[archive] background loop died:", e));
 	}
 
-	async #runArchiveLoop(pool: ArchiveWorkerPool): Promise<void> {
+	private async runArchiveLoop(pool: ArchiveWorkerPool): Promise<void> {
 		while (!this.disposed) {
 			const tailIndex = Math.floor(this.size() / this.chunkSize);
 			const batch: Promise<void>[] = [];
@@ -235,7 +235,7 @@ export class BlobStore extends Store implements Disposable {
 				const at = index;
 				batch.push(
 					archive(pool, at, path, this.archiveParams)
-						.then(() => this.#closeChunk(at))
+						.then(() => this.closeChunk(at))
 						.catch((e) => console.error(`[archive] chunk ${at} failed:`, e)),
 				);
 			}
@@ -244,7 +244,7 @@ export class BlobStore extends Store implements Disposable {
 		}
 	}
 
-	close(): void {
+	public close(): void {
 		this.disposed = true;
 		this.pool?.dispose();
 		this.pool = undefined;
@@ -252,7 +252,7 @@ export class BlobStore extends Store implements Disposable {
 		this.chunks.clear();
 	}
 
-	[Symbol.dispose](): void {
+	public [Symbol.dispose](): void {
 		this.close();
 	}
 }

@@ -34,7 +34,7 @@ export class StoredTxCodec extends Codec<Output, Input> {
 	 * input actually carries witness data — so legacy txs round-trip to the right txid.
 	 */
 	// TODO: Move this to somewhere else
-	toWire(storedTx: Output, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
+	public toWire(storedTx: Output, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
 		const { version, locktime } = storedTx;
 
 		let anyWitness = false;

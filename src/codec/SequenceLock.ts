@@ -20,9 +20,9 @@ export type SequenceLock =
 // - bit 31 set = disable flag
 // - bit 22 set = time-based (seconds), otherwise block-based
 export class SequenceLockCodec extends Codec<SequenceLock> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 4 };
 
-	static toU32(value: SequenceLock): number {
+	public static toU32(value: SequenceLock): number {
 		if (value.kind === "final") {
 			return 0xffffffff;
 		}
@@ -71,7 +71,7 @@ export class SequenceLockCodec extends Codec<SequenceLock> {
 		return sequence >>> 0;
 	}
 
-	static fromU32(seq: number): SequenceLock {
+	public static fromU32(seq: number): SequenceLock {
 		const sequence = seq >>> 0;
 
 		if (sequence === 0xffffffff) {

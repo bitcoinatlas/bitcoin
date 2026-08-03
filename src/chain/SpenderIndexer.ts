@@ -60,7 +60,7 @@ export class SpenderIndexer {
 	private readonly completed = new Map<number, number>();
 	private readonly active = new Set<Promise<void>>();
 
-	constructor() {
+	public constructor() {
 		const committed = chainStore.stores.block.size();
 		const saved = this.readCheckpoint();
 		// Never trust a checkpoint that's ahead of committed data: a crash mid-round
@@ -153,7 +153,7 @@ export class SpenderIndexer {
 	 * there's nothing new to do. Never throws to the caller — worker failures
 	 * exit the process.
 	 */
-	async catchUp(target: number): Promise<void> {
+	public async catchUp(target: number): Promise<void> {
 		this.target = Math.max(this.target, target);
 		if (this.running) return;
 		if (this.frontier >= this.target) return;

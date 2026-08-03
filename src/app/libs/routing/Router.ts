@@ -96,7 +96,7 @@ export class Router<const TSchema extends RouterSchema, TMeta> {
 	public readonly schema: TSchema;
 	public readonly prefixBuckets: readonly (readonly [string, Bucket])[];
 
-	constructor(params: {
+	public constructor(params: {
 		metaMiddleware?: (options: RouteMiddlewareOptions<TSchema>) => PromiseOrValue<RouteMiddlewareResult<TMeta>>;
 		schema: TSchema;
 	}) {
@@ -134,7 +134,7 @@ export class Router<const TSchema extends RouterSchema, TMeta> {
 			.sort(([a], [b]) => b.split("/").length - a.split("/").length);
 	}
 
-	registerHandler<TKey extends RouterSchema.Key<TSchema>>(
+	public registerHandler<TKey extends RouterSchema.Key<TSchema>>(
 		key: TKey,
 		handler: RouteHandler<TSchema, TKey, TMeta>,
 	) {
@@ -152,7 +152,7 @@ export class Router<const TSchema extends RouterSchema, TMeta> {
 		}
 	}
 
-	async resolveRequest(request: Request): Promise<Response> {
+	public async resolveRequest(request: Request): Promise<Response> {
 		const url = new URL(request.url);
 		const event = { request, url };
 

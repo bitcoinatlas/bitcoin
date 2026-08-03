@@ -11,7 +11,7 @@ export type RouterClientRequestOptions<
 }>;
 
 export class RouterClientError extends Error {
-	constructor(public readonly response: Response, message: string) {
+	public constructor(public readonly response: Response, message: string) {
 		super(`${response.status} ${response.statusText}: ${message}`);
 		this.name = "ClientError";
 	}
@@ -24,7 +24,7 @@ export class RouterClient<const TSchema extends RouterSchema> {
 		private readonly fetchFn: typeof fetch,
 	) {}
 
-	static create<const TSchema extends RouterSchema>(params: {
+	public static create<const TSchema extends RouterSchema>(params: {
 		baseUrl: string | URL;
 		schema: TSchema;
 		fetch?: typeof fetch;
@@ -36,7 +36,7 @@ export class RouterClient<const TSchema extends RouterSchema> {
 		);
 	}
 
-	async fetch<TKey extends RouterSchema.Key<TSchema>>(
+	public async fetch<TKey extends RouterSchema.Key<TSchema>>(
 		key: TKey,
 		options: RouterClientRequestOptions<TSchema, TKey>,
 	): Promise<RouterSchema.InferResultOutput<TSchema, TKey>> {

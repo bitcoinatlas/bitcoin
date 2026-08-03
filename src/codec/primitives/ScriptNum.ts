@@ -16,7 +16,7 @@ import { Codec, Stride } from "@nomadshiba/codec";
  * JS safe-integer range.
  */
 export class ScriptNumCodec extends Codec<number> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(value: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(value: number, target: Uint8Array, offset: number): number;

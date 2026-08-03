@@ -9,7 +9,7 @@ export type GetHeadersPayload = {
 };
 
 class GetHeadersCodec extends Codec<GetHeadersPayload> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(data: GetHeadersPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(data: GetHeadersPayload, target: Uint8Array, offset: number): number;

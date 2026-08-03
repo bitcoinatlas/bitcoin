@@ -1,4 +1,4 @@
-import type { Job, Result } from "./archive.worker.ts";
+import type { Job, Result } from "~/libs/storage/archive.worker.ts";
 
 import type zlib from "node:zlib";
 
@@ -26,7 +26,7 @@ export class ArchiveWorkerPool implements Disposable {
 	private nextJobId = 0;
 	private disposed = false;
 
-	constructor(size: number) {
+	public constructor(size: number) {
 		const count = Math.max(1, size);
 		for (let i = 0; i < count; i++) {
 			const worker = new Worker(new URL("./archive.worker.ts", import.meta.url), {
@@ -41,7 +41,7 @@ export class ArchiveWorkerPool implements Disposable {
 	}
 
 	/** Archive rawPath into tmpPath with the given zstd params. Resolves with the archived byte size. */
-	archive(index: number, rawPath: string, tmpPath: string, params: zlib.ZstdOptions["params"]): Promise<number> {
+	public archive(index: number, rawPath: string, tmpPath: string, params: zlib.ZstdOptions["params"]): Promise<number> {
 		if (this.disposed) return Promise.reject(new Error("archive pool is disposed"));
 		return new Promise<number>((resolve, reject) => {
 			const job: Job = { id: this.nextJobId++, index, rawPath, tmpPath, params };
@@ -90,7 +90,7 @@ export class ArchiveWorkerPool implements Disposable {
 		worker.terminate();
 	}
 
-	dispose() {
+	public dispose() {
 		this.disposed = true;
 		// Reject anything still queued (never started).
 		for (const pending of this.queue) pending.reject(new Error("archive pool disposed before job ran"));
@@ -100,7 +100,7 @@ export class ArchiveWorkerPool implements Disposable {
 		this.idle.length = 0;
 	}
 
-	[Symbol.dispose]() {
+	public [Symbol.dispose]() {
 		return this.dispose();
 	}
 }

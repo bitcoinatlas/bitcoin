@@ -61,22 +61,22 @@ export class Peer {
 	private disconnectCallbacks = new Set<(reason: DisconnectReason) => void>();
 
 	/** Remote peer's version payload, populated after handshake. */
-	remoteVersion: number = 0;
+	public remoteVersion: number = 0;
 	/** Remote peer's advertised services bitmask, populated after handshake. */
-	remoteServices: bigint = 0n;
+	public remoteServices: bigint = 0n;
 
-	get connected(): boolean {
+	public get connected(): boolean {
 		return this.isConnected;
 	}
 
-	constructor(host: string, port: number, magic: Uint8Array) {
+	public constructor(host: string, port: number, magic: Uint8Array) {
 		if (magic.length !== MAGIC_LEN) throw new Error("magic must be 4 bytes");
 		this.host = host;
 		this.port = port;
 		this.magic = magic;
 	}
 
-	async connect(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+	public async connect(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
 		if (this.isConnected) return;
 		const abort = new AbortController();
 		const timer = setTimeout(() => abort.abort(), timeoutMs);
@@ -94,7 +94,7 @@ export class Peer {
 		void this.readLoop(this.connection);
 	}
 
-	disconnect(reason: DisconnectReason = { type: "manual" }): void {
+	public disconnect(reason: DisconnectReason = { type: "manual" }): void {
 		if (!this.isConnected) return;
 		this.isConnected = false;
 		try {
@@ -108,17 +108,17 @@ export class Peer {
 		}
 	}
 
-	onDisconnect(cb: (reason: DisconnectReason) => void): () => void {
+	public onDisconnect(cb: (reason: DisconnectReason) => void): () => void {
 		this.disconnectCallbacks.add(cb);
 		return () => this.disconnectCallbacks.delete(cb);
 	}
 
-	onMessage(listener: (msg: PeerMessageEvent) => void): () => void {
+	public onMessage(listener: (msg: PeerMessageEvent) => void): () => void {
 		this.listeners.add(listener);
 		return () => this.listeners.delete(listener);
 	}
 
-	async send<T extends Codec>(type: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
+	public async send<T extends Codec>(type: PeerMessage<T>, data: Codec.InferInput<T>, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<void> {
 		const connection = this.connection;
 		if (!this.isConnected || !connection) throw new Error("not connected");
 
@@ -167,7 +167,7 @@ export class Peer {
 		}
 	}
 
-	expect<T extends Codec>(
+	public expect<T extends Codec>(
 		type: PeerMessage<T>,
 		filter?: (data: Codec.InferOutput<T>, bytes: Uint8Array) => boolean,
 		timeoutMs = DEFAULT_TIMEOUT_MS,
@@ -189,7 +189,7 @@ export class Peer {
 		});
 	}
 
-	async sendAndExpect<Outgoing extends Codec, Incoming extends Codec>(params: {
+	public async sendAndExpect<Outgoing extends Codec, Incoming extends Codec>(params: {
 		send: {
 			type: PeerMessage<Outgoing>;
 			data: Codec.InferInput<Outgoing>;

@@ -3,7 +3,7 @@ import { Codec, Stride } from "@nomadshiba/codec";
 const MAX_U48 = 2 ** 48 - 1;
 
 export class U48Codec extends Codec<number> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 6 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 6 };
 
 	public encoder(value: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(value: number, target: Uint8Array, offset: number): number;

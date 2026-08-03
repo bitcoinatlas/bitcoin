@@ -3,7 +3,7 @@ import { Codec, Stride } from "@nomadshiba/codec";
 // Segwit marker codec: encodes 0x00 0x01, decodes by peeking
 // This is used in the Bitcoin wire format to signal the presence of witness data
 export class WireSegwitMarkerCodec extends Codec<boolean> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(hasWitness: boolean, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(hasWitness: boolean, target: Uint8Array, offset: number): number;

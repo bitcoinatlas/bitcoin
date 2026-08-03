@@ -90,11 +90,11 @@ function sequenceU32ForTag(tag: number): number | null {
 
 // StoredTxInput codec that decodes to plain TxInput data
 export class StoredTxInputCodec extends Codec<Output, Input> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	encoder(input: Input, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	encoder(input: Input, target: Uint8Array, offset: number): number;
-	encoder(input: Input, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	public encoder(input: Input, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(input: Input, target: Uint8Array, offset: number): number;
+	public encoder(input: Input, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const seqU32 = SequenceLockCodec.toU32(input.sequence) >>> 0;
 		const seqTag = sequenceTagForU32(seqU32);
 		const seqExplicit = seqTag === SEQ_EXPLICIT;
@@ -149,7 +149,7 @@ export class StoredTxInputCodec extends Codec<Output, Input> {
 		return offset - start;
 	}
 
-	decoder(data: Uint8Array, offset: number): [Output, number] {
+	public decoder(data: Uint8Array, offset: number): [Output, number] {
 		let currentOffset = offset;
 
 		const [txId, txIdBytes] = StoredPrevOutTxId.decode(data, currentOffset);

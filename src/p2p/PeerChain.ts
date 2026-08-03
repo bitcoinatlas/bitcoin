@@ -5,12 +5,12 @@ export class PeerChain implements Iterable<PeerChainNode> {
 	private nodes: PeerChainNode[];
 	private index = new FastUint8ArrayMap<number>();
 
-	constructor(nodes: Iterable<PeerChainNode> | ArrayIterator<PeerChainNode> = []) {
+	public constructor(nodes: Iterable<PeerChainNode> | ArrayIterator<PeerChainNode> = []) {
 		this.nodes = Array.from(nodes);
 		this.reindex();
 	}
 
-	[Symbol.iterator](): ArrayIterator<PeerChainNode> {
+	public [Symbol.iterator](): ArrayIterator<PeerChainNode> {
 		return this.nodes.values();
 	}
 

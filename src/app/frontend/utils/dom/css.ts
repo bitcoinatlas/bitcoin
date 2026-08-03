@@ -36,7 +36,7 @@ export function css(...params: Parameters<typeof String.raw>) {
 export class CssTemplate {
 	public readonly raw: string;
 
-	constructor(raw: string) {
+	public constructor(raw: string) {
 		this.raw = raw;
 	}
 

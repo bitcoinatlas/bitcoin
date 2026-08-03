@@ -15,7 +15,7 @@ export class BigNumberFormat {
 	private readonly separator: string;
 	private readonly numberFormat: Intl.NumberFormat;
 
-	constructor(locale?: Intl.LocalesArgument, options?: BigNumberFormatOptions) {
+	public constructor(locale?: Intl.LocalesArgument, options?: BigNumberFormatOptions) {
 		this.base = options?.base ?? DEFAULT_BASE;
 		this.units = options?.units ?? DEFAULT_UNITS;
 		this.separator = options?.separator ?? " ";
@@ -25,7 +25,7 @@ export class BigNumberFormat {
 		});
 	}
 
-	format(value: number): string {
+	public format(value: number): string {
 		if (!Number.isFinite(value)) return "—";
 		let i = 0;
 		while (Math.abs(value) >= this.base && i < this.units.length - 1) {

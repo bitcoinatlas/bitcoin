@@ -48,13 +48,13 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		);
 	}
 
-	static open<T extends ManifestStores>(options: ManifestOptions<T>) {
+	public static open<T extends ManifestStores>(options: ManifestOptions<T>) {
 		Deno.mkdirSync(options.path, { recursive: true });
 		return new Manifest<T>(options);
 	}
 
-	pin(names?: Iterable<keyof T>): void;
-	pin(names: Iterable<string> = this.storeMap.keys()) {
+	public pin(names?: Iterable<keyof T>): void;
+	public pin(names: Iterable<string> = this.storeMap.keys()) {
 		try {
 			this.db.exec("BEGIN IMMEDIATE;");
 			for (const name of names) {
@@ -88,7 +88,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		}
 	}
 
-	recover(): void {
+	public recover(): void {
 		const pins = this.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
 		for (const { name, pin, reveal } of pins) {
 			const value = this.storeMap.get(name);
@@ -100,11 +100,11 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		}
 	}
 
-	close() {
+	public close() {
 		this.db.close();
 	}
 
-	[Symbol.dispose](): void {
+	public [Symbol.dispose](): void {
 		this.close();
 	}
 }

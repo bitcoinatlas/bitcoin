@@ -8,7 +8,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	private threshold: number;
 	private size_ = 0;
 
-	constructor(capacity = 1) {
+	public constructor(capacity = 1) {
 		const pow2 = Math.pow(2, Math.ceil(Math.log2(capacity)));
 		this.mask = pow2 - 1;
 		this.threshold = pow2 * 0.75;
@@ -16,7 +16,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		for (let i = 0; i < pow2; i++) this.buckets[i] = [];
 	}
 
-	[Symbol.iterator](): Iterator<[Uint8Array, V]> {
+	public [Symbol.iterator](): Iterator<[Uint8Array, V]> {
 		return this.entries();
 	}
 
@@ -39,7 +39,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		return h >>> 0;
 	}
 
-	get(key: Uint8Array): V | undefined {
+	public get(key: Uint8Array): V | undefined {
 		const hash = this.hash(key);
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
@@ -49,7 +49,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		return undefined;
 	}
 
-	set(key: Uint8Array, value: V): void {
+	public set(key: Uint8Array, value: V): void {
 		const hash = this.hash(key);
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
@@ -68,7 +68,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 	// when the caller guarantees `key` is never mutated after insertion (e.g.
 	// block hashes, which are immutable once computed). Saves a 32-byte copy per
 	// insert — meaningful when indexing 800k+ hashes.
-	setOwned(key: Uint8Array, value: V): void {
+	public setOwned(key: Uint8Array, value: V): void {
 		const hash = this.hash(key);
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
@@ -100,7 +100,7 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		this.threshold = newCapacity * 0.75;
 	}
 
-	delete(key: Uint8Array): boolean {
+	public delete(key: Uint8Array): boolean {
 		const hash = this.hash(key);
 		const bucket = this.buckets[hash & this.mask]!;
 		for (let i = 0; i < bucket.length; i++) {
@@ -116,16 +116,16 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		return false;
 	}
 
-	has(key: Uint8Array): boolean {
+	public has(key: Uint8Array): boolean {
 		return this.get(key) !== undefined;
 	}
 
-	clear(): void {
+	public clear(): void {
 		for (let i = 0; i < this.buckets.length; i++) this.buckets[i] = [];
 		this.size_ = 0;
 	}
 
-	*entries(): Generator<[Uint8Array, V]> {
+	public *entries(): Generator<[Uint8Array, V]> {
 		const buckets = this.buckets;
 		for (let b = 0; b < buckets.length; b++) {
 			const bucket = buckets[b]!;
@@ -136,11 +136,11 @@ export class Uint8ArrayMap<V> implements Iterable<[Uint8Array, V]> {
 		}
 	}
 
-	*keys(): Generator<Uint8Array> {
+	public *keys(): Generator<Uint8Array> {
 		for (const [key] of this.entries()) yield key;
 	}
 
-	*values(): Generator<V> {
+	public *values(): Generator<V> {
 		for (const [, value] of this.entries()) yield value;
 	}
 }

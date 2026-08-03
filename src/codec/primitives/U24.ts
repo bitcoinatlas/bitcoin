@@ -1,7 +1,7 @@
 import { Codec, Stride } from "@nomadshiba/codec";
 
 export class U24Codec extends Codec<number> {
-	readonly stride: Stride<"fixed"> = { kind: "fixed", size: 3 };
+	public readonly stride: Stride<"fixed"> = { kind: "fixed", size: 3 };
 
 	public encoder(value: number, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(value: number, target: Uint8Array, offset: number): number;

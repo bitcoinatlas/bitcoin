@@ -14,7 +14,6 @@ import { COINBASE_TXID, MAX_BLOCK_SIZE } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
-import { Manifest } from "~/libs/storage/Manifest.ts";
 
 console.log("[chain] booting");
 

@@ -10,7 +10,7 @@ export type HeadersPayload = {
 const HEADER_STRIDE = WireBlockHeader.stride.size;
 
 class HeadersCodec extends Codec<HeadersPayload> {
-	readonly stride: Stride<"variable"> = { kind: "variable" };
+	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
 	public encoder(data: HeadersPayload, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
 	public encoder(data: HeadersPayload, target: Uint8Array, offset: number): number;
