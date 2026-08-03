@@ -42,7 +42,8 @@
 			"deno.worker"
 		],
 		"strict": true,
-		"noUncheckedIndexedAccess": true
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true
 	},
 	"fmt": {
 		"lineWidth": 140,

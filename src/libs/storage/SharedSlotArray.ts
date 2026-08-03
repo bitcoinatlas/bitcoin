@@ -67,6 +67,7 @@ export class SharedSlotArray {
 	}
 
 	public get(index: number): bigint {
+		if (index >= this.size()) throw new RangeError();
 		const local = index % this.slotsPerChunk;
 		return Atomics.load(this.chunk((index - local) / this.slotsPerChunk), local);
 	}

@@ -10,7 +10,7 @@ import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxIdPointer } from "~/codec/stored/StoredTxIdPointer.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { COINBASE_TXID, GB } from "~/constants.ts";
+import { COINBASE_TXID, GB, MB } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
 import { Manifest } from "~/libs/storage/Manifest.ts";
@@ -41,9 +41,11 @@ export class ChainStore {
 				path: join(BASE_DATA_DIR, "blockhash"),
 				key: Bytes32, // block hash
 				value: U32, // block height
-				pointer: U40,
 				loadFactor: LOAD_FACTOR_OPTIONS,
 				writable: self.name === "p2p",
+				blob: {
+					chunkSize: 500 * MB,
+				},
 			}),
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
