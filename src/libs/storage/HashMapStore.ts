@@ -1,151 +1,219 @@
-import { StructGeneric } from "@nomadshiba/codec";
+import { Codec, StructCodec } from "@nomadshiba/codec";
+import { equals } from "@std/bytes";
+import { join } from "@std/path";
 import { BlobStore, BlobStoreOptions } from "~/libs/storage/BlobStore.ts";
+import { SharedSlotArray } from "~/libs/storage/SharedSlotArray.ts";
 import { Store } from "~/libs/storage/Store.ts";
 
-/*
-	TODO: make the code more clean and simpler.
-	- we might think about wrapping blobstore for entries again, maybe or maybe not
-	- anything cursor related should be atomic with sab
-	- assume there is one writer worker at a time, and multiple readers
-	- turn the entries append-only, remove set() we should insert new version at the end.
-	- then time to time we can run a compaction to remove old versions, and we can do this in a separate worker.
-	- we should have a seperate cursor for last compaction, so we dont scan everything every time we want to compact.
-	- compaction should be ran manually with a method. some stores dont require it at all, such as blockhash, txid, spender
-
-	but come to think of it i mean only one that needs it is pubkey which stores the last tx with an output to the pubkey.
-	but i mean we can avoid compaction if we stored first, but then linked list has to point forwards which is not truncate safe.
-	on the other hand buckets always store the last. Maybe hashmap needs to be two different things?
-	i have been thinking about this tbh but always found a deal breaker which i cant remember atm.
-	but my main idea was we already have a blobstore, all we need is buckets and a linked list to index it.
-	so basically derive the key from the entry, value.
-	if we dont combine this with blobstore again, then for compaction to work blobstore needs a splice() method.
-	if we are gonna do compaction then this because unsafe to truncate, so if we did compaction newer than then truncate point,
-	then we cant just truncate we have to clear and reindex. (which shows the imporantance of derived keys, easier to reindex())
-	in a hashmap one key can point to more than one entry, more than one value. so this might make sense in same sense.
-	like if we can come up with a structure that doesn't require compaction.
-	this requires that we shouldnt store same key multiple times. full key should only be stored once.
-	we should build buckets on top of an existing blobstore.
-	everything should be connected with pointer linked lists.
-	buckets give the heads.
-	key should be derived from the actual entry, value.
-	ok first point is we should be able to get the key without decoding the whole thing, right?
-	so keys should be fixed and cant have a variable size field before it.
-	but this totally kills being able to index txs. by pubkey.
-	but wait we wanna store a pubkey once, and everytime it repeats we wanna point back to it.
-	also electrum requires us to map the hash of pubkey. which can be done without storing the hash i tihink, before getting bucket index hash it, easy.
-	ok this sounds like we need a transform link function which goes through every entry, replacing things that you dont want repeting with pointers.
-	and also index at the same time.
-
-	maybe its this complex because i wanna abstract it with reuseable Store classes. (probably yes)
-	there are different things, when i index pubkey on an output, i want to point back to the original pubkey on the output.
-	but while indexing txid, i dont want to store pointer to txid on the entry. i wanna keep txid on the entry.
-	because its unique. hmm. so an indexer in blobstore, that can accept unique indexes as well as non-unique indexes.
-	so do i want these on blob store or create something new that wraps blob store. probably the latter.
-	IndexedBlobStore, that can accept multiple indexes, and can accept unique or non-unique indexes.
-	it probably cant accept any codec, maybe only StructCodec shapes because it should be able to differentiate between the fields.
-	or have some kind of middleware function that lets us do any kind of indexing logic ever.
-
-	ok idea, each store including hashmap ones should be appendonly only, and truncate safe without compaction. so we can have a compaction.
-	we need a IndexedStore that has fields, it can modify fields based on what they are.
-
-	if you have a unique index on a field you dont have to move the value on the field else where. it can stay where at where its.
-	if its not unique it has to move it somewhere else and point back to it OR point to the first instance.
-
-	it should basically change the way things are encoded on the disk. by adding linked list or like chaging the shape of things,
-		while also managing the buckets and cursors, etc...
-		or we can have primitives and build our own stuff around it basically.
-
-	so if non works while maximizing ease and storage.
-	we can just say fuck it make a buckets primitive.
-	and design a special ChainStore that handles everything.
-
-	since we will not need compaction we can just use the BlobStore, which is more consistent with mmap because of the chunking.
-*/
-
-/*
-	Recovery:
-	we always write new entries ahead of the cursor.
-	and during reveal we update the buckets for the new size.
-	if during bucket update we crash/fail/powergone/terminate what we can do is.
-	so in pin() before reveal() is called, sync() is called first,
-	so this makes sure the data is on the disk before revealing it and storeing the cursor.
-	so this means after a crash, the entires that were being applied to the buckets still there infront of the cursor.
-	so this means we can use those entries and their back/prev pointers to restore the buckets to their previous state.
-	by reverse replaying.
-
-	one issue here is after a restart stores dont know their old size, they just get called reveal from 0 to new size.
-	so for this to work consistantly Manifest might need to remember soon to be revealed new size, old size, and pin size.
-
-	also like idk how much forward i should use recovery.
-	so we might actually have two methods?
-
-	UPDATE:
-	so the Manifest now knows our previous size and what we were trying to reveal.
-	so now during Manifest.recover() it manifest first calls reveal(reveal) to what we were trying to pin() to.
-	then after that it calls truncate(pin) IF `pin != reveal` so truncate basically means undo so it basically tells us.
-	act like this is your size, and undo this part. without telling it to use directly. which makes sense.
-
-	---
-
-	and also now pin() calls persist() on the store, so persist() only gets called on the worker that called pin()
-	so it runs once, and basically lets you update derived data such as our buckets here during pinning.
-	so it lets you know pinning is happening and telling you to persist new stuff basically.
-
-	based on logic requirements we might need to persist() at the end of recovery as well maybe?
-	so store can keep track of when was persist called last time at what size.
-	but we might need it probably. we will see.
-*/
-
-/** entries per bucket */
-export type LoadFactorOptions = {
-	target: number;
-	maxDrift: number;
-};
-
-export type HashMapStoreOptions<Shape extends StructGeneric> = {
+export type LoadFactorOptions = { target: number; maxDrift: number };
+export type HashMapStoreOptions<Key extends Codec, Value extends Codec> = {
 	path: string;
-	shape: Shape;
-	indexes: { fields: (keyof Shape)[]; unique: boolean };
-	/** entries per bucket */
+	key: Key;
+	value: Value;
+	maxEntrySize: number;
 	loadFactor: LoadFactorOptions;
+	writable: boolean;
+	bucketCount?: number;
 	blob: BlobStoreOptions;
 };
 
-export class HashMapStore<Shape extends StructGeneric> extends Store implements Disposable {
+const POINTER_SIZE = 8;
+
+// TODO: made llm do this, didnt check it, check it, fix it if has behevoir that you dont like
+export class HashMapStore<Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
-	public readonly shape: Shape;
+	public readonly writable: boolean;
 
-	private entries: BlobStore;
+	private readonly key: Key;
+	private readonly keyValueCodec: StructCodec<{ key: Key; value: Value }>;
+	private readonly maxRecordSize: number;
 
-	private constructor(options: HashMapStoreOptions<Shape>) {
+	private readonly entries: BlobStore;
+	private readonly buckets: SharedSlotArray;
+	private readonly targetLoadFactor: number;
+	private readonly maxDrift: number;
+
+	private bucketCount: number;
+	private cursor = 0;
+	private persistedSize = 0;
+	private entryCount = 0;
+
+	private constructor(options: HashMapStoreOptions<Key, Value>) {
 		super();
 		this.path = options.path;
-		this.shape = options.shape;
+		this.writable = options.writable;
+		this.key = options.key;
+		this.targetLoadFactor = options.loadFactor.target;
+		this.maxDrift = options.loadFactor.maxDrift;
+		this.maxRecordSize = options.maxEntrySize + POINTER_SIZE;
+		this.keyValueCodec = new StructCodec({ key: options.key, value: options.value });
+		this.bucketCount = Math.max(1, options.bucketCount ?? 1 << 12);
 		this.entries = BlobStore.open(options.blob);
+		this.buckets = SharedSlotArray.open({ path: join(options.path, "buckets"), writable: options.writable, minChunkSize: 1 << 20 });
 	}
 
-	size(): number {
-		throw new Error("Method not implemented.");
+	static open<Key extends Codec, Value extends Codec>(
+		options: HashMapStoreOptions<Key, Value>,
+	): HashMapStore<Key, Value> {
+		if (options.maxEntrySize <= 0) throw new Error("maxEntrySize must be positive");
+		if (options.loadFactor.target <= 0 || options.loadFactor.maxDrift < 0) throw new Error("loadFactor must be positive");
+		return new HashMapStore(options);
+	}
+
+	private hashKey(keyBytes: Uint8Array): number {
+		let hash = 0x811c9dc5;
+		for (let index = 0; index < keyBytes.length; index++) hash = Math.imul(hash ^ keyBytes[index]!, 0x01000193);
+		return hash >>> 0;
+	}
+
+	private bucketIndexOf(keyBytes: Uint8Array): number {
+		return this.hashKey(keyBytes) % this.bucketCount;
+	}
+
+	next(entrySize: number): number {
+		return this.entries.next(entrySize + POINTER_SIZE, this.cursor);
+	}
+
+	mmap(): Uint8Array {
+		return this.entries.mmap(this.cursor);
+	}
+
+	commit(endOffset: number): void {
+		if (!this.writable) throw new Error("commit on read-only store");
+		this.cursor = endOffset;
 	}
 
 	reveal(size: number): void {
-		throw new Error("Method not implemented.");
+		if (size < 0) throw new RangeError(`reveal ${size} must be non-negative`);
+		this.cursor = size;
+		this.persistedSize = size;
 	}
 
-	persist(): void {
-		throw new Error("Method not implemented.");
+	persist(newSize: number): void {
+		if (!this.writable) throw new Error("persist on read-only store");
+		this.buildIncremental(newSize);
+		if (this.entryCount > 0) {
+			const live = this.entryCount / this.bucketCount;
+			if (live < this.targetLoadFactor * (1 - this.maxDrift) || live > this.targetLoadFactor * (1 + this.maxDrift)) {
+				this.reshard(newSize);
+			}
+		}
 	}
 
 	truncate(size: number): void {
-		throw new Error("Method not implemented.");
+		if (!this.writable) throw new Error("truncate on read-only store");
+		if (size < 0) throw new RangeError(`truncate ${size} must be non-negative`);
+		this.fullRebuild(size);
 	}
 
-	sync(): void {
-		throw new Error("Method not implemented.");
+	/** Build buckets for the new area [persistedSize, size). Incremental, O(new entries). */
+	private buildIncremental(size: number): void {
+		let offset = this.entries.next(this.maxRecordSize, this.persistedSize);
+		while (offset < size) {
+			const view = this.entries.mmap(offset);
+			const [record, consumed] = this.keyValueCodec.decode(view, POINTER_SIZE);
+			const bucket = this.bucketIndexOf(this.key.encode(record.key));
+			const head = Number(this.buckets.get(bucket));
+			view.set(this.pointerToBytes(head), 0);
+			this.buckets.set(bucket, BigInt(offset + 1));
+			this.entryCount++;
+			offset = this.entries.next(this.maxRecordSize, offset + POINTER_SIZE + consumed);
+		}
+		this.cursor = size;
+		this.persistedSize = size;
+	}
+
+	/** Recompute bucketCount from the load factor and rebuild all heads under it. */
+	private reshard(size: number): void {
+		this.bucketCount = Math.max(1, Math.round(this.entryCount / this.targetLoadFactor));
+		this.buildAllHeads(size);
+	}
+
+	/** Re-count entries, recompute bucketCount from the load factor, rebuild all heads. */
+	private fullRebuild(size: number): void {
+		let count = 0;
+		let offset = this.entries.next(this.maxRecordSize, 0);
+		while (offset < size) {
+			const [, consumed] = this.keyValueCodec.decode(this.entries.mmap(offset), POINTER_SIZE);
+			count++;
+			offset = this.entries.next(this.maxRecordSize, offset + POINTER_SIZE + consumed);
+		}
+		this.entryCount = count;
+		this.bucketCount = Math.max(1, Math.round(count / this.targetLoadFactor));
+		this.cursor = size;
+		this.persistedSize = size;
+		this.buildAllHeads(size);
+	}
+
+	/** Zero all bucket slots, then walk entries oldest-first setting heads + previous. */
+	private buildAllHeads(size: number): void {
+		for (let index = 0; index < this.bucketCount; index++) this.buckets.set(index, 0n);
+		let offset = this.entries.next(this.maxRecordSize, 0);
+		while (offset < size) {
+			const view = this.entries.mmap(offset);
+			const [record, consumed] = this.keyValueCodec.decode(view, POINTER_SIZE);
+			const bucket = this.bucketIndexOf(this.key.encode(record.key));
+			const head = Number(this.buckets.get(bucket));
+			view.set(this.pointerToBytes(head), 0);
+			this.buckets.set(bucket, BigInt(offset + 1));
+			offset = this.entries.next(this.maxRecordSize, offset + POINTER_SIZE + consumed);
+		}
+	}
+
+	private findEntry(keyBytes: Uint8Array): { offset: number } | undefined {
+		let head = Number(this.buckets.get(this.bucketIndexOf(keyBytes)));
+		while (head !== 0) {
+			const entryOffset = head - 1;
+			if (entryOffset >= this.cursor) return undefined;
+			const view = this.entries.mmap(entryOffset);
+			const [record] = this.keyValueCodec.decode(view, POINTER_SIZE);
+			if (equals(keyBytes, this.key.encode(record.key))) return { offset: entryOffset };
+			head = Number(new DataView(view.buffer, view.byteOffset, POINTER_SIZE).getBigUint64(0, true));
+		}
+		return undefined;
+	}
+
+	get(key: Codec.InferInput<Key>): Codec.InferOutput<Value> | undefined {
+		const found = this.findEntry(this.key.encode(key));
+		if (!found) return undefined;
+		return this.readValue(found.offset);
+	}
+
+	getPointer(key: Codec.InferInput<Key>): number | undefined {
+		return this.findEntry(this.key.encode(key))?.offset;
+	}
+
+	getValueAndPointer(key: Codec.InferInput<Key>): [Codec.InferOutput<Value>, number] | undefined {
+		const found = this.findEntry(this.key.encode(key));
+		if (!found) return undefined;
+		return [this.readValue(found.offset), found.offset];
+	}
+
+	private readValue(entryOffset: number): Codec.InferOutput<Value> {
+		const view = this.entries.mmap(entryOffset);
+		return this.keyValueCodec.decode(view, POINTER_SIZE)[0].value;
+	}
+
+	has(key: Codec.InferInput<Key>): boolean {
+		return this.get(key) !== undefined;
+	}
+
+	private pointerToBytes(value: number): Uint8Array {
+		const out = new Uint8Array(POINTER_SIZE);
+		new DataView(out.buffer).setBigUint64(0, BigInt(value), true);
+		return out;
+	}
+
+	override size(): number {
+		return this.cursor;
+	}
+
+	override sync(): void {
+		this.entries.sync();
 	}
 
 	close(): void {
-		throw new Error("Method not implemented.");
+		this.entries.close();
 	}
 
 	[Symbol.dispose](): void {

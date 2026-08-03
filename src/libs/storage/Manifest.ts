@@ -77,7 +77,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
 				const { store, channel } = value;
 				const size = store.size();
-				store.persist();
+				store.persist(size);
 				this.pinQuery.run({ name, size });
 				channel.postMessage(size);
 			}
