@@ -1,5 +1,7 @@
 import type { Job, Result } from "./archive.worker.ts";
 
+import type zlib from "node:zlib";
+
 type Pending = {
 	job: Job;
 	resolve: (archivedSize: number) => void;
@@ -39,7 +41,7 @@ export class ArchiveWorkerPool implements Disposable {
 	}
 
 	/** Archive rawPath into tmpPath with the given zstd params. Resolves with the archived byte size. */
-	archive(index: number, rawPath: string, tmpPath: string, params: Record<number, number>): Promise<number> {
+	archive(index: number, rawPath: string, tmpPath: string, params: zlib.ZstdOptions["params"]): Promise<number> {
 		if (this.disposed) return Promise.reject(new Error("archive pool is disposed"));
 		return new Promise<number>((resolve, reject) => {
 			const job: Job = { id: this.nextJobId++, index, rawPath, tmpPath, params };

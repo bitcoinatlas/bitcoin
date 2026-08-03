@@ -40,7 +40,7 @@ export class BlobStore extends Store implements Disposable {
 
 	private pool: ArchiveWorkerPool | undefined;
 	private maxRestoredChunks = 0;
-	private archiveParams: Record<number, number> = {};
+	private archiveParams: zlib.ZstdOptions["params"] = {};
 	private restoreSyncOptions: zlib.ZstdOptions = {};
 	private restoreStreamOptions: zlib.ZstdOptions = {};
 	private restoring = new Map<string, Promise<void>>();
@@ -215,16 +215,15 @@ export class BlobStore extends Store implements Disposable {
 
 		this.maxRestoredChunks = options.maxRestoredChunks;
 		this.pool = new ArchiveWorkerPool(options.parallelism ?? DEFAULT_PARALLELISM);
-		this.archiveParams = mapZstdParams(options.zstd.archive, "ZSTD_c_");
-		const restoreParams = mapZstdParams(options.zstd.restore, "ZSTD_d_");
+		this.archiveParams = mapZstdParams("ZSTD_c_", options.zstd.archive);
+		const restoreParams = mapZstdParams("ZSTD_d_", options.zstd.restore);
 		this.restoreSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: restoreParams };
 		this.restoreStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: restoreParams };
 
-		this.#runArchiveLoop().catch((e) => console.error("[archive] background loop died:", e));
+		this.#runArchiveLoop(this.pool).catch((e) => console.error("[archive] background loop died:", e));
 	}
 
-	async #runArchiveLoop(): Promise<void> {
-		const pool = this.pool!;
+	async #runArchiveLoop(pool: ArchiveWorkerPool): Promise<void> {
 		while (!this.disposed) {
 			const tailIndex = Math.floor(this.size() / this.chunkSize);
 			const batch: Promise<void>[] = [];
@@ -283,11 +282,18 @@ function cleanUp(root: string): void {
 	}
 }
 
-function mapZstdParams(params: Record<string, number | undefined>, prefix: "ZSTD_c_" | "ZSTD_d_"): Record<number, number> {
-	const out: Record<number, number> = {};
+type ZLIB_CONSTANTS = typeof constants;
+type ZLIB_ZSTD_PREFIX = "ZSTD_c_" | "ZSTD_d_";
+type ZSTD_INFERED<P extends ZLIB_ZSTD_PREFIX = ZLIB_ZSTD_PREFIX> = {
+	[K in keyof ZLIB_CONSTANTS as K extends `${P}${infer U}` ? Extract<U, string> : never]?: ZLIB_CONSTANTS[K];
+};
+
+function mapZstdParams<P extends ZLIB_ZSTD_PREFIX>(prefix: P, params: ZSTD_INFERED<P>): zlib.ZstdOptions["params"];
+function mapZstdParams(prefix: string, params: { [K in string]?: ZSTD_INFERED[keyof ZSTD_INFERED] }): zlib.ZstdOptions["params"] {
+	const out: zlib.ZstdOptions["params"] = {};
 	for (const [key, value] of Object.entries(params)) {
 		if (value === undefined) continue;
-		out[(constants as Record<string, number>)[`${prefix}${key}`]!] = value;
+		out[constants[`${prefix}${key}` as never]] = value;
 	}
 	return out;
 }
@@ -296,7 +302,7 @@ function isArchived(path: string): boolean {
 	return existsSync(archivePath(path));
 }
 
-async function archive(pool: ArchiveWorkerPool, id: number, path: string, params: Record<number, number>): Promise<void> {
+async function archive(pool: ArchiveWorkerPool, id: number, path: string, params: zlib.ZstdOptions["params"]): Promise<void> {
 	if (existsSync(archivePath(path))) return;
 	try {
 		await Deno.stat(path);

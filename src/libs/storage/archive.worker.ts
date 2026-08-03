@@ -14,19 +14,17 @@ import zlib from "node:zlib";
 // tmp, and reports back. Nothing large ever crosses the isolate boundary, which
 // matters because chunks are ~1GB.
 
-type ArchiveParams = Record<number, number>;
-
-type Job = {
+export type Job = {
 	id: number;
 	index: number;
 	rawPath: string;
 	tmpPath: string;
-	params: ArchiveParams;
+	params: zlib.ZstdOptions["params"];
 };
 
-type Done = { id: number; index: number; ok: true; archivedSize: number };
-type Failed = { id: number; index: number; ok: false; error: string };
-type Result = Done | Failed;
+export type Done = { id: number; index: number; ok: true; archivedSize: number };
+export type Failed = { id: number; index: number; ok: false; error: string };
+export type Result = Done | Failed;
 
 self.onmessage = async (event: MessageEvent<Job>) => {
 	const { id, index, rawPath, tmpPath, params } = event.data;
@@ -43,5 +41,3 @@ self.onmessage = async (event: MessageEvent<Job>) => {
 		self.postMessage(result);
 	}
 };
-
-export type { Failed, Job, Result };
