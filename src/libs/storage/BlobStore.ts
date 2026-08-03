@@ -121,7 +121,7 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	// TODO: later get rid of this infavor of mmap()
-	prepare(offset: number, bytes: Uint8Array): number {
+	commit(offset: number, bytes: Uint8Array): number {
 		const size = this.size();
 		if (offset < size) throw new Error(`write offset=${offset} is behind the cursor (size=${size}); writes never overwrite live data`);
 		const index = Math.floor(offset / this.chunkSize);

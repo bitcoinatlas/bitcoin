@@ -107,12 +107,12 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 
 	push(item: Codec.InferInput<T>): number {
 		const pointer = this.blob.next(this.codec.stride.size);
-		const size = pointer + this.blob.prepare(pointer, this.codec.encode(item));
+		const size = pointer + this.blob.commit(pointer, this.codec.encode(item));
 		this.blob.reveal(size);
 		return pointer / this.codec.stride.size;
 	}
 
-	prepare(index: number, item: Codec.InferInput<T>): void {
+	commit(index: number, item: Codec.InferInput<T>): void {
 		const size = this.size();
 		if (index < size) {
 			throw new RangeError([
@@ -120,7 +120,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 				`set can only fill space at or in front of the cursor`,
 			].join("\n"));
 		}
-		this.blob.prepare(index * this.codec.stride.size, this.codec.encode(item));
+		this.blob.commit(index * this.codec.stride.size, this.codec.encode(item));
 	}
 
 	sync(): void {

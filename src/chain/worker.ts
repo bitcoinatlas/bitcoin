@@ -241,7 +241,7 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 					}),
 				};
 
-				txStoreOffset += chainStore.stores.tx.prepare(txStoreOffset, StoredTx.encode(storedTx));
+				txStoreOffset += chainStore.stores.tx.commit(txStoreOffset, StoredTx.encode(storedTx));
 			}
 		}
 
