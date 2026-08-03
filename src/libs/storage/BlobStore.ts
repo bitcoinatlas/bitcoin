@@ -5,7 +5,7 @@ import { join } from "@std/path";
 import { MiB, SECOND } from "~/constants.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
 import { Store } from "~/libs/storage/Store.ts";
-import { CompressWorkerPool } from "./CompressWorkerPool.ts";
+import { ArchiveWorkerPool } from "./ArchiveWorkerPool.ts";
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -17,12 +17,12 @@ const DEFAULT_PARALLELISM = Math.min(PARALLELISM_THREADS, Math.max(8, Math.floor
 const RESTORE_STREAM_BUFFER_SIZE = 8 * MiB;
 const RESTORE_SYNC_CHUNK_SIZE = 64 * MiB;
 
-export type CompressionOptions = {
-	maxInflatedChunks: number;
+export type ArchiveOptions = {
+	maxRestoredChunks: number;
 	parallelism?: number;
 	zstd: {
-		compress: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
-		decompress: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
+		archive: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
+		restore: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
 	};
 };
 
@@ -38,11 +38,11 @@ export class BlobStore extends Store implements Disposable {
 	public readonly chunkSize: number;
 	private cursor: number;
 
-	private pool: CompressWorkerPool | undefined;
-	private maxInflatedChunks = 0;
-	private compressParams: Record<number, number> = {};
-	private decompressSyncOptions: zlib.ZstdOptions = {};
-	private decompressStreamOptions: zlib.ZstdOptions = {};
+	private pool: ArchiveWorkerPool | undefined;
+	private maxRestoredChunks = 0;
+	private archiveParams: Record<number, number> = {};
+	private restoreSyncOptions: zlib.ZstdOptions = {};
+	private restoreStreamOptions: zlib.ZstdOptions = {};
 	private restoring = new Map<string, Promise<void>>();
 
 	private chunks = new Map<number, Chunk>();
@@ -96,7 +96,7 @@ export class BlobStore extends Store implements Disposable {
 
 		const tailPath = chunkPath(this.path, newTailIndex);
 		if (this.pool && isArchived(tailPath)) {
-			ensureRestored(tailPath, this.decompressSyncOptions);
+			ensureRestored(tailPath, this.restoreSyncOptions);
 			Deno.removeSync(archivePath(tailPath), { recursive: true });
 			Deno.removeSync(archiveTmpPath(tailPath), { recursive: true });
 		}
@@ -161,7 +161,7 @@ export class BlobStore extends Store implements Disposable {
 		const path = chunkPath(this.path, index);
 		if (this.pool) {
 			if (isArchived(path) && !existsSync(path)) this.#tryMakeSpace(index);
-			ensureRestored(path, this.decompressSyncOptions);
+			ensureRestored(path, this.restoreSyncOptions);
 		}
 		return this.#map(index, Mmap.openSync(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
@@ -173,7 +173,7 @@ export class BlobStore extends Store implements Disposable {
 		const path = chunkPath(this.path, index);
 		if (this.pool) {
 			if (isArchived(path) && !existsSync(path)) this.#tryMakeSpace(index);
-			await ensureRestoredAsync(path, this.decompressStreamOptions, this.restoring);
+			await ensureRestoredAsync(path, this.restoreStreamOptions, this.restoring);
 		}
 		return this.#map(index, await Mmap.open(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
@@ -186,18 +186,18 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	#tryMakeSpace(incoming: number): void {
-		const inflated: number[] = [];
+		const restored: number[] = [];
 		for (const index of this.chunks.keys()) {
 			if (index === incoming) continue;
 			const path = chunkPath(this.path, index);
 			if (this.restoring.has(path) || !isArchived(path)) continue;
-			inflated.push(index);
+			restored.push(index);
 		}
-		let over = inflated.length + 1 - this.maxInflatedChunks;
-		for (const index of inflated) {
+		let over = restored.length + 1 - this.maxRestoredChunks;
+		for (const index of restored) {
 			if (over <= 0) break;
 			this.#closeChunk(index);
-			deinflate(chunkPath(this.path, index));
+			unrestore(chunkPath(this.path, index));
 			over--;
 		}
 	}
@@ -209,18 +209,18 @@ export class BlobStore extends Store implements Disposable {
 		this.chunks.delete(index);
 	}
 
-	startCompression(options: CompressionOptions): void {
-		if (this.pool) throw new Error("compression already started on this store");
-		if (options.maxInflatedChunks < 1) throw new Error("compression.maxInflatedChunks must be >= 1");
+	startArchiveWorkers(options: ArchiveOptions): void {
+		if (this.pool) throw new Error("archiving already started on this store");
+		if (options.maxRestoredChunks < 1) throw new Error("archive.maxRestoredChunks must be >= 1");
 
-		this.maxInflatedChunks = options.maxInflatedChunks;
-		this.pool = new CompressWorkerPool(options.parallelism ?? DEFAULT_PARALLELISM);
-		this.compressParams = mapZstdParams(options.zstd.compress, "ZSTD_c_");
-		const decompressParams = mapZstdParams(options.zstd.decompress, "ZSTD_d_");
-		this.decompressSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: decompressParams };
-		this.decompressStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: decompressParams };
+		this.maxRestoredChunks = options.maxRestoredChunks;
+		this.pool = new ArchiveWorkerPool(options.parallelism ?? DEFAULT_PARALLELISM);
+		this.archiveParams = mapZstdParams(options.zstd.archive, "ZSTD_c_");
+		const restoreParams = mapZstdParams(options.zstd.restore, "ZSTD_d_");
+		this.restoreSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: restoreParams };
+		this.restoreStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: restoreParams };
 
-		this.#runArchiveLoop().catch((e) => console.error("[compress] background loop died:", e));
+		this.#runArchiveLoop().catch((e) => console.error("[archive] background loop died:", e));
 	}
 
 	async #runArchiveLoop(): Promise<void> {
@@ -233,9 +233,9 @@ export class BlobStore extends Store implements Disposable {
 				if (isArchived(path) || !existsSync(path)) continue;
 				const at = index;
 				batch.push(
-					archive(pool, at, path, this.compressParams)
+					archive(pool, at, path, this.archiveParams)
 						.then(() => this.#closeChunk(at))
-						.catch((e) => console.error(`[compress] chunk ${at} failed:`, e)),
+						.catch((e) => console.error(`[archive] chunk ${at} failed:`, e)),
 				);
 			}
 			if (batch.length) await Promise.all(batch);
@@ -296,7 +296,7 @@ function isArchived(path: string): boolean {
 	return existsSync(archivePath(path));
 }
 
-async function archive(pool: CompressWorkerPool, id: number, path: string, params: Record<number, number>): Promise<void> {
+async function archive(pool: ArchiveWorkerPool, id: number, path: string, params: Record<number, number>): Promise<void> {
 	if (existsSync(archivePath(path))) return;
 	try {
 		await Deno.stat(path);
@@ -306,7 +306,7 @@ async function archive(pool: CompressWorkerPool, id: number, path: string, param
 	}
 
 	const tmp = archiveTmpPath(path);
-	await pool.compress(id, path, tmp, params);
+	await pool.archive(id, path, tmp, params);
 
 	const lock = Deno.openSync(lockPath(path), { create: true, write: true, read: true });
 	try {
@@ -330,8 +330,8 @@ function ensureRestored(path: string, options: zlib.ZstdOptions): void {
 		lock.lockSync(true);
 		if (existsSync(path)) return;
 
-		const compressed = Deno.readFileSync(archivePath(path));
-		const raw = zlib.zstdDecompressSync(compressed, options);
+		const archived = Deno.readFileSync(archivePath(path));
+		const raw = zlib.zstdDecompressSync(archived, options);
 		const tmp = restoreTmpPath(path);
 		Deno.writeFileSync(tmp, raw);
 		Deno.renameSync(tmp, path);
@@ -373,7 +373,7 @@ function ensureRestoredAsync(path: string, options: zlib.ZstdOptions, restoring:
 	return promise.finally(() => restoring.delete(path));
 }
 
-function deinflate(path: string): void {
+function unrestore(path: string): void {
 	if (!existsSync(archivePath(path))) return;
 	const lock = Deno.openSync(lockPath(path), { create: true, write: true, read: true });
 	try {
