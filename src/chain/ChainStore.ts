@@ -1,7 +1,6 @@
 import { StructCodec, U32, VarInt } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { U40 } from "~/codec/primitives/U40.ts";
 import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredBlockInfo } from "~/codec/stored/StoredBlockInfo.ts";

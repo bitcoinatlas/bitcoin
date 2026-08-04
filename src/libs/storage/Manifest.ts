@@ -28,7 +28,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				const channel = new BroadcastChannel(`${BROADCAST_PREFIX}${name}`);
 				channel.addEventListener("message", (event) => {
 					const size = event.data as number;
-					store.reveal(size);
+					store.reveal(size, true);
 				});
 				return [name, { store, channel }];
 			}),
@@ -94,7 +94,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 			const value = this.storeMap.get(name);
 			if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
 			const { store } = value;
-			store.reveal(reveal);
+			store.reveal(reveal, true);
 			if (pin === reveal) continue;
 			store.truncate(pin);
 		}

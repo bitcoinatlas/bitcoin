@@ -38,8 +38,8 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return this.blob.size() / this.codec.stride.size;
 	}
 
-	public reveal(size: number): void {
-		return this.blob.reveal(size * this.codec.stride.size);
+	public reveal(size: number, isBroadcast?: boolean): void {
+		return this.blob.reveal(size * this.codec.stride.size, isBroadcast);
 	}
 
 	public persist(size: number): void {
@@ -48,10 +48,6 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 
 	public truncate(size: number): void {
 		return this.blob.truncate(size * this.codec.stride.size);
-	}
-
-	public next(offset = this.size()): number {
-		return this.blob.next(this.codec.stride.size, offset * this.codec.stride.size) / this.codec.stride.size;
 	}
 
 	public get(index: number): Codec.InferOutput<T> | undefined {
@@ -105,15 +101,9 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return this.blob.mmap(index * this.codec.stride.size, this.codec.stride.size);
 	}
 
-	public push(item: Codec.InferInput<T>): number {
-		const pointer = this.blob.next(this.codec.stride.size);
-		const size = pointer + this.blob.commit(pointer, this.codec.encode(item));
-		this.blob.reveal(size);
-		return pointer / this.codec.stride.size;
-	}
-
-	public commit(index: number, item: Codec.InferInput<T>): void {
+	public commit(item: Codec.InferInput<T>, index?: number): void {
 		const size = this.size();
+		index ??= size;
 		if (index < size) {
 			throw new RangeError([
 				`set index=${index} is behind the cursor (size=${size}).`,

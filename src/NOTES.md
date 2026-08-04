@@ -1,3 +1,46 @@
+## 9 — reveal / persist / append (storage layering)
+
+context in code:
+- `Store` = size/reveal/persist/truncate/sync.
+- `Manifest.pin()` is 2 tx: (A) sync + record `reveal=size`; (B) `persist(size)` + record `pin=size` + broadcast size.
+- other workers ONLY move via broadcast -> `reveal(size)`. reveal is local.
+- BlobStore: `persist === reveal` (cursor is truth). HashMapStore: `reveal` just moves cursor,
+  `persist` walks entries and WIRES buckets, `truncate` backward-replays back-pointers to undo buckets.
+
+the real asymmetry (this is what i kept circling):
+- for BlobStore "revealed" and "index-consistent" are the SAME event.
+- for HashMapStore they are TWO events:
+  1. entries physically on disk + synced (so truncate can undo via back-pointer)
+  2. buckets point at those entries (index live)
+  `persist` does #2, MUST run once, single writer, order-dependent (linked-list back-pointer per entry
+  written during persist). this is fundamental, not a smell. the name `persist` is what mislead me;
+  it's really "commit/link the index", not "second reveal".
+
+why the two things i want break the clean picture:
+1. parallel writers to entries -> fine for entry BYTES (append-only, negotiated offsets, blobstore-style).
+   NOT fine for bucket wiring (order-dependent linked list). do NOT parallelize wiring.
+2. worker wants to see its own writes before pin (dedup/has during work) -> today get/has read buckets,
+   buckets aren't wired until persist -> can't see own writes. this is the "read disk but can't see"
+   pain.
+
+decision (keep the layering, stop overloading reveal):
+1. reveal = forward-only + IDEMPOTENT in every store (`if (size <= size()) return;`). makes dup /
+   out-of-order broadcasts harmless. (blobstore currently throws, hashmap doesn't guard — fix both.)
+2. Manifest.pin: before broadcast, skip reveal when incoming <= current (the guard i described).
+3. BlobStore: bring back `append(bytes)` as SUGAR over primitives = `commit(cursor,bytes); reveal(+len)`.
+   NOT a replacement for commit/reveal/mmap. keep persist = reveal.
+4. keep `persist`. consider renaming -> `commitIndex` / `link` so i stop reading it as reveal-twice.
+5. HashMapStore: add a per-worker in-memory STAGING OVERLAY for range [cursor, writeHead):
+   Map<key, entryOffset>. get/has/getPointer check overlay first, then wired buckets.
+   on persist -> wire overlay range into real buckets, clear overlay.
+   on truncate/rollback of un-persisted range -> just drop overlay (free undo, no replay needed;
+   back-pointer replay only for already-persisted entries).
+   readers still only ever see wired buckets (change only during single-writer persist) -> no tearing.
+
+DO NOT: make reveal read disk to "decide state"; do NOT move bucket wiring into parallel workers.
+parallelism stays at the entry-bytes layer; index-linking stays single-writer at persist. overlay
+bridges the visibility gap without breaking either invariant.
+
 ## 8
 
 after current WIP is done, create a root dir called project/ and in it create other project dirs with their own child deno.json

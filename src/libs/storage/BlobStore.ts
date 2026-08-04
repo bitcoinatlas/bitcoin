@@ -75,10 +75,17 @@ export class BlobStore extends Store implements Disposable {
 		return room < maxItemSize ? from + room : from;
 	}
 
-	public reveal(size: number): void {
+	public reveal(size: number, _isBroadcast?: boolean): void {
 		const current = this.size();
 		if (size < current) throw new RangeError(`reveal size=${size} is behind the cursor (size=${current}); reveal only moves forward`);
 		this.cursor = size;
+	}
+
+	/** append convenience: write at the cursor then reveal past it. sugar over commit+reveal. */
+	public append(bytes: Uint8Array, from: number = this.next(bytes.length)): number {
+		this.commit(from, bytes);
+		this.reveal(from + bytes.length);
+		return from;
 	}
 
 	public persist(size: number): void {
@@ -140,9 +147,7 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	public mmap(begin?: number, length?: number): Uint8Array {
-		const size = this.size();
-		begin ??= size;
-		if (begin < size) throw new Error(`mmap begin=${begin} is behind the cursor (size=${size}); writes never overwrite live data`);
+		begin ??= this.size();
 		const index = Math.floor(begin / this.chunkSize);
 		const start = begin % this.chunkSize;
 		const available = this.chunkSize - start;

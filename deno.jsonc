@@ -43,7 +43,8 @@
 		],
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
-		"noImplicitOverride": true
+		"noImplicitOverride": true,
+		"useUnknownInCatchVariables": true
 	},
 	"fmt": {
 		"lineWidth": 140,
@@ -53,13 +54,7 @@
 	"lint": {
 		"plugins": ["./plugins/strict_classes.ts", "./plugins/imports.ts"],
 		"rules": {
-			"exclude": [
-				"no-namespace",
-				"no-explicit-any",
-				"ban-types",
-				"require-await",
-				"no-inner-declarations"
-			],
+			"exclude": ["no-namespace", "no-explicit-any", "ban-types", "require-await", "no-inner-declarations"],
 			"include": ["no-slow-types"]
 		}
 	}

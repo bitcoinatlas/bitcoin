@@ -1,6 +1,6 @@
-import { ARGS } from "~/env.ts";
 import { chainStore } from "~/chain/ChainStore.ts";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
+import { ARGS } from "~/env.ts";
 
 function wireWorker(name: string, url: URL): Worker {
 	const worker = new Worker(url, { type: "module", name });
@@ -26,8 +26,8 @@ if (import.meta.main) {
 	chainStore.atomic.recover();
 
 	if (chainStore.stores.header.size() === 0) {
-		const height = chainStore.stores.header.push(GENESIS_BLOCK_HEADER_DECODED);
-		chainStore.stores.blockhash.put(GENESIS_BLOCK_HASH, height);
+		const height = chainStore.stores.header.commit(GENESIS_BLOCK_HEADER_DECODED);
+		chainStore.stores.blockhash.commit(GENESIS_BLOCK_HASH, chainStore.stores.blockhash.value.encode(height));
 		chainStore.atomic.pin(["header", "blockhash"]);
 		console.log("[main] seeded genesis header");
 	}

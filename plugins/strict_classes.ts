@@ -1,22 +1,15 @@
-type ClassMember = Deno.lint.MethodDefinition | Deno.lint.PropertyDefinition;
-
-function isEmptyMethodBody(node: Deno.lint.MethodDefinition): boolean {
-	const value = node.value;
-	if (value.type !== "FunctionExpression") return false;
-	const body = value.body;
-	return body.body.length === 0;
-}
-
-function isUnassignedProperty(node: Deno.lint.PropertyDefinition): boolean {
-	return node.value === null;
-}
+type ClassMember =
+	| Deno.lint.MethodDefinition
+	| Deno.lint.PropertyDefinition
+	| Deno.lint.TSAbstractMethodDefinition
+	| Deno.lint.TSAbstractPropertyDefinition;
 
 const plugin: Deno.lint.Plugin = {
 	name: "strict-classes",
 	rules: {
 		"explicit-accessibility": {
 			create(context) {
-				function checkExplicitAccessibility(node: ClassMember): void {
+				function check(node: ClassMember): void {
 					if (node.key.type === "PrivateIdentifier") {
 						context.report({
 							node,
@@ -34,11 +27,16 @@ const plugin: Deno.lint.Plugin = {
 
 				return {
 					MethodDefinition(node: Deno.lint.MethodDefinition): void {
-						checkExplicitAccessibility(node);
+						check(node);
 					},
-
 					PropertyDefinition(node: Deno.lint.PropertyDefinition): void {
-						checkExplicitAccessibility(node);
+						check(node);
+					},
+					TSAbstractMethodDefinition(node): void {
+						check(node);
+					},
+					TSAbstractPropertyDefinition(node): void {
+						check(node);
 					},
 				};
 			},
@@ -52,31 +50,11 @@ const plugin: Deno.lint.Plugin = {
 						for (const member of node.body.body) {
 							if (member.type !== "PropertyDefinition") continue;
 							if (!member.static) continue;
-							if (!isUnassignedProperty(member)) continue;
+							if (member.value !== null) continue;
 
 							context.report({
 								node: member,
 								message: "static properties must be initialized in non-abstract classes",
-							});
-						}
-					},
-				};
-			},
-		},
-		"abstract-static-methods": {
-			create(context) {
-				return {
-					ClassDeclaration(node: Deno.lint.ClassDeclaration): void {
-						if (node.abstract) return;
-
-						for (const member of node.body.body) {
-							if (member.type !== "MethodDefinition") continue;
-							if (!member.static) continue;
-							if (!isEmptyMethodBody(member)) continue;
-
-							context.report({
-								node: member,
-								message: "static methods cannot have empty bodies in non-abstract classes",
 							});
 						}
 					},

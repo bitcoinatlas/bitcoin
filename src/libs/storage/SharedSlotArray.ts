@@ -17,6 +17,8 @@ export class SharedSlotArray {
 	public readonly chunkSize: number;
 	public readonly slotsPerChunk: number;
 
+	public static BYTES_PER_SLOT = BYTES_PER_SLOT;
+
 	private cursor: BigUint64Array;
 	private chunks = new Map<number, Chunk>();
 
