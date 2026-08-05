@@ -220,6 +220,13 @@ export class BlobStore extends Store implements Disposable {
 	private closeChunk(index: number): void {
 		const chunk = this.chunks.get(index);
 		if (!chunk) return;
+		// Flush BEFORE unmapping. close() alone drops the mapping without writing
+		// dirty pages back to the file — any bytes written into this chunk since
+		// the last sync() would be silently lost, and since sync() only flushes
+		// chunks still in the cache, an evicted-but-unflushed chunk is gone for
+		// good (reads from a fresh mapping see zeros). flush() on a clean/read-only
+		// mapping is a harmless no-op.
+		chunk.mapping.flush();
 		chunk.mapping.close();
 		this.chunks.delete(index);
 	}
@@ -246,6 +253,13 @@ export class BlobStore extends Store implements Disposable {
 				const path = chunkPath(this.path, index);
 				if (isArchived(path) || !existsSync(path)) continue;
 				const at = index;
+				// The archive worker compresses the chunk FILE. If this chunk is
+				// still mapped with dirty pages, those bytes aren't on the file yet
+				// — archiving would compress stale/zero contents. Flush it to the
+				// file first (no-op if not mapped or already clean), then archive,
+				// then drop the mapping.
+				const mapped = this.chunks.get(at);
+				if (mapped) mapped.mapping.flush();
 				batch.push(
 					archive(pool, at, path, this.archiveParams)
 						.then(() => this.closeChunk(at))
@@ -261,7 +275,12 @@ export class BlobStore extends Store implements Disposable {
 		this.disposed = true;
 		this.pool?.dispose();
 		this.pool = undefined;
-		for (const chunk of this.chunks.values()) chunk.mapping.close();
+		// Flush before unmapping (see closeChunk) so a close during/after writes
+		// never drops dirty pages.
+		for (const chunk of this.chunks.values()) {
+			chunk.mapping.flush();
+			chunk.mapping.close();
+		}
 		this.chunks.clear();
 	}
 
