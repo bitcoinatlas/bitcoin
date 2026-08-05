@@ -97,6 +97,7 @@ endpointRouter.registerHandler("GET /v1/block/tip", async () => {
 
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params }) => {
 	const height = resolveHeight(params.pathname.hashOrHeight);
+	console.log(height);
 	if (height === undefined) return { status: "OK", data: null };
 	return { status: "OK", data: await getBlockByHeight(height) };
 });

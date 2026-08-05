@@ -42,8 +42,8 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return this.blob.reveal(size * this.codec.stride.size, isBroadcast);
 	}
 
-	public persist(size: number): void {
-		return this.blob.persist(size);
+	public commit(size: number): void {
+		return this.blob.commit(size * this.codec.stride.size);
 	}
 
 	public truncate(size: number): void {
@@ -98,10 +98,13 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 	}
 
 	public mmap(index: number) {
-		return this.blob.mmap(index * this.codec.stride.size, this.codec.stride.size);
+		// chunkSize is always a multiple of stride.size (enforced in open()), so an
+		// item at this offset never straddles a chunk boundary — begin can be the
+		// raw index*stride offset directly, no next() needed.
+		return this.blob.mmap(this.codec.stride.size, index * this.codec.stride.size);
 	}
 
-	public commit(item: Codec.InferInput<T>, index?: number): void {
+	public stage(item: Codec.InferInput<T>, index?: number): number {
 		const size = this.size();
 		index ??= size;
 		if (index < size) {
@@ -110,7 +113,8 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 				`set can only fill space at or in front of the cursor`,
 			].join("\n"));
 		}
-		this.blob.commit(index * this.codec.stride.size, this.codec.encode(item));
+		this.codec.encodeInto(item, this.mmap(index));
+		return index;
 	}
 
 	public sync(): void {

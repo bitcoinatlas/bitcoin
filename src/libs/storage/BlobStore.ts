@@ -83,12 +83,12 @@ export class BlobStore extends Store implements Disposable {
 
 	/** append convenience: write at the cursor then reveal past it. sugar over commit+reveal. */
 	public append(bytes: Uint8Array, from: number = this.next(bytes.length)): number {
-		this.commit(from, bytes);
+		this.stage(from, bytes);
 		this.reveal(from + bytes.length);
 		return from;
 	}
 
-	public persist(size: number): void {
+	public commit(size: number): void {
 		return this.reveal(size);
 	}
 
@@ -130,7 +130,7 @@ export class BlobStore extends Store implements Disposable {
 	}
 
 	// TODO: later get rid of this infavor of mmap()
-	public commit(offset: number, bytes: Uint8Array): number {
+	public stage(offset: number, bytes: Uint8Array): number {
 		const size = this.size();
 		if (offset < size) throw new Error(`write offset=${offset} is behind the cursor (size=${size}); writes never overwrite live data`);
 		const index = Math.floor(offset / this.chunkSize);
@@ -146,19 +146,27 @@ export class BlobStore extends Store implements Disposable {
 		return bytes.byteLength;
 	}
 
-	public mmap(begin?: number, length?: number): Uint8Array {
-		begin ??= this.size();
+	// `maxItemSize` is REQUIRED and is what makes this chunk-boundary safe: `begin`
+	// defaults to `next(maxItemSize)`, which jumps to the next chunk if the current
+	// one has less than `maxItemSize` bytes left. If a caller passes an explicit
+	// `begin` (e.g. an offset it already computed elsewhere) that doesn't have room
+	// for `maxItemSize`, this THROWS rather than silently handing back whatever's
+	// left in the chunk — the old default-length behavior returned a truncated view
+	// with no error, which let byte-indexed codec writes silently drop the tail of
+	// a record whenever the cursor landed near a chunk boundary. That produced
+	// permanent, deterministic corruption at that exact offset — never fixes
+	// itself, which is why it kept reproducing at the same spot on every read.
+	public mmap(maxItemSize: number, begin: number = this.next(maxItemSize)): Uint8Array {
 		const index = Math.floor(begin / this.chunkSize);
 		const start = begin % this.chunkSize;
 		const available = this.chunkSize - start;
-		length ??= available;
-		if (length > available || length < 0) {
+		if (maxItemSize > available) {
 			throw new Error(
-				`mmap of ${length} bytes at offset=${begin} exceeds chunk ${index}'s remaining ${available} bytes; a write may never straddle a chunk boundary`,
+				`mmap of ${maxItemSize} bytes at offset=${begin} exceeds chunk ${index}'s remaining ${available} bytes; a write may never straddle a chunk boundary`,
 			);
 		}
 		const map = this.chunk(index);
-		return map.bytes.subarray(start, start + length);
+		return map.bytes.subarray(start, start + maxItemSize);
 	}
 
 	private chunk(index: number): Chunk {

@@ -77,7 +77,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
 				const { store, channel } = value;
 				const size = store.size();
-				store.persist(size);
+				store.commit(size);
 				this.pinQuery.run({ name, size });
 				channel.postMessage(size);
 			}
@@ -97,6 +97,16 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 			store.reveal(reveal, true);
 			if (pin === reveal) continue;
 			store.truncate(pin);
+		}
+	}
+
+	public initial(): void {
+		const pins = this.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
+		for (const { name, pin } of pins) {
+			const value = this.storeMap.get(name);
+			if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
+			const { store } = value;
+			store.reveal(pin, true);
 		}
 	}
 

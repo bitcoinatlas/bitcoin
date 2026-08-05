@@ -13,7 +13,7 @@ export abstract class Store {
 	 */
 	abstract reveal(size: number, isBroadcast?: boolean): void;
 	/** twin of reveal, called during pin() only instead of reveal, on the worker that said pin() */
-	abstract persist(size: number): void;
+	abstract commit(size: number): void;
 	/** truncate the storage to a specific size */
 	abstract truncate(size: number): void;
 	/** msync or fsync */

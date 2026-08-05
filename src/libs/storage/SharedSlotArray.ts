@@ -11,7 +11,7 @@ export type SharedSlotArrayOptions = {
 
 type Chunk = { mapping: Mmap; slots: BigUint64Array };
 
-export class SharedSlotArray {
+export class SharedSlotArray implements Disposable {
 	public readonly path: string;
 	public readonly writable: boolean;
 	public readonly chunkSize: number;
@@ -20,6 +20,7 @@ export class SharedSlotArray {
 	public static BYTES_PER_SLOT = BYTES_PER_SLOT;
 
 	private cursor: BigUint64Array;
+	private cursorMmap: Mmap;
 	private chunks = new Map<number, Chunk>();
 
 	private constructor(options: SharedSlotArrayOptions) {
@@ -29,17 +30,24 @@ export class SharedSlotArray {
 		this.slotsPerChunk = this.chunkSize / BYTES_PER_SLOT;
 
 		if (this.writable) Deno.mkdirSync(this.path, { recursive: true });
-		const cursorMapping = this.open(join(this.path, "CURSOR"), BYTES_PER_SLOT);
-		this.cursor = new BigUint64Array(cursorMapping.buffer(), 0, 1);
+		this.cursorMmap = this.open(join(this.path, "CURSOR"), BYTES_PER_SLOT);
+		this.cursor = new BigUint64Array(this.cursorMmap.buffer(), 0, 1);
 	}
 
 	public static open(options: SharedSlotArrayOptions): SharedSlotArray {
+		Deno.mkdirSync(options.path, { recursive: true });
 		return new SharedSlotArray(options);
 	}
 
 	private open(file: string, bytes: number): Mmap {
-		if (!this.writable) return Mmap.openSync(file, { write: false });
-		return Mmap.openSync(file, { write: true, ensureFileSize: bytes });
+		// Always ensure the backing file is at least `bytes` long, even read-only:
+		// on a fresh data dir a read-only opener (a non-committer worker, or the
+		// main isolate) can reach a store before its committer has created the
+		// file, and mapping a zero-length file throws. An all-zero region is a
+		// valid empty state (cursor 0 / all buckets empty), so this only ever
+		// creates the same empty file the committer would have. The mapping itself
+		// stays read-only when this worker isn't the committer.
+		return Mmap.openSync(file, { write: this.writable, ensureFileSize: bytes });
 	}
 
 	private chunk(chunkIndex: number): BigUint64Array {
@@ -72,5 +80,19 @@ export class SharedSlotArray {
 		if (index >= this.size()) throw new RangeError();
 		const local = index % this.slotsPerChunk;
 		return Atomics.load(this.chunk((index - local) / this.slotsPerChunk), local);
+	}
+
+	public sync(): void {
+		for (const [, chunk] of this.chunks) chunk.mapping.flush();
+		this.cursorMmap.flush();
+	}
+
+	public close() {
+		for (const [, chunk] of this.chunks) chunk.mapping.close();
+		this.cursorMmap.close();
+	}
+
+	public [Symbol.dispose](): void {
+		this.close();
 	}
 }

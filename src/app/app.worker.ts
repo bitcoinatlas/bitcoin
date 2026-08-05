@@ -1,5 +1,4 @@
 import { serveDir, ServeDirOptions } from "@std/http";
-import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { endpointRouter } from "~/app/router.ts";
 import { DEV } from "~/env.ts";
 import appHtml from "~/app/frontend/app.html" with { type: "text" };
@@ -15,12 +14,6 @@ const SERVE_DIR_OPTIONS: ServeDirOptions = {
 };
 
 await import("~/app/backend/handlers/chain.ts");
-
-// main hands us the shared control block; adopt it so store reads in request
-// handlers are fenced against the chain/p2p writers.
-self.onmessage = (event) => {
-	tryAdoptControl(event.data);
-};
 
 let appCache: string | undefined;
 async function app() {

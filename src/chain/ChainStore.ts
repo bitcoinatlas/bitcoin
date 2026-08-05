@@ -1,30 +1,27 @@
-import { StructCodec, U32, VarInt } from "@nomadshiba/codec";
+import { StructCodec, U32, U64, VarInt } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
-import { U48 } from "~/codec/primitives/U48.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredBlockInfo } from "~/codec/stored/StoredBlockInfo.ts";
 import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
-import { StoredPubkeyPointer } from "~/codec/stored/StoredPubkeyPointer.ts";
 import { StoredTxIdPointer } from "~/codec/stored/StoredTxIdPointer.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxPointer } from "~/codec/stored/StoredTxPointer.ts";
-import { COINBASE_TXID, GB, MB } from "~/constants.ts";
+import { COINBASE_TXID, GB, MAX_BLOCK_SIZE, MB } from "~/constants.ts";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore } from "~/libs/storage/ArrayStore.ts";
-import { Manifest } from "~/libs/storage/Manifest.ts";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { HashMapStore, LoadFactorOptions } from "~/libs/storage/HashMapStore.ts";
+import { Manifest } from "~/libs/storage/Manifest.ts";
 
 const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
-	target: .7,
-	maxDrift: .15,
+	target: .75,
+	maxDrift: .25,
 };
 
 export class ChainStore {
-	public readonly atomicSharedArrayBuffer: SharedArrayBuffer;
-	public readonly atomic = Manifest.open({
-		path: join(BASE_DATA_DIR, "meta"),
+	public readonly manifest = Manifest.open({
+		path: join(BASE_DATA_DIR, "manifest"),
 		stores: {
 			header: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "header"),
@@ -41,10 +38,9 @@ export class ChainStore {
 				key: Bytes32, // block hash
 				value: U32, // block height
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				writable: self.name === "p2p",
-				blob: {
-					chunkSize: 500 * MB,
-				},
+				commiter: self.name === "p2p" || self.name === "",
+				entryChunkSize: 500 * MB,
+				minBucketChunkSize: 500 * MB,
 			}),
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
@@ -54,36 +50,39 @@ export class ChainStore {
 				path: join(BASE_DATA_DIR, "txid"),
 				key: Bytes32, // tx id
 				value: StoredTxPointer, // pointer to tx block store
-				pointer: StoredTxIdPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				writable: self.name === "chain",
+				commiter: self.name === "chain" || self.name === "",
+				entryChunkSize: 500 * MB,
+				minBucketChunkSize: 500 * MB,
 			}),
 			pubkey: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "pubkey"),
 				key: StoredPubKey,
 				value: StoredTxIdPointer, // pointer to last tx of the pubkey at txid hashmap store
-				pointer: StoredPubkeyPointer,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				writable: self.name === "chain",
+				commiter: self.name === "chain" || self.name === "",
+				entryChunkSize: 500 * MB,
+				minBucketChunkSize: 500 * MB,
+				maxEntrySize: MAX_BLOCK_SIZE + StoredTxIdPointer.stride.size,
 			}),
 			spender: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "spender"),
 				key: new StructCodec({ tx: StoredTxIdPointer, output: VarInt }),
 				value: StoredTxIdPointer, // spender tx
-				pointer: U48,
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				writable: self.name === "chain",
+				commiter: self.name === "chain" || self.name === "",
+				entryChunkSize: 500 * MB,
+				minBucketChunkSize: 500 * MB,
+				maxEntrySize: StoredTxIdPointer.stride.size + StoredTxIdPointer.stride.size + U64.stride.size,
 			}),
 		},
 	});
-	public readonly stores = this.atomic.stores;
+	public readonly stores = this.manifest.stores;
 
-	private constructor(atomicSharedArrayBuffer?: SharedArrayBuffer) {
-		this.atomicSharedArrayBuffer = atomicSharedArrayBuffer ?? new SharedArrayBuffer();
-	}
+	private constructor() {}
 
-	public static open(atomicSharedArrayBuffer?: SharedArrayBuffer) {
-		return new ChainStore(atomicSharedArrayBuffer);
+	public static open() {
+		return new ChainStore();
 	}
 
 	public getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
@@ -95,3 +94,4 @@ export class ChainStore {
 }
 
 export const chainStore = ChainStore.open();
+chainStore.manifest.initial();

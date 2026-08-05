@@ -1,3 +1,9 @@
+## 10
+
+Note for future: later maybe make sure we support infinite decimals smaller than a sat. just make wrap arround it and only make min 1sat consensus valid.
+
+so later in the future like 100 years later if we need to we can just allow more decimals with a flip of a switch.
+
 ## 9 — reveal / persist / append (storage layering)
 
 context in code:

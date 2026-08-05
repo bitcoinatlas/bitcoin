@@ -1,4 +1,3 @@
-import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { Codec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { delay } from "@std/async";
@@ -12,6 +11,7 @@ import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, MAX_BLOCK_SIZE } from "~/constants.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
+import { HashMapStore } from "~/libs/storage/HashMapStore.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
 
@@ -20,7 +20,7 @@ console.log("[chain] booting");
 // Stores this worker OWNS: it is the only writer, and it pins ONLY these. The
 // header / blockhash stores belong to the p2p worker's domain — this worker
 // never writes them (p2p persists headers straight to mmap; we only consume the
-// block bodies it forwards). See Atomic.pin(names) for why the split matters.
+// block bodies it forwards). See Manifest.pin(names) for why the split matters.
 const CHAIN_STORES = ["block", "tx", "txid", "pubkey", "spender"] as const;
 
 const p2pMessageQueue = new Queue<{ type: string; data: any }>(1000);
@@ -53,7 +53,6 @@ function recordBlocks(n: number, tipHeight: number): void {
 
 self.onmessage = async (event) => {
 	console.log("[chain] main-port message event, ports:", event.ports.length, "data:", event.data);
-	tryAdoptControl(event.data); // fence this isolate's seqlocks before touching stores
 	const port = event.ports[0]!;
 	prepare(port);
 	port.start();
@@ -123,6 +122,27 @@ async function tick(port: MessagePortLike): Promise<void> {
 }
 
 /**
+ * Append a (key, value) to a HashMapStore and return its entry pointer.
+ *
+ * The store's commit model is stage → reveal → pin. `stage` writes the entry
+ * bytes at the next free slot but doesn't make it findable; a manual `reveal`
+ * stages it in the per-worker index so our OWN later `get`/`getPointer` in this
+ * same chunk can see it (prevOut lookups, BIP30 overwrite checks) before the
+ * round-ending `pin()` wires it into the shared buckets. The entry offset — the
+ * value `getPointer` returns — is the stable pointer we store elsewhere.
+ */
+function putEntry<K extends Codec, V extends Codec>(
+	store: HashMapStore<K, V>,
+	key: Codec.InferInput<K>,
+	value: Codec.InferInput<V>,
+): number {
+	const offset = store.next(store.size());
+	const size = store.stage(key, value, offset);
+	store.reveal(offset + size);
+	return offset;
+}
+
+/**
  * Consume exactly one downloaded chunk (many blocks, raw WireTxs back to back),
  * write its txs + indexes, commit, and ack p2p so it can release backpressure.
  *
@@ -136,10 +156,11 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		const chunk = chunkQueue.dequeue();
 		if (!chunk) return;
 
-		// tx is a raw BlobStore. writeInto() fills bytes AHEAD of the cursor
-		// without moving it, so we track the offset ourselves and advance the
-		// cursor once at the end (see the resize() below). Start at the next slot.
-		let txStoreOffset = chainStore.stores.tx.nextItemPointer(MAX_BLOCK_SIZE);
+		const txStore = chainStore.stores.tx;
+		// tx is a raw BlobStore. stage() fills bytes AHEAD of the cursor without
+		// moving it, so we track the offset ourselves and advance the cursor once
+		// at the end (see the reveal() below). Start at the next slot.
+		let txStoreOffset = txStore.next(MAX_BLOCK_SIZE);
 
 		let blocksInChunk = 0;
 		let offset = 0;
@@ -148,15 +169,20 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			offset += size;
 			blocksInChunk++;
 
-			// Align to a block slot: nextItemPointer bumps us to the next chunk if
-			// this one has less than a max block left, so the whole block region
-			// (count + every tx) lands contiguously in one chunk — no straddle.
-			txStoreOffset = chainStore.stores.tx.nextItemPointer(MAX_BLOCK_SIZE, txStoreOffset);
+			// Align to a block slot: next() bumps us to the next chunk if this one
+			// has less than a max block left, so the whole block region (count +
+			// every tx) lands contiguously in one chunk — no straddle.
+			txStoreOffset = txStore.next(MAX_BLOCK_SIZE, txStoreOffset);
+			// This reservation covers the WHOLE block, once — not a fresh
+			// MAX_BLOCK_SIZE for every tx inside it. blockRegionEnd is the actual
+			// boundary that reservation bought us; each tx below asks for what's
+			// left of it, not the full amount again.
+			const blockRegionEnd = txStoreOffset + MAX_BLOCK_SIZE;
 
 			// The height of THIS block is the next free block-store slot (block[i]
 			// is the block at height i; genesis is pre-seeded at 0 by the header
 			// domain but bodies start after it, so block.size() == the height we're
-			// about to write). Captured before push() for the consensus checks.
+			// about to write). Captured before stage() for the consensus checks.
 			const height = chainStore.stores.block.size();
 
 			// BIP34: from height 227931 the coinbase scriptSig must start with the
@@ -172,30 +198,28 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			const bip30Overwrite = BIP30_EXCEPTION_BLOCKS.has(height) &&
 				isBip30Exception(height, chainStore.stores.header.get(height)?.hash() ?? new Uint8Array(0));
 
-			// block[height] -> pointer to this block's first txid entry.
-			chainStore.stores.block.push({
+			// block[height] -> pointer to this block's first tx entry.
+			chainStore.stores.block.stage({
 				txPointer: txStoreOffset,
 				wireSize: size + WireBlockHeader.stride.size,
 				txCount: block.length,
 				reward: 123, // TODO: calculate later.
-			});
+			}, height);
+			chainStore.stores.block.reveal(height + 1);
 
 			for (const tx of block) {
-				// BIP30 duplicate-txid handling. Normally `put` rejects duplicates —
-				// which is correct, because BIP34 guarantees uniqueness from 227931
-				// on and no earlier duplicate exists except the two known pairs. For
-				// those two exception blocks, Core lets the new coinbase OVERWRITE the
-				// earlier identical one (whose outputs were already spent): update the
-				// existing txid entry's pointer in place and reuse its entry pointer
-				// instead of inserting a second one.
-				let txIdPointer: number;
-				const existing = bip30Overwrite ? chainStore.stores.txid.getPointer(tx.txId) : undefined;
-				if (existing !== undefined) {
-					chainStore.stores.txid.setValue(existing, txStoreOffset);
-					txIdPointer = existing;
-				} else {
-					txIdPointer = chainStore.stores.txid.put(tx.txId, txStoreOffset);
+				// BIP30 duplicate-txid handling. The store has no in-place update or
+				// delete, but commit() prepends fresh entries to their bucket head
+				// (and our per-worker stage overwrites the staged offset), so simply
+				// appending a new entry for a duplicate txid makes it win every
+				// read — exactly the OVERWRITE Core does for the two exception
+				// blocks. For every other block BIP34 guarantees uniqueness, so a
+				// duplicate never legitimately happens here.
+				if (bip30Overwrite && chainStore.stores.txid.getPointer(tx.txId) !== undefined) {
+					console.log(`[chain] BIP30 overwrite of duplicate coinbase txid at height ${height}`);
 				}
+				const txIdPointer = putEntry(chainStore.stores.txid, tx.txId, txStoreOffset);
+
 				const storedTx: Codec.InferInput<typeof StoredTx> = {
 					locktime: tx.locktime,
 					version: tx.version,
@@ -208,7 +232,7 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 							if (pointer === undefined) {
 								throw new Error("prevOut references a txid not present in the index");
 							}
-							chainStore.stores.spender.put({ tx: pointer, output: input.prevOut.output }, txIdPointer);
+							putEntry(chainStore.stores.spender, { tx: pointer, output: input.prevOut.output }, txIdPointer);
 							prevOutTxId = pointer;
 						}
 
@@ -220,18 +244,26 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 						};
 					}),
 					outputs: tx.outputs.map((output): Codec.InferInput<typeof StoredTxOutput> => {
-						let pubkeyResult = chainStore.stores.pubkey.getValueAndPointer(output.scriptPubKey);
+						// The pubkey store dedups scripts: each distinct scriptPubKey is
+						// stored ONCE and its entry offset is the stable pointer we hand
+						// out. First sighting -> stage it (value = this tx). Reuse ->
+						// keep the existing pointer and record its stored last-tx
+						// pointer as this output's previousOutputTx link.
+						const pubkeyResult = chainStore.stores.pubkey.getValueAndPointer(output.scriptPubKey);
 						if (!pubkeyResult) {
-							const pubKeyPointer = chainStore.stores.pubkey.put(output.scriptPubKey, txIdPointer);
-							pubkeyResult = [txIdPointer, pubKeyPointer];
+							const pubKeyPointer = putEntry(chainStore.stores.pubkey, output.scriptPubKey, txIdPointer);
 							return {
 								value: Number(output.value),
 								previousOutputTx: null,
 								scriptPubKey: pubKeyPointer,
 							};
 						}
+						// getValueAndPointer returns [value, pointer]: value is the
+						// pubkey's last-tx pointer, pointer is the pubkey entry itself
+						// (== the scriptPubKey pointer we store). The store has no
+						// in-place update, so the linked list can't be advanced here;
+						// we record the previous last-tx pointer and reuse the entry.
 						const [previousTxIdPointer, pubKeyPointer] = pubkeyResult;
-						chainStore.stores.pubkey.setValue(pubKeyPointer, txIdPointer);
 						return {
 							value: Number(output.value),
 							previousOutputTx: previousTxIdPointer,
@@ -240,15 +272,27 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 					}),
 				};
 
-				txStoreOffset += chainStore.stores.tx.commit(txStoreOffset, StoredTx.encode(storedTx));
+				// The block-level next(MAX_BLOCK_SIZE, ...) above reserves room for the
+				// whole block up front, once — blockRegionEnd is that reservation's real
+				// boundary. Each tx write asks for what's LEFT of the block's budget
+				// (blockRegionEnd - txStoreOffset), not a fresh MAX_BLOCK_SIZE every
+				// time — asking for the full amount on every tx demanded room the
+				// reservation never promised past the first tx, and threw spuriously
+				// partway through any block that used more than a sliver of its budget.
+				// If the block's actual total size ever exceeds what was reserved, this
+				// still throws — correctly, right here — instead of silently truncating
+				// the tx into whatever chunk space happened to remain, which is what
+				// was producing the corrupted, permanently-broken coinbase reads
+				// downstream.
+				txStoreOffset += StoredTx.encodeInto(storedTx, txStore.mmap(blockRegionEnd - txStoreOffset, txStoreOffset));
 			}
 		}
 
 		// Commit the tx blob: advance its cursor past everything we wrote so the
 		// bytes become live/readable (the txid pointers we stored point into this
 		// range). Then pin OUR domain only — one consistent snapshot per round.
-		chainStore.stores.tx.resize(txStoreOffset);
-		chainStore.atomic.pin(CHAIN_STORES);
+		txStore.reveal(txStoreOffset);
+		chainStore.manifest.pin(CHAIN_STORES);
 
 		recordBlocks(blocksInChunk, chainStore.stores.block.size() - 1);
 

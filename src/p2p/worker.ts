@@ -1,8 +1,7 @@
-import { tryAdoptControl } from "~/libs/storage/control.ts";
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
 import { chainStore } from "~/chain/ChainStore.ts";
-import { GENESIS_BLOCK_HASH } from "~/chain/genesis.ts";
+import { GENESIS_BLOCK, GENESIS_BLOCK_HASH } from "~/chain/genesis.ts";
 import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
@@ -77,8 +76,7 @@ const blockUnlisten = new Map<Peer, () => void>(); // attached block listeners
 const lastBlockAt = new Map<Peer, number>(); // peer -> last delivered-a-wanted-block time
 
 self.onmessage = async (event) => {
-	console.log("[p2p] main-port message event, ports:", event.ports.length, "data:", event.data);
-	tryAdoptControl(event.data); // fence this isolate's seqlocks before touching stores
+	console.log("[p2p] main-port message event, ports:", event.ports.length);
 	port = event.ports[0]!;
 	port.addEventListener("message", (event) => messageQueue.enqueue(event.data));
 	port.start();
@@ -117,8 +115,9 @@ function headerHashAt(height: number): Uint8Array | undefined {
 	return chainStore.stores.header.get(height)?.hash();
 }
 
-function tipHash(): Uint8Array {
-	return headerHashAt(tipHeight())!;
+function tipHash(): Uint8Array | undefined {
+	const height = tipHeight();
+	return height < 0 ? undefined : headerHashAt(height);
 }
 
 /**
@@ -316,6 +315,14 @@ async function syncBlocks(): Promise<void> {
 	let packHeight = cursor + 1;
 	let rr = 0;
 
+	// Genesis (height 0) is the one body no peer will serve — Bitcoin Core
+	// refuses getdata for the genesis block. Its body is a fixed constant, so
+	// seed it straight into the pool as the WireTxs payload (block bytes past the
+	// 80-byte header) the pack loop expects. Everything after downloads normally.
+	if (packHeight === 0 && !blockPool.has(0)) {
+		blockPool.set(0, GENESIS_BLOCK.subarray(WireBlockHeader.stride.size));
+	}
+
 	while (true) {
 		const top = tipHeight();
 		if (packHeight > top) break;
@@ -407,9 +414,15 @@ function applyHeaders(headers: WireBlockHeader[]): number {
 	const head = headers[0];
 	if (!head) return 0;
 
+	// The header chain is never empty in normal operation — main seeds + pins
+	// genesis before spawning this worker, and recover() reveals it at import.
+	// Bail rather than dereferencing a -1 tip if we're somehow called early.
+	const tip = tipHash();
+	if (tip === undefined) return 0;
+
 	// 1. split point
 	let splitHeight: number;
-	if (equals(head.prevHash, tipHash())) {
+	if (equals(head.prevHash, tip)) {
 		splitHeight = tipHeight(); // plain extension
 	} else {
 		const forked = heightOfHash(head.prevHash);
@@ -442,7 +455,7 @@ function applyHeaders(headers: WireBlockHeader[]): number {
 
 	if (isReorg) {
 		console.log(`[p2p] reorg: dropping height ${tipHeight()} -> ${splitHeight}, applying ${branch.length} headers`);
-		chainStore.stores.header.resize(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
+		chainStore.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
 		// A reorg below where we've already downloaded bodies means those bodies
 		// are now orphaned. Rewinding the block/tx domain is the chain worker's
 		// job and is deferred; for IBD off a trusted peer this ~never fires. Just
@@ -456,10 +469,14 @@ function applyHeaders(headers: WireBlockHeader[]): number {
 	}
 
 	for (const header of branch) {
-		const height = chainStore.stores.header.push(header);
-		chainStore.stores.blockhash.put(header.hash(), height);
+		const height = chainStore.stores.header.stage(header);
+		chainStore.stores.header.reveal(height + 1);
+
+		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
+		const size = chainStore.stores.blockhash.stage(header.hash(), height, offset);
+		chainStore.stores.blockhash.reveal(offset + size);
 	}
-	chainStore.atomic.pin(HEADER_STORES);
+	chainStore.manifest.pin(HEADER_STORES);
 	return branch.length;
 }
 

@@ -23,12 +23,17 @@ if (import.meta.main) {
 	Deno.addSignalListener("SIGINT", () => Deno.kill(Deno.pid, "SIGKILL"));
 
 	console.log("[main] rolling back to last pinned sizes");
-	chainStore.atomic.recover();
+	chainStore.manifest.recover();
 
 	if (chainStore.stores.header.size() === 0) {
-		const height = chainStore.stores.header.commit(GENESIS_BLOCK_HEADER_DECODED);
-		chainStore.stores.blockhash.commit(GENESIS_BLOCK_HASH, chainStore.stores.blockhash.value.encode(height));
-		chainStore.atomic.pin(["header", "blockhash"]);
+		const height = chainStore.stores.header.stage(GENESIS_BLOCK_HEADER_DECODED);
+		chainStore.stores.header.reveal(height + 1);
+
+		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
+		const size = chainStore.stores.blockhash.stage(GENESIS_BLOCK_HASH, height, offset);
+		chainStore.stores.blockhash.reveal(offset + size);
+
+		chainStore.manifest.pin(["header", "blockhash"]);
 		console.log("[main] seeded genesis header");
 	}
 
