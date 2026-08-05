@@ -197,9 +197,6 @@ self.onmessage = async (event) => {
 				checksumFlag: 1, // 4-byte frame checksum, cheap integrity guard
 				contentSizeFlag: 1, // size in frame header — works on the sync path,
 			},
-			restore: {
-				windowLogMax: 27,
-			},
 		},
 	});
 

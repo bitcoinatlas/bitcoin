@@ -22,13 +22,18 @@ export type ArchiveOptions = {
 	parallelism?: number;
 	zstd: {
 		archive: { [K in keyof typeof constants as K extends `ZSTD_c_${infer U}` ? U : never]?: number };
-		restore: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
 	};
 };
 
 export type BlobStoreOptions = {
 	path: string;
 	chunkSize: number;
+	// Decompression params for reading archived (.zst) chunks. Restore is a
+	// READ-path concern — every opener (not just the archiver) must be able to
+	// decompress an archived chunk before mapping it, so this lives here, not in
+	// ArchiveOptions. Must be compatible with whatever the archiver compressed
+	// with (e.g. a matching windowLogMax for the archive's windowLog).
+	restore?: { [K in keyof typeof constants as K extends `ZSTD_d_${infer U}` ? U : never]?: number };
 };
 
 type Chunk = { mapping: Mmap; bytes: Uint8Array };
@@ -53,6 +58,13 @@ export class BlobStore extends Store implements Disposable {
 		this.cursor = 0;
 		this.path = options.path;
 		this.chunkSize = options.chunkSize;
+		// Restore is a READ-path concern, needed by every opener regardless of
+		// whether this one archives. Set the decompress options here from the
+		// store's own config so a reader (e.g. the app worker, which never calls
+		// startArchiveWorkers) can still decompress .zst chunks before mapping.
+		const restoreParams = mapZstdParams("ZSTD_d_", options.restore ?? {});
+		this.restoreSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: restoreParams };
+		this.restoreStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: restoreParams };
 	}
 
 	public static open(options: BlobStoreOptions): BlobStore {
@@ -174,10 +186,13 @@ export class BlobStore extends Store implements Disposable {
 		if (cached) return cached;
 
 		const path = chunkPath(this.path, index);
-		if (this.pool) {
-			if (isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
-			ensureRestored(path, this.restoreSyncOptions);
-		}
+		// Restore is unconditional on the read path: if the chunk exists only as
+		// .zst, ANY opener must decompress it before mapping, else Mmap.open would
+		// create a fresh zero-filled file over the archive. Space reclamation
+		// (tryMakeSpace/unrestore, which deletes raw files) stays archiver-only —
+		// a pure reader restores and maps but never touches the .zst/raw lifecycle.
+		if (this.pool && isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
+		ensureRestored(path, this.restoreSyncOptions);
 		return this.map(index, Mmap.openSync(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
 
@@ -186,10 +201,8 @@ export class BlobStore extends Store implements Disposable {
 		if (cached) return cached;
 
 		const path = chunkPath(this.path, index);
-		if (this.pool) {
-			if (isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
-			await ensureRestoredAsync(path, this.restoreStreamOptions, this.restoring);
-		}
+		if (this.pool && isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
+		await ensureRestoredAsync(path, this.restoreStreamOptions, this.restoring);
 		return this.map(index, await Mmap.open(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
 
@@ -238,9 +251,6 @@ export class BlobStore extends Store implements Disposable {
 		this.maxRestoredChunks = options.maxRestoredChunks;
 		this.pool = new ArchiveWorkerPool(options.parallelism ?? DEFAULT_PARALLELISM);
 		this.archiveParams = mapZstdParams("ZSTD_c_", options.zstd.archive);
-		const restoreParams = mapZstdParams("ZSTD_d_", options.zstd.restore);
-		this.restoreSyncOptions = { chunkSize: RESTORE_SYNC_CHUNK_SIZE, params: restoreParams };
-		this.restoreStreamOptions = { chunkSize: RESTORE_STREAM_BUFFER_SIZE, params: restoreParams };
 
 		this.runArchiveLoop(this.pool).catch((e) => console.error("[archive] background loop died:", e));
 	}

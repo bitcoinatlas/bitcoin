@@ -46,6 +46,7 @@ export class ChainStore {
 			tx: BlobStore.open({
 				path: join(BASE_DATA_DIR, "tx"),
 				chunkSize: 1 * GB,
+				restore: { windowLogMax: 27 }, // must cover the archive's windowLog (27)
 			}),
 			txid: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txid"),
