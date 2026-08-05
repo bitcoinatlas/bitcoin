@@ -50,7 +50,26 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 
 	public static open<T extends ManifestStores>(options: ManifestOptions<T>) {
 		Deno.mkdirSync(options.path, { recursive: true });
-		return new Manifest<T>(options);
+		const manifest = new Manifest<T>(options);
+		const pins = manifest.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
+		if (self.name === "") {
+			for (const { name, pin, reveal } of pins) {
+				const value = manifest.storeMap.get(name);
+				if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
+				const { store } = value;
+				store.reveal(reveal, true);
+				if (pin === reveal) continue;
+				store.truncate(pin);
+			}
+		} else {
+			for (const { name, pin } of pins) {
+				const value = manifest.storeMap.get(name);
+				if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
+				const { store } = value;
+				store.reveal(pin, true);
+			}
+		}
+		return manifest;
 	}
 
 	public pin(names?: Iterable<keyof T>): void;
@@ -85,28 +104,6 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		} catch (reason) {
 			this.db.exec("ROLLBACK;");
 			throw reason;
-		}
-	}
-
-	public recover(): void {
-		const pins = this.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
-		for (const { name, pin, reveal } of pins) {
-			const value = this.storeMap.get(name);
-			if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
-			const { store } = value;
-			store.reveal(reveal, true);
-			if (pin === reveal) continue;
-			store.truncate(pin);
-		}
-	}
-
-	public initial(): void {
-		const pins = this.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
-		for (const { name, pin } of pins) {
-			const value = this.storeMap.get(name);
-			if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
-			const { store } = value;
-			store.reveal(pin, true);
 		}
 	}
 

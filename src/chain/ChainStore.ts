@@ -94,4 +94,3 @@ export class ChainStore {
 }
 
 export const chainStore = ChainStore.open();
-chainStore.manifest.initial();
