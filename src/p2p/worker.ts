@@ -6,10 +6,10 @@ import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
 import { WireBlock } from "~/codec/wire/WireBlock.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { MAX_BLOCK_SIZE, MiB, MINUTE, SECOND } from "~/constants.ts";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { verifyProofOfWork, workFromHeader } from "~/libs/bitcoin/pow.ts";
 import { FastUint8ArraySet } from "~/libs/collections/FastUint8ArraySet.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
@@ -53,16 +53,20 @@ const MAX_BLOCKS_IN_TRANSIT_PER_PEER = 16 * 16;
 const BLOCK_TIMEOUT_MS = 30 * SECOND;
 const DOWNLOAD_IDLE_MS = 50;
 
-// Stores this worker OWNS. p2p is the sole writer of the header domain and pins
-// ONLY these — the block/tx/index domain is the chain worker's. See Atomic.pin.
-const HEADER_STORES = ["header", "blockhash"] as const;
-
 // ── state ────────────────────────────────────────────────────────────────────
 let port!: MessagePort;
 const messageQueue = new Queue<{ type: string; data: any }>(1000);
 const blacklist = new FastUint8ArraySet(); // header hashes main told us to reject
 const peers = new Set<Peer>();
 const lastPeerSync = new WeakMap<Peer, number>();
+
+// Header apply is now the chain worker's job. p2p forwards a fetched batch and
+// waits for chain's "headers-applied" ack before reading the new tip or asking
+// for more — the ack means the header mmap is pinned and safe to read. Only one
+// header batch is ever in flight (syncHeaders awaits each), so a single pending
+// resolver is enough.
+type ApplyResult = { adopted: number; rewind?: number };
+let pendingHeaderApply: ((result: ApplyResult) => void) | undefined;
 
 let started = false;
 let cursor = 0; // download blocks after this height
@@ -113,11 +117,6 @@ function headerAt(height: number): WireBlockHeader | undefined {
 
 function headerHashAt(height: number): Uint8Array | undefined {
 	return chainStore.stores.header.get(height)?.hash();
-}
-
-function tipHash(): Uint8Array | undefined {
-	const height = tipHeight();
-	return height < 0 ? undefined : headerHashAt(height);
 }
 
 /**
@@ -395,89 +394,33 @@ async function startSyncBlocks(): Promise<void> {
 	}
 }
 
-// ── header sync (with reorg) ──────────────────────────────────────────────────
+// ── header sync (forward to chain, await its pinned ack) ──────────────────────
 
 /**
- * Apply one batch of peer headers on top of our chain. This is the whole reorg
- * story, and it stays legible because we only ever reason about the fork:
- *
- *   1. find the SPLIT — the height where this batch attaches (our tip for a
- *      plain extension, or an earlier height it forks from).
- *   2. validate the incoming branch (links + PoW) and sum its work.
- *   3. sum OUR work above the same split. The shared prefix below the split
- *      cancels, so branch work alone decides it — longest-work wins.
- *   4. if the peer's branch out-works ours, drop to the split and append it.
- *
- * Returns how many headers we adopted (0 = kept ours / didn't connect).
+ * Fetch headers from one peer and hand each batch to the chain worker, which
+ * owns header validation, the most-work reorg rule, and the pin. We wait for its
+ * "headers-applied" ack before building the next locator, because the locator is
+ * read from the header mmap and must not be built until chain has pinned the tip
+ * we just sent. The ack tells us how many were adopted (0 => this peer has
+ * nothing new, stop) and, on a reorg below our download cursor, the height to
+ * rewind block downloading to.
  */
-function applyHeaders(headers: WireBlockHeader[]): number {
-	const head = headers[0];
-	if (!head) return 0;
+function sendHeadersToChain(headers: WireBlockHeader[]): Promise<ApplyResult> {
+	if (pendingHeaderApply) throw new Error("a header batch is already awaiting chain — syncHeaders must be serial");
+	const bytes = WireBlockHeaders.encode(headers);
+	const result = new Promise<ApplyResult>((resolve) => (pendingHeaderApply = resolve));
+	port.postMessage({ type: "headers", data: bytes });
+	return result;
+}
 
-	// The header chain is never empty in normal operation — main seeds + pins
-	// genesis before spawning this worker, and recover() reveals it at import.
-	// Bail rather than dereferencing a -1 tip if we're somehow called early.
-	const tip = tipHash();
-	if (tip === undefined) return 0;
-
-	// 1. split point
-	let splitHeight: number;
-	if (equals(head.prevHash, tip)) {
-		splitHeight = tipHeight(); // plain extension
-	} else {
-		const forked = heightOfHash(head.prevHash);
-		if (forked === undefined) return 0; // attaches to nothing we know — ignore
-		splitHeight = forked;
-	}
-
-	// 2. validate the incoming branch, sum its work
-	const branch: WireBlockHeader[] = [];
-	let prevHash = headerHashAt(splitHeight)!; // == head.prevHash
-	let branchWork = 0n;
-	for (const header of headers) {
-		if (blacklist.has(header.hash())) break;
-		if (!equals(header.prevHash, prevHash)) break; // stop at first non-link
-		if (!verifyProofOfWork(header)) break;
-		branch.push(header);
-		branchWork += workFromHeader(header);
-		prevHash = header.hash();
-	}
-	if (branch.length === 0) return 0;
-
-	// 3. our work above the same split (empty for a plain extension)
-	const currentTip = tipHeight();
-	let ourWork = 0n;
-	for (let h = splitHeight + 1; h <= currentTip; h++) ourWork += workFromHeader(headerAt(h)!);
-
-	// 4. longest-work rule — only switch on a strict win
-	const isReorg = splitHeight < currentTip;
-	if (isReorg && branchWork <= ourWork) return 0;
-
-	if (isReorg) {
-		console.log(`[p2p] reorg: dropping height ${tipHeight()} -> ${splitHeight}, applying ${branch.length} headers`);
-		chainStore.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
-		// A reorg below where we've already downloaded bodies means those bodies
-		// are now orphaned. Rewinding the block/tx domain is the chain worker's
-		// job and is deferred; for IBD off a trusted peer this ~never fires. Just
-		// pull the download cursor back so bodies re-fetch from the split.
-		if (cursor > splitHeight) {
-			console.warn(`[p2p] reorg below block cursor (${cursor} -> ${splitHeight}); chain-side rewind is not wired yet`);
-			cursor = splitHeight;
-			blockPool.clear();
-			blockInFlight.clear();
-		}
-	}
-
-	for (const header of branch) {
-		const height = chainStore.stores.header.stage(header);
-		chainStore.stores.header.reveal(height + 1);
-
-		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
-		const size = chainStore.stores.blockhash.stage(header.hash(), height, offset);
-		chainStore.stores.blockhash.reveal(offset + size);
-	}
-	chainStore.manifest.pin(HEADER_STORES);
-	return branch.length;
+/** Apply a rewind instruction from a chain-side reorg: pull the block download
+ * cursor back to the split and drop everything we'd queued above it. */
+function rewindDownloadTo(splitHeight: number): void {
+	if (cursor <= splitHeight) return;
+	console.warn(`[p2p] reorg: rewinding block download cursor ${cursor} -> ${splitHeight}`);
+	cursor = splitHeight;
+	blockPool.clear();
+	blockInFlight.clear();
 }
 
 async function syncHeaders(peer: Peer): Promise<void> {
@@ -492,7 +435,17 @@ async function syncHeaders(peer: Peer): Promise<void> {
 		await peer.send(GetHeadersMessage, { version: PROTOCOL_VERSION, locators: buildLocators(), stopHash: new Uint8Array(32) });
 		const [{ headers }] = await responsePromise;
 		if (headers.length === 0) break; // peer at tip
-		if (applyHeaders(headers) === 0) break; // nothing adopted — done with this peer
+
+		// Drop any header main told us to reject before forwarding — the chain
+		// worker validates links + PoW but doesn't know our blacklist. Cutting at
+		// the first blacklisted header keeps the batch a contiguous branch.
+		const cut = headers.findIndex((h) => blacklist.has(h.hash()));
+		const batch = cut === -1 ? headers : headers.slice(0, cut);
+		if (batch.length === 0) break;
+
+		const { adopted, rewind } = await sendHeadersToChain(batch);
+		if (rewind !== undefined) rewindDownloadTo(rewind);
+		if (adopted === 0) break; // nothing adopted — done with this peer
 	}
 	console.log(`[p2p] header tip height=${tipHeight()}`);
 }
@@ -594,6 +547,14 @@ async function drainMessages(): Promise<void> {
 		}
 		if (message.type === "consume") {
 			consumedChunks++;
+			continue;
+		}
+		if (message.type === "headers-applied") {
+			// chain finished applying + pinning the batch we forwarded. Hand the
+			// result to whoever's awaiting in syncHeaders.
+			const resolve = pendingHeaderApply;
+			pendingHeaderApply = undefined;
+			resolve?.(message.data as ApplyResult);
 			continue;
 		}
 		if (message.type === "blacklist") {

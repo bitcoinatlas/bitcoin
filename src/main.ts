@@ -32,7 +32,7 @@ if (import.meta.main) {
 		const size = chainStore.stores.blockhash.stage(GENESIS_BLOCK_HASH, height, offset);
 		chainStore.stores.blockhash.reveal(offset + size);
 
-		chainStore.manifest.pin(["header", "blockhash"]);
+		chainStore.manifest.pin();
 		console.log("[main] seeded genesis header");
 	}
 

@@ -9,6 +9,7 @@ export type ManifestStores = { readonly [name: string]: Store };
 export type ManifestOptions<T extends ManifestStores> = {
 	path: string;
 	stores: T;
+	pinner: boolean;
 };
 
 export class Manifest<T extends ManifestStores> implements Disposable {
@@ -52,7 +53,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		Deno.mkdirSync(options.path, { recursive: true });
 		const manifest = new Manifest<T>(options);
 		const pins = manifest.getSizesQuery.all() as { name: string; pin: number; reveal: number }[];
-		if (self.name === "") {
+		if (options.pinner) {
 			for (const { name, pin, reveal } of pins) {
 				const value = manifest.storeMap.get(name);
 				if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
@@ -72,29 +73,28 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		return manifest;
 	}
 
-	public pin(names?: Iterable<keyof T>): void;
-	public pin(names: Iterable<string> = this.storeMap.keys()) {
+	public pin() {
 		try {
 			this.db.exec("BEGIN IMMEDIATE;");
-			for (const name of names) {
-				const value = this.storeMap.get(name);
-				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
-				const { store } = value;
+			for (const [name, { store }] of this.storeMap) {
 				store.sync();
 				const size = store.size();
 				this.revealQuery.run({ name, size });
 			}
 			this.db.exec("COMMIT;");
 		} catch (reason) {
-			this.db.exec("ROLLBACK;");
-			throw reason;
+			// A failed pin leaves the round's commit indeterminate — continuing
+			// risks storage corruption, so this is fatal. Roll back if a
+			// transaction is actually open (a failed BEGIN, e.g. SQLITE_BUSY,
+			// starts none, and a blind ROLLBACK would throw "no transaction is
+			// active" and hide the real cause), log, then kill the process.
+			console.error(reason);
+			if (this.db.isTransaction) this.db.exec("ROLLBACK;");
+			Deno.kill(Deno.pid);
 		}
 		try {
 			this.db.exec("BEGIN IMMEDIATE;");
-			for (const name of names) {
-				const value = this.storeMap.get(name);
-				if (!value) throw new Error(`Cannot pin unknown store "${name}".`);
-				const { store, channel } = value;
+			for (const [name, { store, channel }] of this.storeMap) {
 				const size = store.size();
 				store.commit(size);
 				this.pinQuery.run({ name, size });
@@ -102,8 +102,9 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 			}
 			this.db.exec("COMMIT;");
 		} catch (reason) {
-			this.db.exec("ROLLBACK;");
-			throw reason;
+			console.error(reason);
+			if (this.db.isTransaction) this.db.exec("ROLLBACK;");
+			Deno.kill(Deno.pid);
 		}
 	}
 

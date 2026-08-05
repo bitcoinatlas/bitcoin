@@ -22,6 +22,7 @@ const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 export class ChainStore {
 	public readonly manifest = Manifest.open({
 		path: join(BASE_DATA_DIR, "manifest"),
+		pinner: self.name === "",
 		stores: {
 			header: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "header"),
@@ -38,7 +39,7 @@ export class ChainStore {
 				key: Bytes32, // block hash
 				value: U32, // block height
 				loadFactor: LOAD_FACTOR_OPTIONS,
-				commiter: self.name === "p2p" || self.name === "",
+				commiter: self.name === "chain" || self.name === "",
 				entryChunkSize: 500 * MB,
 				minBucketChunkSize: 500 * MB,
 			}),

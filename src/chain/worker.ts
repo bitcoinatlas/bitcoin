@@ -10,18 +10,20 @@ import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTxs } from "~/codec/wire/WireTxs.ts";
 import { COINBASE_TXID, MAX_BLOCK_SIZE } from "~/constants.ts";
+import { verifyProofOfWork, workFromHeader } from "~/libs/bitcoin/pow.ts";
 import { Queue } from "~/libs/collections/Queue.ts";
 import { HashMapStore } from "~/libs/storage/HashMapStore.ts";
 import { MessagePortLike } from "~/libs/message/mod.ts";
 import { WireBlockHeader } from "~/codec/wire/WireBlockHeader.ts";
+import { WireBlockHeaders } from "~/codec/wire/WireBlockHeaders.ts";
 
 console.log("[chain] booting");
 
-// Stores this worker OWNS: it is the only writer, and it pins ONLY these. The
-// header / blockhash stores belong to the p2p worker's domain — this worker
-// never writes them (p2p persists headers straight to mmap; we only consume the
-// block bodies it forwards). See Manifest.pin(names) for why the split matters.
-const CHAIN_STORES = ["block", "tx", "txid", "pubkey", "spender"] as const;
+// This worker is the SINGLE pinner: it owns every store's durable commit. p2p
+// is pure networking now — it reads headers from shared mmap to drive downloads
+// and builds locators, but never writes or pins. Header application (reorg-aware
+// most-work adoption) and block-body indexing both land here, so one worker holds
+// the manifest write lock and there is no cross-isolate BEGIN IMMEDIATE contention.
 
 const p2pMessageQueue = new Queue<{ type: string; data: any }>(1000);
 const chunkQueue = new Queue<Uint8Array>(256);
@@ -49,6 +51,134 @@ function recordBlocks(n: number, tipHeight: number): void {
 	);
 	windowBlocks = 0;
 	lastReportAt = now;
+}
+
+// ── header chain (this worker owns the writes now) ────────────────────────────
+// p2p forwards raw headers it fetched from peers; this worker validates, applies
+// the most-work rule, writes header + blockhash mmap, and pins. p2p reads the
+// same mmap to build locators and drive block download. Reads up to size() here
+// are always this worker's own committed writes.
+
+function tipHeight(): number {
+	return chainStore.stores.header.size() - 1;
+}
+
+function headerAt(height: number): WireBlockHeader | undefined {
+	return chainStore.stores.header.get(height);
+}
+
+function headerHashAt(height: number): Uint8Array | undefined {
+	return chainStore.stores.header.get(height)?.hash();
+}
+
+function tipHash(): Uint8Array | undefined {
+	const height = tipHeight();
+	return height < 0 ? undefined : headerHashAt(height);
+}
+
+/**
+ * hash -> height, VERIFIED against the header store. A reorg leaves stale
+ * blockhash rows for orphaned headers (the hashmap has no delete); this check —
+ * "does the header now sitting at that height still have this hash?" — makes
+ * every such stale row read back as unknown. Self-healing, no cleanup pass.
+ */
+function heightOfHash(hash: Uint8Array): number | undefined {
+	const height = chainStore.stores.blockhash.get(hash);
+	if (height === undefined) return undefined;
+	const at = headerHashAt(height);
+	return at && equals(at, hash) ? height : undefined;
+}
+
+/** Outcome of applying a batch: how many headers adopted, and — on a reorg that
+ * drops below already-downloaded bodies — the split height p2p must rewind its
+ * download cursor to. rewind is only set when p2p needs to act on it. */
+type ApplyResult = { adopted: number; rewind?: number };
+
+/**
+ * Adopt a peer's header branch iff it out-works ours (most-work rule):
+ *   1. find where their branch attaches to our chain (split point).
+ *   2. validate the incoming branch (links + PoW) and sum its work.
+ *   3. sum OUR work above the same split. Shared prefix cancels — branch work
+ *      alone decides it.
+ *   4. if the peer's branch strictly out-works ours, drop to the split and
+ *      append it; otherwise keep ours.
+ *
+ * Pins on adoption. Returns how many headers we adopted (0 = kept ours) plus a
+ * rewind height when a reorg invalidated already-downloaded block bodies.
+ */
+function applyHeaders(headers: WireBlockHeader[]): ApplyResult {
+	const head = headers[0];
+	if (!head) return { adopted: 0 };
+
+	// The header chain is never empty in normal operation — main seeds + pins
+	// genesis before spawning workers, and recover() reveals it at import. Bail
+	// rather than dereferencing a -1 tip if we're somehow called early.
+	const tip = tipHash();
+	if (tip === undefined) return { adopted: 0 };
+
+	// 1. split point
+	let splitHeight: number;
+	if (equals(head.prevHash, tip)) {
+		splitHeight = tipHeight(); // plain extension
+	} else {
+		const forked = heightOfHash(head.prevHash);
+		if (forked === undefined) return { adopted: 0 }; // attaches to nothing we know
+		splitHeight = forked;
+	}
+
+	// 2. validate the incoming branch, sum its work
+	const branch: WireBlockHeader[] = [];
+	let prevHash = headerHashAt(splitHeight)!; // == head.prevHash
+	let branchWork = 0n;
+	for (const header of headers) {
+		if (!equals(header.prevHash, prevHash)) break; // stop at first non-link
+		if (!verifyProofOfWork(header)) break;
+		branch.push(header);
+		branchWork += workFromHeader(header);
+		prevHash = header.hash();
+	}
+	if (branch.length === 0) return { adopted: 0 };
+
+	// 3. our work above the same split (empty for a plain extension)
+	const currentTip = tipHeight();
+	let ourWork = 0n;
+	for (let h = splitHeight + 1; h <= currentTip; h++) ourWork += workFromHeader(headerAt(h)!);
+
+	// 4. most-work rule — only switch on a strict win
+	const isReorg = splitHeight < currentTip;
+	if (isReorg && branchWork <= ourWork) return { adopted: 0 };
+
+	let rewind: number | undefined;
+	if (isReorg) {
+		console.log(`[chain] header reorg: dropping height ${tipHeight()} -> ${splitHeight}, applying ${branch.length} headers`);
+		chainStore.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
+
+		// A reorg below where block bodies were already committed means those
+		// bodies are now orphaned and the block/tx/txid/pubkey/spender domain must
+		// be rewound too. That reverse-replay is NOT implemented yet — throw rather
+		// than silently serve an inconsistent chain. For IBD off a trusted peer
+		// this never fires. Header-only reorgs above the block tip are fine.
+		if (splitHeight < chainStore.stores.block.size() - 1) {
+			throw new Error(
+				`header reorg to ${splitHeight} is below committed block tip ${chainStore.stores.block.size() - 1}; ` +
+					`block-domain rewind is not implemented`,
+			);
+		}
+
+		// Tell p2p to pull its download cursor back to the split and refetch.
+		rewind = splitHeight;
+	}
+
+	for (const header of branch) {
+		const height = chainStore.stores.header.stage(header);
+		chainStore.stores.header.reveal(height + 1);
+
+		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
+		const size = chainStore.stores.blockhash.stage(header.hash(), height, offset);
+		chainStore.stores.blockhash.reveal(offset + size);
+	}
+	chainStore.manifest.pin();
+	return { adopted: branch.length, rewind };
 }
 
 self.onmessage = async (event) => {
@@ -91,9 +221,9 @@ self.postMessage(null);
 function prepare(port: MessagePortLike): void {
 	port.addEventListener("message", (event) => p2pMessageQueue.enqueue(event.data));
 
-	// Tell p2p where our block data ends so it downloads from the next height.
-	// (Headers are p2p's own domain now — it reads them from mmap, we don't send
-	// or receive any header messages here.)
+	// Tell p2p where our block bodies end so it downloads from the next height.
+	// Headers now flow the other way too: p2p fetches them and forwards raw
+	// batches here (type "headers"); this worker applies + pins them and acks.
 	const target = chainStore.stores.block.size() - 1;
 	console.log(`[chain] sync port received, blocks committed up to height ${target}, requesting from p2p`);
 	port.postMessage({ type: "seek", data: target });
@@ -117,6 +247,25 @@ async function tick(port: MessagePortLike): Promise<void> {
 			Deno.kill(Deno.pid);
 		}
 		await consumeChunks(port);
+		return;
+	}
+
+	if (message.type === "headers") {
+		// p2p fetched these from a peer and forwarded the raw batch. We own the
+		// header writes now: validate + apply the most-work rule + pin, then ack
+		// so p2p knows the new tip is durably readable before it builds its next
+		// locator. The ack carries the adoption count (0 = p2p stops asking this
+		// peer) and, on a reorg, the height p2p must rewind its download to.
+		const [headers] = WireBlockHeaders.decode(message.data as Uint8Array);
+		let result: ApplyResult;
+		try {
+			result = applyHeaders(headers);
+		} catch (reason) {
+			console.error("[chain] applyHeaders failed:", reason);
+			Deno.kill(Deno.pid);
+			return;
+		}
+		port.postMessage({ type: "headers-applied", data: result });
 		return;
 	}
 }
@@ -162,13 +311,6 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		// at the end (see the reveal() below). Start at the next slot.
 		let txStoreOffset = txStore.next(MAX_BLOCK_SIZE);
 
-		// block[i] is the block at height i; genesis is pre-seeded at 0 by the
-		// header domain but bodies start after it, so block.size() == the height
-		// of the first body we're about to write. The block cursor is now revealed
-		// ONCE at the end of the chunk (after the tx bytes it points into are
-		// live), so it does not advance during this loop — track height locally.
-		let height = chainStore.stores.block.size();
-
 		let blocksInChunk = 0;
 		let offset = 0;
 		while (offset < chunk.length) {
@@ -186,6 +328,12 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			// left of it, not the full amount again.
 			const blockRegionEnd = txStoreOffset + MAX_BLOCK_SIZE;
 
+			// The height of THIS block is the next free block-store slot (block[i]
+			// is the block at height i; genesis is pre-seeded at 0 by the header
+			// domain but bodies start after it, so block.size() == the height we're
+			// about to write). Captured before stage() for the consensus checks.
+			const height = chainStore.stores.block.size();
+
 			// BIP34: from height 227931 the coinbase scriptSig must start with the
 			// serialized block height. The coinbase is always the block's first tx.
 			const coinbase = block[0];
@@ -199,16 +347,14 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			const bip30Overwrite = BIP30_EXCEPTION_BLOCKS.has(height) &&
 				isBip30Exception(height, chainStore.stores.header.get(height)?.hash() ?? new Uint8Array(0));
 
-			// block[height] -> pointer to this block's first tx entry. Staged now,
-			// but NOT revealed until the tx bytes it points into are live (end of
-			// chunk) — a visible block entry pointing at an unrevealed tx region is
-			// exactly what corrupted coinbase reads (empty inputs) downstream.
+			// block[height] -> pointer to this block's first tx entry.
 			chainStore.stores.block.stage({
 				txPointer: txStoreOffset,
 				wireSize: size + WireBlockHeader.stride.size,
 				txCount: block.length,
 				reward: 123, // TODO: calculate later.
 			}, height);
+			chainStore.stores.block.reveal(height + 1);
 
 			for (const tx of block) {
 				// BIP30 duplicate-txid handling. The store has no in-place update or
@@ -289,20 +435,13 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 				// downstream.
 				txStoreOffset += StoredTx.encodeInto(storedTx, txStore.mmap(blockRegionEnd - txStoreOffset, txStoreOffset));
 			}
-
-			height++;
 		}
 
-		// Commit ordering is load-bearing: reveal the tx blob FIRST so the bytes
-		// every txPointer references are live, THEN reveal the block cursor over
-		// the entries that point into them. Revealing block before tx (as the old
-		// per-block reveal did) briefly exposed block entries whose coinbase tx
-		// bytes weren't committed yet — reads decoded zeros into an empty inputs
-		// array and crashed on inputs[0]. Both cursors settle before pin() takes
-		// the round's snapshot and broadcasts it to reader isolates.
+		// Commit the tx blob: advance its cursor past everything we wrote so the
+		// bytes become live/readable (the txid pointers we stored point into this
+		// range). Then pin OUR domain only — one consistent snapshot per round.
 		txStore.reveal(txStoreOffset);
-		chainStore.stores.block.reveal(height);
-		chainStore.manifest.pin(CHAIN_STORES);
+		chainStore.manifest.pin();
 
 		recordBlocks(blocksInChunk, chainStore.stores.block.size() - 1);
 
