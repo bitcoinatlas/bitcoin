@@ -162,6 +162,13 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		// at the end (see the reveal() below). Start at the next slot.
 		let txStoreOffset = txStore.next(MAX_BLOCK_SIZE);
 
+		// block[i] is the block at height i; genesis is pre-seeded at 0 by the
+		// header domain but bodies start after it, so block.size() == the height
+		// of the first body we're about to write. The block cursor is now revealed
+		// ONCE at the end of the chunk (after the tx bytes it points into are
+		// live), so it does not advance during this loop — track height locally.
+		let height = chainStore.stores.block.size();
+
 		let blocksInChunk = 0;
 		let offset = 0;
 		while (offset < chunk.length) {
@@ -179,12 +186,6 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			// left of it, not the full amount again.
 			const blockRegionEnd = txStoreOffset + MAX_BLOCK_SIZE;
 
-			// The height of THIS block is the next free block-store slot (block[i]
-			// is the block at height i; genesis is pre-seeded at 0 by the header
-			// domain but bodies start after it, so block.size() == the height we're
-			// about to write). Captured before stage() for the consensus checks.
-			const height = chainStore.stores.block.size();
-
 			// BIP34: from height 227931 the coinbase scriptSig must start with the
 			// serialized block height. The coinbase is always the block's first tx.
 			const coinbase = block[0];
@@ -198,14 +199,16 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			const bip30Overwrite = BIP30_EXCEPTION_BLOCKS.has(height) &&
 				isBip30Exception(height, chainStore.stores.header.get(height)?.hash() ?? new Uint8Array(0));
 
-			// block[height] -> pointer to this block's first tx entry.
+			// block[height] -> pointer to this block's first tx entry. Staged now,
+			// but NOT revealed until the tx bytes it points into are live (end of
+			// chunk) — a visible block entry pointing at an unrevealed tx region is
+			// exactly what corrupted coinbase reads (empty inputs) downstream.
 			chainStore.stores.block.stage({
 				txPointer: txStoreOffset,
 				wireSize: size + WireBlockHeader.stride.size,
 				txCount: block.length,
 				reward: 123, // TODO: calculate later.
 			}, height);
-			chainStore.stores.block.reveal(height + 1);
 
 			for (const tx of block) {
 				// BIP30 duplicate-txid handling. The store has no in-place update or
@@ -286,12 +289,19 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 				// downstream.
 				txStoreOffset += StoredTx.encodeInto(storedTx, txStore.mmap(blockRegionEnd - txStoreOffset, txStoreOffset));
 			}
+
+			height++;
 		}
 
-		// Commit the tx blob: advance its cursor past everything we wrote so the
-		// bytes become live/readable (the txid pointers we stored point into this
-		// range). Then pin OUR domain only — one consistent snapshot per round.
+		// Commit ordering is load-bearing: reveal the tx blob FIRST so the bytes
+		// every txPointer references are live, THEN reveal the block cursor over
+		// the entries that point into them. Revealing block before tx (as the old
+		// per-block reveal did) briefly exposed block entries whose coinbase tx
+		// bytes weren't committed yet — reads decoded zeros into an empty inputs
+		// array and crashed on inputs[0]. Both cursors settle before pin() takes
+		// the round's snapshot and broadcasts it to reader isolates.
 		txStore.reveal(txStoreOffset);
+		chainStore.stores.block.reveal(height);
 		chainStore.manifest.pin(CHAIN_STORES);
 
 		recordBlocks(blocksInChunk, chainStore.stores.block.size() - 1);

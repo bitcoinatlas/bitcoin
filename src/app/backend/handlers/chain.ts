@@ -30,6 +30,8 @@ async function getBlockByHeight(height: number): Promise<RouterSchema.InferResul
 	const block = await chainStore.stores.block.getAsync(height);
 	if (!block) return { header, height, info: null };
 	const [coinbaseTx] = await chainStore.stores.tx.getAsync(block.txPointer, StoredTx);
+	const coinbaseInput = coinbaseTx.inputs[0];
+	if (!coinbaseInput) return { header, height, info: null };
 	return {
 		header,
 		height,
@@ -37,7 +39,7 @@ async function getBlockByHeight(height: number): Promise<RouterSchema.InferResul
 			wireSize: block.wireSize,
 			reward: block.reward,
 			txCount: block.txCount,
-			coinbaseScriptSig: coinbaseTx.inputs[0]!.scriptSig,
+			coinbaseScriptSig: coinbaseInput.scriptSig,
 		},
 	};
 }
@@ -52,6 +54,8 @@ async function getHeaderByRangeAsync(from: number, to: number): Promise<Block[]>
 		const block = blocks[index];
 		if (!block) return { header, height, info: null };
 		const [coinbaseTx] = await chainStore.stores.tx.getAsync(block.txPointer, StoredTx);
+		const coinbaseInput = coinbaseTx.inputs[0];
+		if (!coinbaseInput) return { header, height, info: null };
 		return {
 			header,
 			height,
@@ -59,7 +63,7 @@ async function getHeaderByRangeAsync(from: number, to: number): Promise<Block[]>
 				wireSize: block.wireSize,
 				reward: block.reward,
 				txCount: block.txCount,
-				coinbaseScriptSig: coinbaseTx.inputs[0]!.scriptSig,
+				coinbaseScriptSig: coinbaseInput.scriptSig,
 			},
 		};
 	}));
