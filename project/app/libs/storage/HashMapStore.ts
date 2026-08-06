@@ -21,7 +21,6 @@ export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends 
 	}
 	& IfNever<Extract<Key, FixedCodec> & Extract<Value, FixedCodec>, { maxEntrySize: number }, { maxEntrySize?: undefined }>;
 
-const POINTER_SIZE = SharedSlotArray.BYTES_PER_SLOT;
 const INITIAL_BUCKET_COUNT = 1 << 16;
 
 export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
@@ -71,7 +70,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.entry = new StructCodec({ key: options.key, value: options.value });
 		this.pointer = options.pointer;
 		this.maxEntrySize = options.maxEntrySize ?? this.entry.stride.size!;
-		this.recordMaxSize = POINTER_SIZE + this.maxEntrySize;
+		this.recordMaxSize = this.pointer.stride.size + this.maxEntrySize;
 		this.keyScratch_ = new Uint8Array(this.maxEntrySize);
 		this.loadFactor = options.loadFactor;
 		this.cursor = 0;
@@ -91,7 +90,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		this.counter = SharedSlotArray.open({
 			path: join(options.path, "count"),
 			writable: options.commiter,
-			minChunkSize: POINTER_SIZE,
+			minChunkSize: SharedSlotArray.BYTES_PER_SLOT,
 		});
 		if (options.commiter && this.counter.size() === 0) {
 			this.counter.resize(1);
@@ -117,7 +116,7 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// pointer. This also keeps entry offsets >= POINTER_SIZE, so the first
 		// entry never lands at 0 (the empty-bucket / end-of-chain sentinel) and
 		// `entryOffset - POINTER_SIZE` is always a valid record start.
-		return this.entries.next(this.recordMaxSize, from) + POINTER_SIZE;
+		return this.entries.next(this.recordMaxSize, from) + this.pointer.stride.size;
 	}
 
 	public reveal(size: number, isBroadcast?: boolean): void {
@@ -137,9 +136,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 			if (size > this.committedCursor) this.committedCursor = size;
 		} else {
 			for (let entryOffset = this.next(current); entryOffset < size;) {
-				const recordOffset = entryOffset - POINTER_SIZE;
+				const recordOffset = entryOffset - this.pointer.stride.size;
 				const recordBytes = this.mmap(recordOffset);
-				const keyOffset = POINTER_SIZE;
+				const keyOffset = this.pointer.stride.size;
 				const [, keySize] = this.key.decode(recordBytes, keyOffset);
 				// Copy the key: the map holds keys by reference, but recordBytes is
 				// a live view into the moving mmap and must not be retained.
@@ -190,9 +189,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		}
 		let count = Number(this.counter.get(0));
 		for (let entryOffset = this.next(current); entryOffset < size;) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			const bucket = hashKey(recordBytes, keyOffset, keyOffset + keySize) % this.buckets.size();
 			const prevBucketValue = this.buckets.get(bucket);
@@ -241,10 +240,10 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		}
 		let count = Number(this.counter.get(0));
 		for (let entryOffset = this.next(size); entryOffset < current;) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
 			const [candidateBucketValue] = this.pointer.decode(recordBytes);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			const bucket = hashKey(recordBytes, keyOffset, keyOffset + keySize) % this.buckets.size();
 			const currentBucketValue = this.buckets.get(bucket);
@@ -286,8 +285,8 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		// exactly that; revealed-but-uncommitted entries above `committedCursor`
 		// are served from `newEntries` and must not be threaded here.
 		for (let entryOffset = this.next(0); entryOffset < this.committedCursor;) {
-			const recordBytes = this.mmap(entryOffset - POINTER_SIZE);
-			const keyOffset = POINTER_SIZE;
+			const recordBytes = this.mmap(entryOffset - this.pointer.stride.size);
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			const bucket = hashKey(recordBytes, keyOffset, keyOffset + keySize) % bucketCount;
 			this.writePointer_(recordBytes, this.buckets.get(bucket));
@@ -304,14 +303,14 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 	}
 
 	public getKey(entryOffset: number): [Codec.InferOutput<Key>, number] {
-		const recordBytes = this.mmap(entryOffset - POINTER_SIZE);
-		const keyOffset = POINTER_SIZE;
+		const recordBytes = this.mmap(entryOffset - this.pointer.stride.size);
+		const keyOffset = this.pointer.stride.size;
 		return this.key.decode(recordBytes, keyOffset);
 	}
 
 	public getEntry(entryOffset: number): [Codec.InferOutput<Key>, Codec.InferOutput<Value>] {
-		const recordBytes = this.mmap(entryOffset - POINTER_SIZE);
-		const keyOffset = POINTER_SIZE;
+		const recordBytes = this.mmap(entryOffset - this.pointer.stride.size);
+		const keyOffset = this.pointer.stride.size;
 		const [key, keySize] = this.key.decode(recordBytes, keyOffset);
 		const [value] = this.value.decode(recordBytes, keyOffset + keySize);
 		return [key, value];
@@ -327,9 +326,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		const bucket = hashKey(encoded) % this.buckets.size();
 		let entryOffset = Number(this.buckets.get(bucket));
 		while (entryOffset !== 0) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) {
 				const [value] = this.value.decode(recordBytes, keyOffset + keySize);
@@ -348,9 +347,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		const bucket = hashKey(encoded) % this.buckets.size();
 		let entryOffset = Number(this.buckets.get(bucket));
 		while (entryOffset !== 0) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) return entryOffset;
 			const [next] = this.pointer.decode(recordBytes);
@@ -369,9 +368,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		const bucket = hashKey(encoded) % this.buckets.size();
 		let entryOffset = Number(this.buckets.get(bucket));
 		while (entryOffset !== 0) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) {
 				const [value] = this.value.decode(recordBytes, keyOffset + keySize);
@@ -389,9 +388,9 @@ export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec,
 		const bucket = hashKey(encoded) % this.buckets.size();
 		let entryOffset = Number(this.buckets.get(bucket));
 		while (entryOffset !== 0) {
-			const recordOffset = entryOffset - POINTER_SIZE;
+			const recordOffset = entryOffset - this.pointer.stride.size;
 			const recordBytes = this.mmap(recordOffset);
-			const keyOffset = POINTER_SIZE;
+			const keyOffset = this.pointer.stride.size;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) return true;
 			const [next] = this.pointer.decode(recordBytes);
