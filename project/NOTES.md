@@ -1,3 +1,9 @@
+## 11
+
+ok now make this parallel, again, after some incrimental encoded field optimizations.
+
+then continue working on the frontend.
+
 ## 10
 
 Note for future: later maybe make sure we support infinite decimals smaller than a sat. just make wrap arround it and only make min 1sat consensus valid.
