@@ -20,6 +20,7 @@ const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	maxDrift: .25,
 };
 
+// TODO: i dont think we need this whole class just for the `getPrevOutTxId` method
 export class ChainStore {
 	public readonly manifest = Manifest.open({
 		path: join(BASE_DATA_DIR, "manifest"),

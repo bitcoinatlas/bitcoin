@@ -191,7 +191,7 @@ export class BlobStore extends Store implements Disposable {
 		// create a fresh zero-filled file over the archive. Space reclamation
 		// (tryMakeSpace/unrestore, which deletes raw files) stays archiver-only —
 		// a pure reader restores and maps but never touches the .zst/raw lifecycle.
-		if (this.pool && isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
+		if (this.pool && isArchived(path) && !existsSync(path)) this.makeSpace(index);
 		ensureRestored(path, this.restoreSyncOptions);
 		return this.map(index, Mmap.openSync(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
@@ -201,7 +201,7 @@ export class BlobStore extends Store implements Disposable {
 		if (cached) return cached;
 
 		const path = chunkPath(this.path, index);
-		if (this.pool && isArchived(path) && !existsSync(path)) this.tryMakeSpace(index);
+		if (this.pool && isArchived(path) && !existsSync(path)) this.makeSpace(index);
 		await ensureRestoredAsync(path, this.restoreStreamOptions, this.restoring);
 		return this.map(index, await Mmap.open(path, { write: true, ensureFileSize: this.chunkSize }));
 	}
@@ -213,7 +213,8 @@ export class BlobStore extends Store implements Disposable {
 		return chunk;
 	}
 
-	private tryMakeSpace(incoming: number): void {
+	// TODO: this should be fine on linux because linux keeps the page, but find out if its fine on windows
+	private makeSpace(incoming: number): void {
 		const restored: number[] = [];
 		for (const index of this.chunks.keys()) {
 			if (index === incoming) continue;
