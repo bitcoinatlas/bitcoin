@@ -1,6 +1,6 @@
 import { Codec } from "@nomadshiba/codec";
 import { RouteResponse, RouteResponseOptions } from "~/libs/routing/RouterResponse.ts";
-import { _, PromiseOrValue, OptionalizeEmpty } from "@project/utils";
+import { _, OptionalizeEmpty, PromiseOrValue } from "@project/utils";
 
 type SchemaKeyGeneric = `${string} /${string}`;
 export type RouterSchema = { [key: SchemaKeyGeneric]: { input: Codec<_>; output: Codec<_> } };

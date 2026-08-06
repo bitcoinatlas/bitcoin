@@ -1,14 +1,14 @@
-import { Codec, FixedCodec, StructCodec, U64 } from "@nomadshiba/codec";
+import { Codec, FixedCodec, StructCodec } from "@nomadshiba/codec";
+import { FastUint8ArrayMap } from "@project/collections";
+import { IfNever } from "@project/utils";
 import { equals } from "@std/bytes";
 import { join } from "@std/path";
-import { FastUint8ArrayMap } from "@project/collections";
 import { BlobStore } from "~/libs/storage/BlobStore.ts";
 import { SharedSlotArray } from "~/libs/storage/SharedSlotArray.ts";
 import { Store } from "~/libs/storage/Store.ts";
-import { IfNever } from "@project/utils";
 
 export type LoadFactorOptions = { target: number; maxDrift: number };
-export type HashMapStoreOptions<Key extends Codec, Value extends Codec> =
+export type HashMapStoreOptions<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> =
 	& {
 		commiter: boolean;
 		path: string;
@@ -17,19 +17,21 @@ export type HashMapStoreOptions<Key extends Codec, Value extends Codec> =
 		loadFactor: LoadFactorOptions;
 		entryChunkSize: number;
 		minBucketChunkSize: number;
+		pointer: Pointer;
 	}
 	& IfNever<Extract<Key, FixedCodec> & Extract<Value, FixedCodec>, { maxEntrySize: number }, { maxEntrySize?: undefined }>;
 
 const POINTER_SIZE = SharedSlotArray.BYTES_PER_SLOT;
 const INITIAL_BUCKET_COUNT = 1 << 16;
 
-export class HashMapStore<Key extends Codec, Value extends Codec> extends Store implements Disposable {
+export class HashMapStore<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec> extends Store implements Disposable {
 	public readonly path: string;
 	public readonly commiter: boolean;
 
 	public readonly key: Key;
 	public readonly value: Value;
 	public readonly entry: StructCodec<{ key: Key; value: Value }>;
+	public readonly pointer: Pointer;
 	private readonly maxEntrySize: number;
 	// Every mmap() read of a record needs enough room for [pointer][key][value] —
 	// this is the same bound `next()` reserves per record, kept here so every
@@ -60,13 +62,14 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 
 	private readonly keyScratch_: Uint8Array;
 
-	private constructor(options: HashMapStoreOptions<Key, Value>) {
+	private constructor(options: HashMapStoreOptions<Pointer, Key, Value>) {
 		super();
 		this.path = options.path;
 		this.commiter = options.commiter;
 		this.key = options.key;
 		this.value = options.value;
 		this.entry = new StructCodec({ key: options.key, value: options.value });
+		this.pointer = options.pointer;
 		this.maxEntrySize = options.maxEntrySize ?? this.entry.stride.size!;
 		this.recordMaxSize = POINTER_SIZE + this.maxEntrySize;
 		this.keyScratch_ = new Uint8Array(this.maxEntrySize);
@@ -95,9 +98,9 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		}
 	}
 
-	public static open<Key extends Codec, Value extends Codec>(
-		options: HashMapStoreOptions<Key, Value>,
-	): HashMapStore<Key, Value> {
+	public static open<Pointer extends FixedCodec<number>, Key extends Codec, Value extends Codec>(
+		options: HashMapStoreOptions<Pointer, Key, Value>,
+	): HashMapStore<Pointer, Key, Value> {
 		if (options.loadFactor.target <= 0 || options.loadFactor.maxDrift < 0) throw new Error("loadFactor must be positive");
 		return new HashMapStore(options);
 	}
@@ -169,13 +172,8 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		return this.entry.encodeInto({ key, value }, this.entries.mmap(this.maxEntrySize, offset));
 	}
 
-	// The next-in-chain pointer prepended to each record is read back with
-	// `U64.decode` (big-endian). It MUST be written with the same codec — a raw
-	// BigUint64Array view is little-endian on every platform we run on, so mixing
-	// the two silently corrupted chain links (only zero/tail pointers survived,
-	// which is why single-entry buckets appeared to work).
 	private writePointer_(recordBytes: Uint8Array, value: bigint): void {
-		U64.encodeInto(value, recordBytes, 0);
+		this.pointer.encodeInto(Number(value), recordBytes, 0);
 	}
 	public commit(size: number): void {
 		if (!this.commiter) throw new Error("persist on read-only store");
@@ -245,13 +243,13 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 		for (let entryOffset = this.next(size); entryOffset < current;) {
 			const recordOffset = entryOffset - POINTER_SIZE;
 			const recordBytes = this.mmap(recordOffset);
-			const [candidateBucketValue] = U64.decode(recordBytes);
+			const [candidateBucketValue] = this.pointer.decode(recordBytes);
 			const keyOffset = POINTER_SIZE;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			const bucket = hashKey(recordBytes, keyOffset, keyOffset + keySize) % this.buckets.size();
 			const currentBucketValue = this.buckets.get(bucket);
 			if (candidateBucketValue < currentBucketValue) {
-				this.buckets.set(bucket, candidateBucketValue);
+				this.buckets.set(bucket, BigInt(candidateBucketValue));
 			}
 			count--;
 			const valueOffset = keyOffset + keySize;
@@ -337,8 +335,8 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 				const [value] = this.value.decode(recordBytes, keyOffset + keySize);
 				return value;
 			}
-			const [next] = U64.decode(recordBytes);
-			entryOffset = Number(next);
+			const [next] = this.pointer.decode(recordBytes);
+			entryOffset = next;
 		}
 		return undefined;
 	}
@@ -355,8 +353,8 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 			const keyOffset = POINTER_SIZE;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) return entryOffset;
-			const [next] = U64.decode(recordBytes);
-			entryOffset = Number(next);
+			const [next] = this.pointer.decode(recordBytes);
+			entryOffset = next;
 		}
 		return undefined;
 	}
@@ -379,8 +377,8 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 				const [value] = this.value.decode(recordBytes, keyOffset + keySize);
 				return [value, entryOffset];
 			}
-			const [next] = U64.decode(recordBytes);
-			entryOffset = Number(next);
+			const [next] = this.pointer.decode(recordBytes);
+			entryOffset = next;
 		}
 		return undefined;
 	}
@@ -396,8 +394,8 @@ export class HashMapStore<Key extends Codec, Value extends Codec> extends Store 
 			const keyOffset = POINTER_SIZE;
 			const [, keySize] = this.key.decode(recordBytes, keyOffset);
 			if (equals(encoded, recordBytes.subarray(keyOffset, keyOffset + keySize))) return true;
-			const [next] = U64.decode(recordBytes);
-			entryOffset = Number(next);
+			const [next] = this.pointer.decode(recordBytes);
+			entryOffset = next;
 		}
 		return false;
 	}

@@ -1,5 +1,5 @@
 import { Codec } from "@nomadshiba/codec";
-import { U40 } from "~/primitives/U40.ts";
+import { U48 } from "@project/codecs";
 
 export type StoredPubkeyPointer = Codec.InferOutput<typeof StoredPubkeyPointer>;
-export const StoredPubkeyPointer = U40;
+export const StoredPubkeyPointer = U48;

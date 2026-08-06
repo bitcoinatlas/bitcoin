@@ -25,9 +25,9 @@ const WireTxPostWitness = new StructCodec({
 
 type WireTxIn = {
 	version: number;
-	locktime: LockTime;
-	inputs: WireTxInput[];
-	outputs: WireTxOutput[];
+	locktime: Codec.InferInput<typeof LockTime>;
+	inputs: Codec.InferInput<typeof WireTxInput>[];
+	outputs: Codec.InferInput<typeof WireTxOutput>[];
 	witness: Uint8Array[][];
 };
 

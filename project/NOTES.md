@@ -6,52 +6,52 @@ then continue working on the frontend.
 
 ## 10
 
-Note for future: later maybe make sure we support infinite decimals smaller than a sat. just make wrap arround it and only make min 1sat consensus valid.
+Note for future: later maybe make sure we support infinite decimals smaller than a sat. just make wrap arround it and only make min 1sat
+consensus valid.
 
 so later in the future like 100 years later if we need to we can just allow more decimals with a flip of a switch.
 
 ## 9 — reveal / persist / append (storage layering)
 
 context in code:
+
 - `Store` = size/reveal/persist/truncate/sync.
 - `Manifest.pin()` is 2 tx: (A) sync + record `reveal=size`; (B) `persist(size)` + record `pin=size` + broadcast size.
 - other workers ONLY move via broadcast -> `reveal(size)`. reveal is local.
-- BlobStore: `persist === reveal` (cursor is truth). HashMapStore: `reveal` just moves cursor,
-  `persist` walks entries and WIRES buckets, `truncate` backward-replays back-pointers to undo buckets.
+- BlobStore: `persist === reveal` (cursor is truth). HashMapStore: `reveal` just moves cursor, `persist` walks entries and WIRES buckets,
+  `truncate` backward-replays back-pointers to undo buckets.
 
 the real asymmetry (this is what i kept circling):
+
 - for BlobStore "revealed" and "index-consistent" are the SAME event.
 - for HashMapStore they are TWO events:
   1. entries physically on disk + synced (so truncate can undo via back-pointer)
-  2. buckets point at those entries (index live)
-  `persist` does #2, MUST run once, single writer, order-dependent (linked-list back-pointer per entry
-  written during persist). this is fundamental, not a smell. the name `persist` is what mislead me;
-  it's really "commit/link the index", not "second reveal".
+  2. buckets point at those entries (index live) `persist` does #2, MUST run once, single writer, order-dependent (linked-list back-pointer
+     per entry written during persist). this is fundamental, not a smell. the name `persist` is what mislead me; it's really "commit/link
+     the index", not "second reveal".
 
 why the two things i want break the clean picture:
-1. parallel writers to entries -> fine for entry BYTES (append-only, negotiated offsets, blobstore-style).
-   NOT fine for bucket wiring (order-dependent linked list). do NOT parallelize wiring.
-2. worker wants to see its own writes before pin (dedup/has during work) -> today get/has read buckets,
-   buckets aren't wired until persist -> can't see own writes. this is the "read disk but can't see"
-   pain.
+
+1. parallel writers to entries -> fine for entry BYTES (append-only, negotiated offsets, blobstore-style). NOT fine for bucket wiring
+   (order-dependent linked list). do NOT parallelize wiring.
+2. worker wants to see its own writes before pin (dedup/has during work) -> today get/has read buckets, buckets aren't wired until persist
+   -> can't see own writes. this is the "read disk but can't see" pain.
 
 decision (keep the layering, stop overloading reveal):
-1. reveal = forward-only + IDEMPOTENT in every store (`if (size <= size()) return;`). makes dup /
-   out-of-order broadcasts harmless. (blobstore currently throws, hashmap doesn't guard — fix both.)
-2. Manifest.pin: before broadcast, skip reveal when incoming <= current (the guard i described).
-3. BlobStore: bring back `append(bytes)` as SUGAR over primitives = `commit(cursor,bytes); reveal(+len)`.
-   NOT a replacement for commit/reveal/mmap. keep persist = reveal.
-4. keep `persist`. consider renaming -> `commitIndex` / `link` so i stop reading it as reveal-twice.
-5. HashMapStore: add a per-worker in-memory STAGING OVERLAY for range [cursor, writeHead):
-   Map<key, entryOffset>. get/has/getPointer check overlay first, then wired buckets.
-   on persist -> wire overlay range into real buckets, clear overlay.
-   on truncate/rollback of un-persisted range -> just drop overlay (free undo, no replay needed;
-   back-pointer replay only for already-persisted entries).
-   readers still only ever see wired buckets (change only during single-writer persist) -> no tearing.
 
-DO NOT: make reveal read disk to "decide state"; do NOT move bucket wiring into parallel workers.
-parallelism stays at the entry-bytes layer; index-linking stays single-writer at persist. overlay
-bridges the visibility gap without breaking either invariant.
+1. reveal = forward-only + IDEMPOTENT in every store (`if (size <= size()) return;`). makes dup / out-of-order broadcasts harmless.
+   (blobstore currently throws, hashmap doesn't guard — fix both.)
+2. Manifest.pin: before broadcast, skip reveal when incoming <= current (the guard i described).
+3. BlobStore: bring back `append(bytes)` as SUGAR over primitives = `commit(cursor,bytes); reveal(+len)`. NOT a replacement for
+   commit/reveal/mmap. keep persist = reveal.
+4. keep `persist`. consider renaming -> `commitIndex` / `link` so i stop reading it as reveal-twice.
+5. HashMapStore: add a per-worker in-memory STAGING OVERLAY for range [cursor, writeHead): Map<key, entryOffset>. get/has/getPointer check
+   overlay first, then wired buckets. on persist -> wire overlay range into real buckets, clear overlay. on truncate/rollback of
+   un-persisted range -> just drop overlay (free undo, no replay needed; back-pointer replay only for already-persisted entries). readers
+   still only ever see wired buckets (change only during single-writer persist) -> no tearing.
+
+DO NOT: make reveal read disk to "decide state"; do NOT move bucket wiring into parallel workers. parallelism stays at the entry-bytes
+layer; index-linking stays single-writer at persist. overlay bridges the visibility gap without breaking either invariant.
 
 ## 8
 
@@ -60,6 +60,7 @@ after current WIP is done, create a root dir called project/ and in it create ot
 then use deno workspaces and seperate things better.
 
 probably workspaces like:
+
 ```
 shared/
 node/
@@ -68,7 +69,7 @@ app/frontend/
 app/backend/
 ```
 
-## 7 
+## 7
 
 ok so we now have a rewritten version of consume path, i think first thing we need to do is make this make this start working again.
 
@@ -80,7 +81,8 @@ but now most tx pointers point to the txid hashmapstore now, so its fixed sized,
 
 so another thing is, consumer should do everything, find, push etc.
 
-sync points to main chain worker (master) exists so workers can exchange their offsets/bytelengths/counts/etc, and then append/put/push in parallel again.
+sync points to main chain worker (master) exists so workers can exchange their offsets/bytelengths/counts/etc, and then append/put/push in
+parallel again.
 
 so we shouldnt transfer buffers back and forth.
 
@@ -98,18 +100,20 @@ blocks storage should hold the wire size data.
 
 blocks endpoint should return combination of Block and BlockSummary.
 
-/txs/summary endpoint should give the txs with data, just the hash, input output count, and wire size. etc. minimal. what is visible on the ui.
+/txs/summary endpoint should give the txs with data, just the hash, input output count, and wire size. etc. minimal. what is visible on the
+ui.
 
 /txs can only be used with cursor and take params, similar to /blocks, but /txs/summary should give all of the txs, all of them.
 
-tbh i dont think we need a summary variants of endpoints, if you are getting a list its a summaryy, if you are getting one its the full data.
+tbh i dont think we need a summary variants of endpoints, if you are getting a list its a summaryy, if you are getting one its the full
+data.
 
 makes more sense.
 
 and then neccery changes to storage extra data we need and stuff.
 
-then changing the way atomic and KV works. to remove the depdency on rocksdb. make it take less space and sync faster.
-easier to parallel as well.
+then changing the way atomic and KV works. to remove the depdency on rocksdb. make it take less space and sync faster. easier to parallel as
+well.
 
 etc.
 
@@ -123,7 +127,8 @@ then idk we will see, probably script verification.
 
 - bring frontend to a good state
 - change neccery storage changes that you mention as TODO
-- speed up sync more, if posibble get rid of rocksdb, we dont want external binaries, we want native deno codebase fully, so it can easily work anywhere. 
+- speed up sync more, if posibble get rid of rocksdb, we dont want external binaries, we want native deno codebase fully, so it can easily
+  work anywhere.
 
 ---
 

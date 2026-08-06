@@ -1,10 +1,10 @@
-import { ArrayCodec } from "@nomadshiba/codec";
+import { ArrayCodec, Codec } from "@nomadshiba/codec";
 import { decodeHex } from "@std/encoding";
 import { RouterSchema } from "~/libs/routing/mod.ts";
 import { endpointRouter } from "~/router.ts";
 import { Block, Schema, TxSummary } from "~/routes.ts";
-import { chainStore } from "~/chain/ChainStore.ts";
-import { StoredTx } from "@project/codecs";
+import { ChainStore, chainStore } from "~/chain/ChainStore.ts";
+import { StoredPubKey, StoredTx, WireTxInput, WireTxOutput } from "@project/codecs";
 import { WireTx } from "@project/codecs";
 import { sha256d } from "@project/hashes";
 
@@ -22,6 +22,34 @@ function resolveHeight(raw: string): number | undefined {
 	const parsed = parseHashOrHeight(raw);
 	if (parsed.kind === "height") return Number.isInteger(parsed.height) ? parsed.height : undefined;
 	return chainStore.stores.blockhash.get(parsed.hash);
+}
+
+function toWireTx(storedTx: StoredTx, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
+	const { version, locktime } = storedTx.lockTimeAndVersionPack;
+
+	let anyWitness = false;
+	for (const input of storedTx.inputs) {
+		if (input.witness.kind !== "none") {
+			anyWitness = true;
+			break;
+		}
+	}
+
+	const inputs: Codec.InferInput<typeof WireTxInput>[] = storedTx.inputs.map((input) => ({
+		prevOut: { txId: chainStorage.getPrevOutTxId(input), output: input.prevOut.output },
+		scriptSig: input.scriptSig,
+		sequence: input.sequence,
+	}));
+
+	const outputs: Codec.InferInput<typeof WireTxOutput>[] = storedTx.outputs.map((output) => {
+		const [scriptPubKey] = chainStorage.stores.pubkey.getKey(output.scriptPubKey);
+		const value = BigInt(output.value);
+		return { value, scriptPubKey: StoredPubKey.toRaw(scriptPubKey) };
+	});
+
+	const witness: Uint8Array<ArrayBuffer>[][] = anyWitness ? storedTx.inputs.map((input) => input.witness.raw()) : [];
+
+	return { version, locktime, inputs, outputs, witness };
 }
 
 async function getBlockByHeight(height: number): Promise<RouterSchema.InferResultInput<Schema, "GET /v1/block/:hashOrHeight">> {
@@ -124,7 +152,7 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 	return {
 		status: "OK",
 		data: slice.map((tx): TxSummary => {
-			const wireTx = StoredTx.toWire(tx, chainStore);
+			const wireTx = toWireTx(tx, chainStore);
 			const encodedWire = WireTx.encode(wireTx); // TODO: we shouldnt need this for txId
 			return {
 				txId: sha256d(encodedWire) as Uint8Array<ArrayBuffer>, // TODO: we shouldnt have to cast this.
@@ -138,8 +166,8 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 
 endpointRouter.registerHandler("GET /v1/tx/:txId", async ({ params }) => {
 	const txId = Uint8Array.from(decodeHex(params.pathname.txId).reverse());
-	const txPointer = chainStore.stores.txid.get(txId);
-	if (txPointer === undefined) return { status: "OK", data: null };
-	const [tx] = await chainStore.stores.tx.getAsync(txPointer, StoredTx);
-	return { status: "OK", data: StoredTx.toWire(tx, chainStore) };
+	const txInfo = chainStore.stores.txid.get(txId);
+	if (txInfo === undefined) return { status: "OK", data: null };
+	const [tx] = await chainStore.stores.tx.getAsync(txInfo.txPointer, StoredTx);
+	return { status: "OK", data: toWireTx(tx, chainStore) };
 });

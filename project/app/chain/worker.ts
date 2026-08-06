@@ -1,4 +1,4 @@
-import { Codec } from "@nomadshiba/codec";
+import { Codec, FixedCodec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { delay } from "@std/async";
 import { chainStore } from "~/chain/ChainStore.ts";
@@ -277,8 +277,8 @@ async function tick(port: MessagePortLike): Promise<void> {
  * round-ending `pin()` wires it into the shared buckets. The entry offset — the
  * value `getPointer` returns — is the stable pointer we store elsewhere.
  */
-function putEntry<K extends Codec, V extends Codec>(
-	store: HashMapStore<K, V>,
+function putEntry<P extends FixedCodec<number>, K extends Codec, V extends Codec>(
+	store: HashMapStore<P, K, V>,
 	key: Codec.InferInput<K>,
 	value: Codec.InferInput<V>,
 ): number {
