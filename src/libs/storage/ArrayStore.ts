@@ -11,12 +11,12 @@ export type ArrayStoreOptions<T extends FixedCodec> = {
 export class ArrayStore<T extends FixedCodec> extends Store implements Disposable {
 	public readonly path: string;
 	public readonly blob: BlobStore;
-	public readonly codec: T;
+	public readonly item: T;
 
 	private constructor(blob: BlobStore, options: ArrayStoreOptions<T>) {
 		super();
 		this.blob = blob;
-		this.codec = options.item;
+		this.item = options.item;
 		this.path = options.path;
 	}
 
@@ -35,19 +35,19 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 	}
 
 	public size(): number {
-		return this.blob.size() / this.codec.stride.size;
+		return this.blob.size() / this.item.stride.size;
 	}
 
 	public reveal(size: number, isBroadcast?: boolean): void {
-		return this.blob.reveal(size * this.codec.stride.size, isBroadcast);
+		return this.blob.reveal(size * this.item.stride.size, isBroadcast);
 	}
 
 	public commit(size: number): void {
-		return this.blob.commit(size * this.codec.stride.size);
+		return this.blob.commit(size * this.item.stride.size);
 	}
 
 	public truncate(size: number): void {
-		return this.blob.truncate(size * this.codec.stride.size);
+		return this.blob.truncate(size * this.item.stride.size);
 	}
 
 	public get(index: number): Codec.InferOutput<T> | undefined {
@@ -56,7 +56,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		const [value] = this.blob.get(index * this.codec.stride.size, this.codec);
+		const [value] = this.blob.get(index * this.item.stride.size, this.item);
 		return value;
 	}
 
@@ -66,7 +66,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 			throw new RangeError(`get out of bounds index=${index} length=${length}`);
 		}
 		if (index >= length) return undefined;
-		const [value] = await this.blob.getAsync(index * this.codec.stride.size, this.codec).catch((reason) => {
+		const [value] = await this.blob.getAsync(index * this.item.stride.size, this.item).catch((reason) => {
 			console.log(index, length);
 			throw reason;
 		});
@@ -81,7 +81,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		}
 		if (start > length) start = length;
 		if (end <= start) return [];
-		const [value] = this.blob.get(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		const [value] = this.blob.get(start * this.item.stride.size, new ArrayCodec(this.item, { size: end - start }));
 		return value;
 	}
 
@@ -93,7 +93,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		}
 		if (start > size) start = size;
 		if (end <= start) return [];
-		const [value] = await this.blob.getAsync(start * this.codec.stride.size, new ArrayCodec(this.codec, { size: end - start }));
+		const [value] = await this.blob.getAsync(start * this.item.stride.size, new ArrayCodec(this.item, { size: end - start }));
 		return value;
 	}
 
@@ -101,7 +101,7 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		// chunkSize is always a multiple of stride.size (enforced in open()), so an
 		// item at this offset never straddles a chunk boundary — begin can be the
 		// raw index*stride offset directly, no next() needed.
-		return this.blob.mmap(this.codec.stride.size, index * this.codec.stride.size);
+		return this.blob.mmap(this.item.stride.size, index * this.item.stride.size);
 	}
 
 	public stage(item: Codec.InferInput<T>, index?: number): number {
@@ -111,9 +111,9 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 			throw new RangeError([
 				`set index=${index} is behind the cursor (size=${size}).`,
 				`set can only fill space at or in front of the cursor`,
-			].join("\n"));
+			].join(" "));
 		}
-		this.codec.encodeInto(item, this.mmap(index));
+		this.item.encodeInto(item, this.mmap(index));
 		return index;
 	}
 

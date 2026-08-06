@@ -74,11 +74,11 @@ export class BlobStore extends Store implements Disposable {
 		return self;
 	}
 
-	public sync(): void {
+	public override sync(): void {
 		for (const chunk of this.chunks.values()) chunk.mapping.flush();
 	}
 
-	public size(): number {
+	public override size(): number {
 		return this.cursor;
 	}
 

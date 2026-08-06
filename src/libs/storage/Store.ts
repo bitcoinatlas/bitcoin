@@ -1,6 +1,6 @@
 export abstract class Store {
 	/** size or length or count etc */
-	abstract size(): number;
+	public abstract size(): number;
 	/**
 	 * reveal the underlying storage by moving cursors.
 	 *
@@ -11,11 +11,11 @@ export abstract class Store {
 	 * when called manually the store stages the region so this worker can read its
 	 * own not-yet-persisted writes.
 	 */
-	abstract reveal(size: number, isBroadcast?: boolean): void;
+	public abstract reveal(size: number, isBroadcast?: boolean): void;
 	/** twin of reveal, called during pin() only instead of reveal, on the worker that said pin() */
-	abstract commit(size: number): void;
+	public abstract commit(size: number): void;
 	/** truncate the storage to a specific size */
-	abstract truncate(size: number): void;
+	public abstract truncate(size: number): void;
 	/** msync or fsync */
-	abstract sync(): void;
+	public abstract sync(): void;
 }

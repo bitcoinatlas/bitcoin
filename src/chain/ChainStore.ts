@@ -1,6 +1,7 @@
-import { StructCodec, U32, U64, VarInt } from "@nomadshiba/codec";
+import { StructCodec, U32 } from "@nomadshiba/codec";
 import { join } from "@std/path";
 import { Bytes32 } from "~/codec/primitives/Bytes32.ts";
+import { U40 } from "~/codec/primitives/U40.ts";
 import { StoredBlockHeader } from "~/codec/stored/StoredBlockHeader.ts";
 import { StoredBlockInfo } from "~/codec/stored/StoredBlockInfo.ts";
 import { StoredPubKey } from "~/codec/stored/StoredPubKey.ts";
@@ -51,7 +52,7 @@ export class ChainStore {
 			txid: HashMapStore.open({
 				path: join(BASE_DATA_DIR, "txid"),
 				key: Bytes32, // tx id
-				value: StoredTxPointer, // pointer to tx block store
+				value: new StructCodec({ txPointer: StoredTxPointer, totalOutput: U40 }),
 				loadFactor: LOAD_FACTOR_OPTIONS,
 				commiter: self.name === "chain" || self.name === "",
 				entryChunkSize: 500 * MB,
@@ -67,15 +68,10 @@ export class ChainStore {
 				minBucketChunkSize: 500 * MB,
 				maxEntrySize: MAX_BLOCK_SIZE + StoredTxIdPointer.stride.size,
 			}),
-			spender: HashMapStore.open({
+			spender: ArrayStore.open({
 				path: join(BASE_DATA_DIR, "spender"),
-				key: new StructCodec({ tx: StoredTxIdPointer, output: VarInt }),
-				value: StoredTxIdPointer, // spender tx
-				loadFactor: LOAD_FACTOR_OPTIONS,
-				commiter: self.name === "chain" || self.name === "",
-				entryChunkSize: 500 * MB,
-				minBucketChunkSize: 500 * MB,
-				maxEntrySize: StoredTxIdPointer.stride.size + StoredTxIdPointer.stride.size + U64.stride.size,
+				item: StoredTxIdPointer,
+				minChunkSize: 500 * MB,
 			}),
 		},
 	});

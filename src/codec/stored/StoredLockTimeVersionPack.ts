@@ -1,7 +1,7 @@
 import { Codec, type Stride, U32 } from "@nomadshiba/codec";
 import { LockTime } from "~/codec/LockTime.ts";
 
-export type LockTimeVersionPack = { locktime: LockTime; version: number };
+export type LockTimeAndVersionPack = { locktime: LockTime; version: number };
 
 /**
  * 1-byte tag folding the common (version, locktime-present) combinations.
@@ -26,12 +26,12 @@ const NONE: LockTime = { kind: "none" };
  * Codec presenting a flat { locktime, version } on both encode and decode.
  * Hand-rolled: writes a 1-byte tag then only the bytes that variant needs.
  */
-export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
+export class LockTimeVersionPackCodec extends Codec<LockTimeAndVersionPack> {
 	public readonly stride: Stride<"variable"> = { kind: "variable" };
 
-	public encoder(value: LockTimeVersionPack, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	public encoder(value: LockTimeVersionPack, target: Uint8Array, offset: number): number;
-	public encoder(value: LockTimeVersionPack, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
+	public encoder(value: LockTimeAndVersionPack, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
+	public encoder(value: LockTimeAndVersionPack, target: Uint8Array, offset: number): number;
+	public encoder(value: LockTimeAndVersionPack, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
 		const { version, locktime } = value;
 		const noLock = locktime.kind === "none";
 
@@ -77,7 +77,7 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 		return 1 + 4 + 4;
 	}
 
-	public decoder(data: Uint8Array, offset: number): [LockTimeVersionPack, number] {
+	public decoder(data: Uint8Array, offset: number): [LockTimeAndVersionPack, number] {
 		const tag = data[offset]!;
 		switch (tag) {
 			case TAG_V1_NONE:
@@ -103,4 +103,4 @@ export class LockTimeVersionPackCodec extends Codec<LockTimeVersionPack> {
 	}
 }
 
-export const LockTimeVersionPack = new LockTimeVersionPackCodec();
+export const LockTimeAndVersionPack = new LockTimeVersionPackCodec();

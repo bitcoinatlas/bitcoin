@@ -1,41 +1,30 @@
-import { ArrayCodec, Codec, VarInt } from "@nomadshiba/codec";
+import { ArrayCodec, Codec, StructCodec, StructInput, StructOutput, VarInt } from "@nomadshiba/codec";
 import { ChainStore } from "~/chain/ChainStore.ts";
-import { LockTimeVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
+import { LockTimeAndVersionPack } from "~/codec/stored/StoredLockTimeVersionPack.ts";
 import { StoredTxInput } from "~/codec/stored/StoredTxInput.ts";
 import { StoredTxOutput } from "~/codec/stored/StoredTxOutput.ts";
 import { WireTx } from "~/codec/wire/WireTx.ts";
 import { WireTxInput } from "~/codec/wire/WireTxInput.ts";
 import { WireTxOutput } from "~/codec/wire/WireTxOutput.ts";
 
-const PACK = LockTimeVersionPack;
-const INPUTS = new ArrayCodec(StoredTxInput, { counter: VarInt });
-const OUTPUTS = new ArrayCodec(StoredTxOutput, { counter: VarInt });
-
-type Output =
-	& Codec.InferOutput<typeof PACK>
-	& { inputs: Codec.InferOutput<typeof INPUTS> }
-	& { outputs: Codec.InferOutput<typeof OUTPUTS> };
-
-type Input =
-	& Codec.InferInput<typeof PACK>
-	& { inputs: Codec.InferInput<typeof INPUTS> }
-	& { outputs: Codec.InferInput<typeof OUTPUTS> };
+type Output = StructOutput<typeof Shape>;
+type Input = StructInput<typeof Shape>;
+const Shape = {
+	lockTimeAndVersionPack: LockTimeAndVersionPack,
+	inputs: new ArrayCodec(StoredTxInput, { counter: VarInt }),
+	outputs: new ArrayCodec(StoredTxOutput, { counter: VarInt }),
+};
 
 export type StoredTxOffsets = { outputs: number[]; inputs: number[] };
 
-export class StoredTxCodec extends Codec<Output, Input> {
-	public readonly stride = { kind: "variable" } as const;
+export class StoredTxCodec extends StructCodec<typeof Shape> {
+	public constructor() {
+		super(Shape);
+	}
 
-	/**
-	 * Reconstruct the human-readable wire transaction from stored form: substitutes
-	 * real prevout txids back in for the U48 pointers and expands pubkey pointers to
-	 * full scripts. Unlike {@link toWireBytes} this returns the decoded object (what
-	 * the API layer serializes), and only emits a segwit marker when at least one
-	 * input actually carries witness data — so legacy txs round-trip to the right txid.
-	 */
-	// TODO: Move this to somewhere else
+	// TODO: Move this to somewhere else, also we only need bytes here, normally if Router was more flexable
 	public toWire(storedTx: Output, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
-		const { version, locktime } = storedTx;
+		const { version, locktime } = storedTx.lockTimeAndVersionPack;
 
 		let anyWitness = false;
 		for (const input of storedTx.inputs) {
@@ -62,59 +51,9 @@ export class StoredTxCodec extends Codec<Output, Input> {
 		return { version, locktime, inputs, outputs, witness };
 	}
 
-	public encoder(value: Input, target: undefined, offset: undefined): Uint8Array<ArrayBuffer>;
-	public encoder(value: Input, target: Uint8Array, offset: number): number;
-	public encoder(value: Input, target?: Uint8Array, offset?: number): Uint8Array<ArrayBuffer> | number {
-		if (target === undefined) {
-			// Size-compute pass.
-			const packBytes = PACK.encode(value);
-			const outputBytes = OUTPUTS.encode(value.outputs);
-			const inputBytes = INPUTS.encode(value.inputs);
-
-			const totalSize = packBytes.length + outputBytes.length + inputBytes.length;
-
-			const bytes = new Uint8Array(totalSize);
-			let pos = 0;
-			bytes.set(packBytes, pos);
-			pos += packBytes.length;
-			bytes.set(outputBytes, pos);
-			pos += outputBytes.length;
-			bytes.set(inputBytes, pos);
-			return bytes;
-		}
-
-		offset = offset!;
-		const start = offset;
-		offset += PACK.encodeInto(value, target, offset);
-		offset += OUTPUTS.encodeInto(value.outputs, target, offset);
-		offset += INPUTS.encodeInto(value.inputs, target, offset);
-		return offset - start;
-	}
-
-	public decoder(data: Uint8Array, offset: number): [Output, number] {
-		let pos = offset;
-
-		const [{ locktime, version }, packSize] = PACK.decode(data, pos);
-		pos += packSize;
-		const [outputs, outputSize] = OUTPUTS.decode(data, pos);
-		pos += outputSize;
-		const [inputs, inputSize] = INPUTS.decode(data, pos);
-		pos += inputSize;
-
-		return [{ locktime, version, outputs, inputs }, pos - offset];
-	}
-
-	/**
-	 * Writes the tx directly into `target` at `offset` (no intermediate
-	 * allocations) and returns each vout's and vin's tx-relative byte offset.
-	 * Add `txPointer` (the blob offset where the tx starts) to each returned
-	 * offset to get the absolute blob pointer for that output/input.
-	 *
-	 * Invariant: the number of bytes written equals the total encoded size.
-	 */
 	public encodeWithOffsets(value: Output, target: Uint8Array, offset: number): StoredTxOffsets {
 		const start = offset;
-		offset += PACK.encodeInto(value, target, offset);
+		offset += LockTimeAndVersionPack.encodeInto(value.lockTimeAndVersionPack, target, offset);
 
 		const outputs: number[] = [];
 		offset += VarInt.encodeInto(value.outputs.length, target, offset);

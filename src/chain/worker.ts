@@ -303,10 +303,20 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		if (!chunk) return;
 
 		const txStore = chainStore.stores.tx;
+		const spender = chainStore.stores.spender;
 		// tx is a raw BlobStore. stage() fills bytes AHEAD of the cursor without
 		// moving it, so we track the offset ourselves and advance the cursor once
 		// at the end (see the reveal() below). Start at the next slot.
-		let txStoreOffset = txStore.next(MAX_BLOCK_SIZE);
+		let txPointer = txStore.next(MAX_BLOCK_SIZE);
+
+		// Running global output count. Seeded from spender's COMMITTED size (the
+		// number of output slots pinned by prior chunks) and advanced per tx as we
+		// go — the in-memory base each tx's outputs start at, no store read. Each
+		// tx records this base as firstOutputHeight in its txid entry so a later
+		// spend recovers any output's global height as firstOutputHeight + vout.
+		// (Under parallel consume this is exactly the per-range base a worker keeps
+		// in memory, seeded from the previous range's completion checkpoint.)
+		let total = spender.size();
 
 		let blocksInChunk = 0;
 		let offset = 0;
@@ -318,12 +328,12 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			// Align to a block slot: next() bumps us to the next chunk if this one
 			// has less than a max block left, so the whole block region (count +
 			// every tx) lands contiguously in one chunk — no straddle.
-			txStoreOffset = txStore.next(MAX_BLOCK_SIZE, txStoreOffset);
+			txPointer = txStore.next(MAX_BLOCK_SIZE, txPointer);
 			// This reservation covers the WHOLE block, once — not a fresh
 			// MAX_BLOCK_SIZE for every tx inside it. blockRegionEnd is the actual
 			// boundary that reservation bought us; each tx below asks for what's
 			// left of it, not the full amount again.
-			const blockRegionEnd = txStoreOffset + MAX_BLOCK_SIZE;
+			const blockRegionEnd = txPointer + MAX_BLOCK_SIZE;
 
 			// The height of THIS block is the next free block-store slot (block[i]
 			// is the block at height i; genesis is pre-seeded at 0 by the header
@@ -346,14 +356,19 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 
 			// block[height] -> pointer to this block's first tx entry.
 			chainStore.stores.block.stage({
-				txPointer: txStoreOffset,
+				txPointer,
 				wireSize: size + WireBlockHeader.stride.size,
 				txCount: block.length,
-				reward: 123, // TODO: calculate later.
+				reward: 123_456_789, // TODO: calculate later.
 			}, height);
 			chainStore.stores.block.reveal(height + 1);
 
 			for (const tx of block) {
+				// This tx's outputs occupy [total, total + outputs.length) in global
+				// output-height space. Recorded as firstOutputHeight in the txid entry
+				// so a spend of any of them resolves height via one txid lookup.
+				const totalOutput = total;
+
 				// BIP30 duplicate-txid handling. The store has no in-place update or
 				// delete, but commit() prepends fresh entries to their bucket head
 				// (and our per-worker stage overwrites the staged offset), so simply
@@ -364,22 +379,27 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 				if (bip30Overwrite && chainStore.stores.txid.getPointer(tx.txId) !== undefined) {
 					console.log(`[chain] BIP30 overwrite of duplicate coinbase txid at height ${height}`);
 				}
-				const txIdPointer = putEntry(chainStore.stores.txid, tx.txId, txStoreOffset);
+				const txIdPointer = putEntry(chainStore.stores.txid, tx.txId, { totalOutput, txPointer });
 
 				const storedTx: Codec.InferInput<typeof StoredTx> = {
-					locktime: tx.locktime,
-					version: tx.version,
+					lockTimeAndVersionPack: { locktime: tx.locktime, version: tx.version },
 					inputs: tx.inputs.map((input, index): Codec.InferInput<typeof StoredTxInput> => {
 						let prevOutTxId: Codec.InferInput<typeof StoredPrevOutTxId>;
 						if (equals(input.prevOut.txId, COINBASE_TXID)) {
 							prevOutTxId = null;
 						} else {
-							const pointer = chainStore.stores.txid.getPointer(input.prevOut.txId);
-							if (pointer === undefined) {
+							// One txid lookup gives both the prevout's entry pointer (what we
+							// store as prevOutTxId) and its value — which now carries the
+							// prevout tx's firstOutputHeight, so the spent output's global
+							// height is firstOutputHeight + vout with no blob read.
+							const resolved = chainStore.stores.txid.getValueAndPointer(input.prevOut.txId);
+							if (resolved === undefined) {
 								throw new Error("prevOut references a txid not present in the index");
 							}
-							putEntry(chainStore.stores.spender, { tx: pointer, output: input.prevOut.output }, txIdPointer);
-							prevOutTxId = pointer;
+							const [prevValue, prevEntryPointer] = resolved;
+							const prevOutputIndex = prevValue.totalOutput + input.prevOut.output;
+							spender.item.encodeInto(txIdPointer, spender.mmap(prevOutputIndex));
+							prevOutTxId = prevEntryPointer;
 						}
 
 						return {
@@ -418,6 +438,9 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 					}),
 				};
 
+				// This tx's outputs are now accounted for — advance the global base.
+				total += tx.outputs.length;
+
 				// The block-level next(MAX_BLOCK_SIZE, ...) above reserves room for the
 				// whole block up front, once — blockRegionEnd is that reservation's real
 				// boundary. Each tx write asks for what's LEFT of the block's budget
@@ -430,14 +453,17 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 				// the tx into whatever chunk space happened to remain, which is what
 				// was producing the corrupted, permanently-broken coinbase reads
 				// downstream.
-				txStoreOffset += StoredTx.encodeInto(storedTx, txStore.mmap(blockRegionEnd - txStoreOffset, txStoreOffset));
+				txPointer += StoredTx.encodeInto(storedTx, txStore.mmap(blockRegionEnd - txPointer, txPointer));
 			}
 		}
 
 		// Commit the tx blob: advance its cursor past everything we wrote so the
 		// bytes become live/readable (the txid pointers we stored point into this
-		// range). Then pin OUR domain only — one consistent snapshot per round.
-		txStore.reveal(txStoreOffset);
+		// range). Extend the spender array to cover every output created this chunk
+		// (new slots read 0 = unspent). Then pin OUR domain only — one consistent
+		// snapshot per round.
+		txStore.reveal(txPointer);
+		spender.reveal(total);
 		chainStore.manifest.pin();
 
 		recordBlocks(blocksInChunk, chainStore.stores.block.size() - 1);
