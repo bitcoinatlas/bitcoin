@@ -1,7 +1,7 @@
 import { controlSab } from "~/libs/storage/mod.ts";
 import { U48 } from "@project/codecs";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { chainStore } from "~/chain/ChainStore.ts";
+import { chainStore } from "~/chain/manifest.ts";
 
 /**
  * SpenderIndexer — chain-thread orchestrator for the detached spender index.

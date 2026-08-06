@@ -6,7 +6,7 @@ import { StoredTxInput } from "@project/codecs";
 import { WireTx } from "@project/codecs";
 import { WireTxs } from "@project/codecs";
 import { COINBASE_TXID, COINBASE_VOUT, MAX_BLOCK_WEIGHT } from "@project/utils";
-import { chainStore } from "~/chain/ChainStore.ts";
+import { chainStore } from "~/chain/manifest.ts";
 import { StoredTxOutput } from "@project/codecs";
 import { FastUint8ArraySet } from "@project/collections";
 

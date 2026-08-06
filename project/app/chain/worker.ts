@@ -1,7 +1,7 @@
 import { Codec, FixedCodec } from "@nomadshiba/codec";
 import { equals } from "@std/bytes";
 import { delay } from "@std/async";
-import { chainStore } from "~/chain/ChainStore.ts";
+import { manifest } from "~/chain/manifest.ts";
 import { BIP30_EXCEPTION_BLOCKS, isBip30Exception } from "~/chain/bips/bip30.ts";
 import { checkBip34CoinbaseHeight } from "~/chain/bips/bip34.ts";
 import { StoredPrevOutTxId } from "@project/codecs";
@@ -60,15 +60,15 @@ function recordBlocks(n: number, tipHeight: number): void {
 // are always this worker's own committed writes.
 
 function tipHeight(): number {
-	return chainStore.stores.header.size() - 1;
+	return manifest.stores.header.size() - 1;
 }
 
 function headerAt(height: number): WireBlockHeader | undefined {
-	return chainStore.stores.header.get(height);
+	return manifest.stores.header.get(height);
 }
 
 function headerHashAt(height: number): Uint8Array | undefined {
-	return chainStore.stores.header.get(height)?.hash();
+	return manifest.stores.header.get(height)?.hash();
 }
 
 function tipHash(): Uint8Array | undefined {
@@ -83,7 +83,7 @@ function tipHash(): Uint8Array | undefined {
  * every such stale row read back as unknown. Self-healing, no cleanup pass.
  */
 function heightOfHash(hash: Uint8Array): number | undefined {
-	const height = chainStore.stores.blockhash.get(hash);
+	const height = manifest.stores.headerhash.get(hash);
 	if (height === undefined) return undefined;
 	const at = headerHashAt(height);
 	return at && equals(at, hash) ? height : undefined;
@@ -151,16 +151,16 @@ function applyHeaders(headers: WireBlockHeader[]): ApplyResult {
 	let rewind: number | undefined;
 	if (isReorg) {
 		console.log(`[chain] header reorg: dropping height ${tipHeight()} -> ${splitHeight}, applying ${branch.length} headers`);
-		chainStore.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
+		manifest.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
 
 		// A reorg below where block bodies were already committed means those
 		// bodies are now orphaned and the block/tx/txid/pubkey/spender domain must
 		// be rewound too. That reverse-replay is NOT implemented yet — throw rather
 		// than silently serve an inconsistent chain. For IBD off a trusted peer
 		// this never fires. Header-only reorgs above the block tip are fine.
-		if (splitHeight < chainStore.stores.block.size() - 1) {
+		if (splitHeight < manifest.stores.block.size() - 1) {
 			throw new Error(
-				`header reorg to ${splitHeight} is below committed block tip ${chainStore.stores.block.size() - 1}; ` +
+				`header reorg to ${splitHeight} is below committed block tip ${manifest.stores.block.size() - 1}; ` +
 					`block-domain rewind is not implemented`,
 			);
 		}
@@ -170,14 +170,14 @@ function applyHeaders(headers: WireBlockHeader[]): ApplyResult {
 	}
 
 	for (const header of branch) {
-		const height = chainStore.stores.header.stage(header);
-		chainStore.stores.header.reveal(height + 1);
+		const height = manifest.stores.header.stage(header);
+		manifest.stores.header.reveal(height + 1);
 
-		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
-		const size = chainStore.stores.blockhash.stage(header.hash(), height, offset);
-		chainStore.stores.blockhash.reveal(offset + size);
+		const offset = manifest.stores.headerhash.next(manifest.stores.headerhash.size());
+		const size = manifest.stores.headerhash.stage(header.hash(), height, offset);
+		manifest.stores.headerhash.reveal(offset + size);
 	}
-	chainStore.manifest.pin();
+	manifest.pin();
 	return { adopted: branch.length, rewind };
 }
 
@@ -187,7 +187,7 @@ self.onmessage = async (event) => {
 	prepare(port);
 	port.start();
 
-	chainStore.stores.tx.startArchiveWorkers({
+	manifest.stores.tx.startArchiveWorkers({
 		maxRestoredChunks: 8,
 		zstd: {
 			archive: {
@@ -221,7 +221,7 @@ function prepare(port: MessagePortLike): void {
 	// Tell p2p where our block bodies end so it downloads from the next height.
 	// Headers now flow the other way too: p2p fetches them and forwards raw
 	// batches here (type "headers"); this worker applies + pins them and acks.
-	const target = chainStore.stores.block.size() - 1;
+	const target = manifest.stores.block.size() - 1;
 	console.log(`[chain] sync port received, blocks committed up to height ${target}, requesting from p2p`);
 	port.postMessage({ type: "seek", data: target });
 	port.postMessage({ type: "start" });
@@ -302,8 +302,8 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		const chunk = chunkQueue.dequeue();
 		if (!chunk) return;
 
-		const txStore = chainStore.stores.tx;
-		const spender = chainStore.stores.spender;
+		const txStore = manifest.stores.tx;
+		const spender = manifest.stores.spender;
 		// tx is a raw BlobStore. stage() fills bytes AHEAD of the cursor without
 		// moving it, so we track the offset ourselves and advance the cursor once
 		// at the end (see the reveal() below). Start at the next slot.
@@ -339,7 +339,7 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			// is the block at height i; genesis is pre-seeded at 0 by the header
 			// domain but bodies start after it, so block.size() == the height we're
 			// about to write). Captured before stage() for the consensus checks.
-			const height = chainStore.stores.block.size();
+			const height = manifest.stores.block.size();
 
 			// BIP34: from height 227931 the coinbase scriptSig must start with the
 			// serialized block height. The coinbase is always the block's first tx.
@@ -351,17 +351,17 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 			// heights, so skip the (per-block) header hash recompute otherwise, and
 			// verify against the stored header hash so we can't be tricked into
 			// overwriting on the wrong chain.
-			const bip30Overwrite = BIP30_EXCEPTION_BLOCKS.has(height) &&
-				isBip30Exception(height, chainStore.stores.header.get(height)?.hash() ?? new Uint8Array(0));
+		const bip30Overwrite = BIP30_EXCEPTION_BLOCKS.has(height) &&
+			isBip30Exception(height, manifest.stores.header.get(height)?.hash() ?? new Uint8Array(0));
 
 			// block[height] -> pointer to this block's first tx entry.
-			chainStore.stores.block.stage({
-				txPointer,
-				wireSize: size + WireBlockHeader.stride.size,
-				txCount: block.length,
-				reward: 123_456_789, // TODO: calculate later.
-			}, height);
-			chainStore.stores.block.reveal(height + 1);
+		manifest.stores.block.stage({
+			txPointer,
+			wireSize: size + WireBlockHeader.stride.size,
+			txCount: block.length,
+			reward: 123_456_789, // TODO: calculate later.
+		}, height);
+		manifest.stores.block.reveal(height + 1);
 
 			for (const tx of block) {
 				// This tx's outputs occupy [total, total + outputs.length) in global
@@ -376,10 +376,10 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 				// read — exactly the OVERWRITE Core does for the two exception
 				// blocks. For every other block BIP34 guarantees uniqueness, so a
 				// duplicate never legitimately happens here.
-				if (bip30Overwrite && chainStore.stores.txid.getPointer(tx.txId) !== undefined) {
+				if (bip30Overwrite && manifest.stores.txid.getPointer(tx.txId) !== undefined) {
 					console.log(`[chain] BIP30 overwrite of duplicate coinbase txid at height ${height}`);
 				}
-				const txIdPointer = putEntry(chainStore.stores.txid, tx.txId, { totalOutput, txPointer });
+				const txIdPointer = putEntry(manifest.stores.txid, tx.txId, { totalOutput, txPointer });
 
 				const storedTx: Codec.InferInput<typeof StoredTx> = {
 					lockTimeAndVersionPack: { locktime: tx.locktime, version: tx.version },
@@ -392,7 +392,7 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 							// store as prevOutTxId) and its value — which now carries the
 							// prevout tx's firstOutputHeight, so the spent output's global
 							// height is firstOutputHeight + vout with no blob read.
-							const resolved = chainStore.stores.txid.getValueAndPointer(input.prevOut.txId);
+							const resolved = manifest.stores.txid.getValueAndPointer(input.prevOut.txId);
 							if (resolved === undefined) {
 								throw new Error("prevOut references a txid not present in the index");
 							}
@@ -415,9 +415,9 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 						// out. First sighting -> stage it (value = this tx). Reuse ->
 						// keep the existing pointer and record its stored last-tx
 						// pointer as this output's previousOutputTx link.
-						const pubkeyResult = chainStore.stores.pubkey.getValueAndPointer(output.scriptPubKey);
-						if (!pubkeyResult) {
-							const pubKeyPointer = putEntry(chainStore.stores.pubkey, output.scriptPubKey, txIdPointer);
+					const pubkeyResult = manifest.stores.pubkey.getValueAndPointer(output.scriptPubKey);
+					if (!pubkeyResult) {
+						const pubKeyPointer = putEntry(manifest.stores.pubkey, output.scriptPubKey, txIdPointer);
 							return {
 								value: Number(output.value),
 								previousOutputTx: null,
@@ -464,9 +464,9 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 		// snapshot per round.
 		txStore.reveal(txPointer);
 		spender.reveal(total);
-		chainStore.manifest.pin();
+		manifest.pin();
 
-		recordBlocks(blocksInChunk, chainStore.stores.block.size() - 1);
+		recordBlocks(blocksInChunk, manifest.stores.block.size() - 1);
 
 		// Ack so p2p's postedChunks - consumedChunks backpressure can drain.
 		port.postMessage({ type: "consume" });

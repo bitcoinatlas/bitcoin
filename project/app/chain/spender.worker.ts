@@ -1,7 +1,7 @@
 import { tryAdoptControl } from "~/libs/storage/mod.ts";
 import { BytesCodec, VarInt } from "@nomadshiba/codec";
 import { StoredTx } from "@project/codecs";
-import { chainStore } from "~/chain/ChainStore.ts";
+import { chainStore } from "~/chain/manifest.ts";
 
 /**
  * spender.worker — indexes who spends each output, in parallel, off the IBD

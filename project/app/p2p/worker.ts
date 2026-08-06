@@ -1,6 +1,6 @@
 import { delay } from "@std/async";
 import { equals } from "@std/bytes";
-import { chainStore } from "~/chain/ChainStore.ts";
+import { manifest } from "~/chain/manifest.ts";
 import { GENESIS_BLOCK, GENESIS_BLOCK_HASH } from "~/chain/genesis.ts";
 import { verifySatoshiMerkleRoot } from "~/chain/merkle.ts";
 import { Bytes32 } from "@project/codecs";
@@ -108,15 +108,15 @@ function keepDownloading(): boolean {
 // always its own committed writes.
 
 function tipHeight(): number {
-	return chainStore.stores.header.size() - 1;
+	return manifest.stores.header.size() - 1;
 }
 
 function headerAt(height: number): WireBlockHeader | undefined {
-	return chainStore.stores.header.get(height);
+	return manifest.stores.header.get(height);
 }
 
 function headerHashAt(height: number): Uint8Array | undefined {
-	return chainStore.stores.header.get(height)?.hash();
+	return manifest.stores.header.get(height)?.hash();
 }
 
 /**
@@ -126,7 +126,7 @@ function headerHashAt(height: number): Uint8Array | undefined {
  * every such stale row read back as unknown. Self-healing, no cleanup pass.
  */
 function heightOfHash(hash: Uint8Array): number | undefined {
-	const height = chainStore.stores.blockhash.get(hash);
+	const height = manifest.stores.headerhash.get(hash);
 	if (height === undefined) return undefined;
 	const at = headerHashAt(height);
 	return at && equals(at, hash) ? height : undefined;

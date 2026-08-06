@@ -3,7 +3,7 @@ import { decodeHex } from "@std/encoding";
 import { RouterSchema } from "~/libs/routing/mod.ts";
 import { endpointRouter } from "~/router.ts";
 import { Block, Schema, TxSummary } from "~/routes.ts";
-import { ChainStore, chainStore } from "~/chain/ChainStore.ts";
+import { manifest, getPrevOutTxId } from "~/chain/manifest.ts";
 import { StoredPubKey, StoredTx, WireTxInput, WireTxOutput } from "@project/codecs";
 import { WireTx } from "@project/codecs";
 import { sha256d } from "@project/hashes";
@@ -21,10 +21,10 @@ function parseHashOrHeight(raw: string): { kind: "height"; height: number } | { 
 function resolveHeight(raw: string): number | undefined {
 	const parsed = parseHashOrHeight(raw);
 	if (parsed.kind === "height") return Number.isInteger(parsed.height) ? parsed.height : undefined;
-	return chainStore.stores.blockhash.get(parsed.hash);
+	return manifest.stores.headerhash.get(parsed.hash);
 }
 
-function toWireTx(storedTx: StoredTx, chainStorage: ChainStore): Codec.InferInput<typeof WireTx> {
+function toWireTx(storedTx: StoredTx): Codec.InferInput<typeof WireTx> {
 	const { version, locktime } = storedTx.lockTimeAndVersionPack;
 
 	let anyWitness = false;
@@ -36,13 +36,13 @@ function toWireTx(storedTx: StoredTx, chainStorage: ChainStore): Codec.InferInpu
 	}
 
 	const inputs: Codec.InferInput<typeof WireTxInput>[] = storedTx.inputs.map((input) => ({
-		prevOut: { txId: chainStorage.getPrevOutTxId(input), output: input.prevOut.output },
+		prevOut: { txId: getPrevOutTxId(input), output: input.prevOut.output },
 		scriptSig: input.scriptSig,
 		sequence: input.sequence,
 	}));
 
 	const outputs: Codec.InferInput<typeof WireTxOutput>[] = storedTx.outputs.map((output) => {
-		const [scriptPubKey] = chainStorage.stores.pubkey.getKey(output.scriptPubKey);
+		const [scriptPubKey] = manifest.stores.pubkey.getKey(output.scriptPubKey);
 		const value = BigInt(output.value);
 		return { value, scriptPubKey: StoredPubKey.toRaw(scriptPubKey) };
 	});
@@ -53,11 +53,11 @@ function toWireTx(storedTx: StoredTx, chainStorage: ChainStore): Codec.InferInpu
 }
 
 async function getBlockByHeight(height: number): Promise<RouterSchema.InferResultInput<Schema, "GET /v1/block/:hashOrHeight">> {
-	const header = await chainStore.stores.header.getAsync(height);
+	const header = await manifest.stores.header.getAsync(height);
 	if (!header) return null;
-	const block = await chainStore.stores.block.getAsync(height);
+	const block = await manifest.stores.block.getAsync(height);
 	if (!block) return { header, height, info: null };
-	const [coinbaseTx] = await chainStore.stores.tx.getAsync(block.txPointer, StoredTx);
+	const [coinbaseTx] = await manifest.stores.tx.getAsync(block.txPointer, StoredTx);
 	const coinbaseInput = coinbaseTx.inputs[0];
 	if (!coinbaseInput) return { header, height, info: null };
 	return {
@@ -74,14 +74,14 @@ async function getBlockByHeight(height: number): Promise<RouterSchema.InferResul
 
 async function getHeaderByRangeAsync(from: number, to: number): Promise<Block[]> {
 	const [headers, blocks] = await Promise.all([
-		chainStore.stores.header.sliceAsync(from, to + 1),
-		chainStore.stores.block.sliceAsync(from, to + 1),
+		manifest.stores.header.sliceAsync(from, to + 1),
+		manifest.stores.block.sliceAsync(from, to + 1),
 	]);
 	return await Promise.all(headers.map(async (header, index): Promise<Block> => {
 		const height = from + index;
 		const block = blocks[index];
 		if (!block) return { header, height, info: null };
-		const [coinbaseTx] = await chainStore.stores.tx.getAsync(block.txPointer, StoredTx);
+		const [coinbaseTx] = await manifest.stores.tx.getAsync(block.txPointer, StoredTx);
 		const coinbaseInput = coinbaseTx.inputs[0];
 		if (!coinbaseInput) return { header, height, info: null };
 		return {
@@ -122,7 +122,7 @@ endpointRouter.registerHandler("GET /v1/block?to=:to&take=:take", async ({ param
 });
 
 endpointRouter.registerHandler("GET /v1/block/tip", async () => {
-	const height = chainStore.stores.header.size() - 1;
+	const height = manifest.stores.header.size() - 1;
 	if (height < 0) throw new Error("not suppose to happen");
 	return { status: "OK", data: await getBlockByHeight(height) };
 });
@@ -137,9 +137,9 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight", async ({ params })
 endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ params }) => {
 	const height = resolveHeight(params.pathname.hashOrHeight);
 	if (height === undefined) return { status: "OK", data: [] };
-	const block = await chainStore.stores.block.getAsync(height);
+	const block = await manifest.stores.block.getAsync(height);
 	if (block === undefined) return { status: "OK", data: [] };
-	const [txs] = await chainStore.stores.tx.getAsync(block.txPointer, new ArrayCodec(StoredTx, { size: block.txCount }));
+	const [txs] = await manifest.stores.tx.getAsync(block.txPointer, new ArrayCodec(StoredTx, { size: block.txCount }));
 
 	const fromRaw = params.search && "from" in params.search ? Number(params.search["from"]) : 0;
 	const takeRaw = params.search && "take" in params.search ? Number(params.search["take"]) : MAX_TX_TAKE;
@@ -152,7 +152,7 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 	return {
 		status: "OK",
 		data: slice.map((tx): TxSummary => {
-			const wireTx = toWireTx(tx, chainStore);
+			const wireTx = toWireTx(tx);
 			const encodedWire = WireTx.encode(wireTx); // TODO: we shouldnt need this for txId
 			return {
 				txId: sha256d(encodedWire) as Uint8Array<ArrayBuffer>, // TODO: we shouldnt have to cast this.
@@ -166,8 +166,8 @@ endpointRouter.registerHandler("GET /v1/block/:hashOrHeight/txs", async ({ param
 
 endpointRouter.registerHandler("GET /v1/tx/:txId", async ({ params }) => {
 	const txId = Uint8Array.from(decodeHex(params.pathname.txId).reverse());
-	const txInfo = chainStore.stores.txid.get(txId);
+	const txInfo = manifest.stores.txid.get(txId);
 	if (txInfo === undefined) return { status: "OK", data: null };
-	const [tx] = await chainStore.stores.tx.getAsync(txInfo.txPointer, StoredTx);
-	return { status: "OK", data: toWireTx(tx, chainStore) };
+	const [tx] = await manifest.stores.tx.getAsync(txInfo.txPointer, StoredTx);
+	return { status: "OK", data: toWireTx(tx) };
 });

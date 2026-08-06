@@ -24,6 +24,7 @@ export * from "~/stored/StoredTxOutput.ts";
 export * from "~/stored/StoredTxPointer.ts";
 export * from "~/stored/StoredTxs.ts";
 export * from "~/stored/StoredWitness.ts";
+export * from "~/stored/StoredTxInfo.ts";
 
 export * from "~/wire/WireBlock.ts";
 export * from "~/wire/WireBlockHeader.ts";

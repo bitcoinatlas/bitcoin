@@ -1,4 +1,4 @@
-import { chainStore } from "~/chain/ChainStore.ts";
+import { manifest } from "~/chain/manifest.ts";
 import { GENESIS_BLOCK_HASH, GENESIS_BLOCK_HEADER_DECODED } from "~/chain/genesis.ts";
 import { ARGS } from "~/env.ts";
 
@@ -24,15 +24,15 @@ if (import.meta.main) {
 
 	console.log("[main] rolling back to last pinned sizes");
 
-	if (chainStore.stores.header.size() === 0) {
-		const height = chainStore.stores.header.stage(GENESIS_BLOCK_HEADER_DECODED);
-		chainStore.stores.header.reveal(height + 1);
+	if (manifest.stores.header.size() === 0) {
+		const height = manifest.stores.header.stage(GENESIS_BLOCK_HEADER_DECODED);
+		manifest.stores.header.reveal(height + 1);
 
-		const offset = chainStore.stores.blockhash.next(chainStore.stores.blockhash.size());
-		const size = chainStore.stores.blockhash.stage(GENESIS_BLOCK_HASH, height, offset);
-		chainStore.stores.blockhash.reveal(offset + size);
+		const offset = manifest.stores.headerhash.next(manifest.stores.headerhash.size());
+		const size = manifest.stores.headerhash.stage(GENESIS_BLOCK_HASH, height, offset);
+		manifest.stores.headerhash.reveal(offset + size);
 
-		chainStore.manifest.pin();
+		manifest.pin();
 		console.log("[main] seeded genesis header");
 	}
 
