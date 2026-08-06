@@ -1,5 +1,16 @@
 {
 	"minimumDependencyAge": 0, // WTH IS THIS, DONT WE HAVE DENO PERMISSIONS ALREADY????
+	"workspace": [
+		"project/app",
+		"project/shared/codecs",
+		"project/shared/utils",
+		"project/shared/libs/bytes",
+		"project/shared/libs/collections",
+		"project/shared/libs/bitcoin",
+		"project/shared/libs/hashes",
+		"project/shared/libs/formatting",
+		"project/shared/libs/message"
+	],
 	"imports": {
 		"@noble/curves": "jsr:@noble/curves@1.9.0",
 		"@noble/hashes": "jsr:@noble/hashes@1.8.0",
@@ -18,29 +29,20 @@
 		"@std/streams": "jsr:@std/streams@1.0.12",
 		"@std/uuid": "jsr:@std/uuid@^1.1.1",
 		"@webview/webview": "jsr:@webview/webview@^0.9.0",
-		"@ungap/custom-elements": "https://esm.sh/@ungap/custom-elements",
-		"~/": "./src/"
+		"@ungap/custom-elements": "https://esm.sh/@ungap/custom-elements"
 	},
 	"tasks": {
-		"test": "deno test -A src",
-		"check": "deno check src && deno lint src && deno task test",
-		"bundle": "deno bundle --output=src/app/frontend/dist/app.js src/app/frontend/app.ts", // or add --watch
-		"start": "deno run --v8-flags=--expose-gc -A src/main.ts", // or add --watch
-		"inspect": "deno run --v8-flags=--expose-gc -A --inspect-brk src/main.ts",
-		"profile": "deno run --v8-flags=--expose-gc -A --cpu-prof src/main.ts",
-		"compile": "deno compile -A --output=out/bitcoin src/main.ts"
+		"test": "deno test -A project",
+		"check": "deno check project && deno lint project && deno task test",
+		"bundle": "deno bundle --output=project/app/frontend/dist/app.js project/app/frontend/app.ts", // or add --watch
+		"start": "deno run --v8-flags=--expose-gc -A project/app/main.ts", // or add --watch
+		"inspect": "deno run --v8-flags=--expose-gc -A --inspect-brk project/app/main.ts",
+		"profile": "deno run --v8-flags=--expose-gc -A --cpu-prof project/app/main.ts",
+		"compile": "deno compile -A --output=out/bitcoin project/app/main.ts"
 	},
 	"unstable": ["raw-imports"],
 	"compilerOptions": {
-		"lib": [
-			"deno.ns",
-			"deno.window",
-			"deno.unstable",
-			"esnext",
-			"dom",
-			"dom.iterable",
-			"deno.worker"
-		],
+		"lib": ["esnext", "deno.ns", "deno.window", "deno.unstable", "deno.worker"],
 		"strict": true,
 		"noUncheckedIndexedAccess": true,
 		"noImplicitOverride": true,
@@ -54,8 +56,15 @@
 	"lint": {
 		"plugins": ["./plugins/strict_classes.ts", "./plugins/imports.ts"],
 		"rules": {
-			"exclude": ["no-namespace", "no-explicit-any", "ban-types", "require-await", "no-inner-declarations"],
-			"include": ["no-slow-types"]
+			"exclude": [
+				"no-namespace",
+				"no-explicit-any",
+				"ban-types",
+				"require-await",
+				"no-inner-declarations",
+				"no-slow-types",
+				"verbatim-module-syntax"
+			]
 		}
 	}
 }

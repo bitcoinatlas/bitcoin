@@ -1,0 +1,20 @@
+export type _ = any;
+export type PromiseOrValue<T> = T | Promise<T>;
+export type OmitByValue<T, V> = {
+	[K in keyof T as T[K] extends V ? never : K]: T[K];
+};
+export type PickByValue<T, V> = {
+	[K in keyof T as T[K] extends V ? K : never]: T[K];
+};
+export type IfNever<MaybeNever, Then, Else> = [MaybeNever] extends [never] ? Then : Else;
+export type Empty = { [K in never]?: never };
+export type StringInput = string | number | bigint;
+export type OptionalizeEmpty<T> =
+	& {
+		[
+			K in keyof T as [keyof T[K]] extends [never] ? never : (string extends keyof T[K] ? never
+				: Record<keyof T[K], undefined> extends T[K] ? never
+				: K)
+		]: T[K];
+	}
+	& { [K in keyof T]?: T[K] };

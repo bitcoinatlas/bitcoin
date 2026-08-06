@@ -1,0 +1,7 @@
+{
+	"name": "@project/bytes",
+	"exports": "./mod.ts",
+	"imports": {
+		"~/": "./"
+	}
+}
