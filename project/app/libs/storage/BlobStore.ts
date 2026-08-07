@@ -1,11 +1,12 @@
 import { Codec } from "@nomadshiba/codec";
 import { Advice, Mmap } from "@nomadshiba/mmap";
+import { MiB, SECOND } from "@project/utils";
 import { existsSync } from "@std/fs";
 import { join } from "@std/path";
-import { MiB, SECOND } from "@project/utils";
 import { PARALLELISM_THREADS } from "~/env.ts";
-import { Store } from "~/libs/storage/Store.ts";
+import { rm } from "~/libs/fs/mod.ts";
 import { ArchiveWorkerPool } from "~/libs/storage/ArchiveWorkerPool.ts";
+import { Store } from "~/libs/storage/Store.ts";
 
 import { createReadStream, createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -100,10 +101,6 @@ export class BlobStore extends Store implements Disposable {
 		return from;
 	}
 
-	public commit(size: number): void {
-		return this.reveal(size);
-	}
-
 	public truncate(size: number): void {
 		if (size < 0) throw new RangeError(`truncate size=${size} must be non-negative`);
 		const current = this.size();
@@ -118,8 +115,8 @@ export class BlobStore extends Store implements Disposable {
 		const tailPath = chunkPath(this.path, newTailIndex);
 		if (this.pool && isArchived(tailPath)) {
 			ensureRestored(tailPath, this.restoreSyncOptions);
-			Deno.removeSync(archivePath(tailPath), { recursive: true });
-			Deno.removeSync(archiveTmpPath(tailPath), { recursive: true });
+			rm(archivePath(tailPath));
+			rm(archiveTmpPath(tailPath));
 		}
 
 		this.cursor = size;
@@ -429,8 +426,8 @@ function unrestore(path: string): void {
 	const lock = Deno.openSync(lockPath(path), { create: true, write: true, read: true });
 	try {
 		lock.lockSync(true);
-		Deno.removeSync(path, { recursive: true });
-		Deno.removeSync(restoreTmpPath(path), { recursive: true });
+		rm(path);
+		rm(restoreTmpPath(path));
 	} finally {
 		try {
 			lock.unlockSync();
@@ -440,9 +437,9 @@ function unrestore(path: string): void {
 }
 
 function forget(path: string): void {
-	Deno.removeSync(path, { recursive: true });
-	Deno.removeSync(archivePath(path), { recursive: true });
-	Deno.removeSync(archiveTmpPath(path), { recursive: true });
-	Deno.removeSync(restoreTmpPath(path), { recursive: true });
-	Deno.removeSync(lockPath(path), { recursive: true });
+	rm(path);
+	rm(archivePath(path));
+	rm(archiveTmpPath(path));
+	rm(restoreTmpPath(path));
+	rm(lockPath(path));
 }

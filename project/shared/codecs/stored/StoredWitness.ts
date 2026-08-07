@@ -1,8 +1,15 @@
-import { ArrayCodec, BytesCodec, Codec, EnumCodec, Stride, StructCodec, Void } from "@nomadshiba/codec";
+import { ArrayCodec, BytesCodec, Codec, EnumCodec, Stride, StructCodec, U8, Void } from "@nomadshiba/codec";
 import { CompactSize } from "~/primitives/CompactSize.ts";
 
-const Sig73 = new BytesCodec({ size: 73 });
-const Sig65 = new BytesCodec({ size: 65 });
+// Signatures are variable-length (ECDSA-in-witness 71-73 incl. sighash byte,
+// BIP340 Schnorr 64 or 65), so they're stored LENGTH-PREFIXED, not padded to a
+// fixed field. The old pad-to-fixed + trim-trailing-zeros recovery was lossy: a
+// 64-byte SIGHASH_DEFAULT Schnorr sig ends in the low byte of s (uniform), so
+// ~1/256 ended in 0x00 and got over-trimmed. One length byte is noise next to a
+// 64-73 byte sig and makes the round-trip byte-exact (required to recompute a
+// wtxid / serve a block). ECDSA only survived before because DER ends in a
+// nonzero sighash byte -- not something to rely on.
+const Sig = new BytesCodec({ sizer: U8 });
 const Pubkey = new BytesCodec({ size: 33 });
 const Script34 = new BytesCodec({ size: 34 });
 const Script71 = new BytesCodec({ size: 71 });
@@ -12,15 +19,15 @@ const Script39 = new BytesCodec({ size: 39 });
 const RawWitnessItem = new BytesCodec({ sizer: CompactSize });
 const RawWitness = new ArrayCodec(RawWitnessItem, { counter: CompactSize });
 
-const P2WPKH = new StructCodec({ sig: Sig73, pubkey: Pubkey });
-const P2TRKeyPath = new StructCodec({ sig: Sig65 });
-const P2WSH1of1 = new StructCodec({ sig: Sig73, script: Script34 });
-const P2WSH2of2 = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script71 });
-const P2WSH2of3 = new StructCodec({ sig1: Sig73, sig2: Sig73, script: Script105 });
-const P2WSH3of3 = new StructCodec({ sig1: Sig73, sig2: Sig73, sig3: Sig73, script: Script105 });
-const P2WSH1of2 = new StructCodec({ sig: Sig73, script: Script71 });
-const P2WSH1of3 = new StructCodec({ sig: Sig73, script: Script105 });
-const P2WSHTimelock = new StructCodec({ sig: Sig73, script: Script39 });
+const P2WPKH = new StructCodec({ sig: Sig, pubkey: Pubkey });
+const P2TRKeyPath = new StructCodec({ sig: Sig });
+const P2WSH1of1 = new StructCodec({ sig: Sig, script: Script34 });
+const P2WSH2of2 = new StructCodec({ sig1: Sig, sig2: Sig, script: Script71 });
+const P2WSH2of3 = new StructCodec({ sig1: Sig, sig2: Sig, script: Script105 });
+const P2WSH3of3 = new StructCodec({ sig1: Sig, sig2: Sig, sig3: Sig, script: Script105 });
+const P2WSH1of2 = new StructCodec({ sig: Sig, script: Script71 });
+const P2WSH1of3 = new StructCodec({ sig: Sig, script: Script105 });
+const P2WSHTimelock = new StructCodec({ sig: Sig, script: Script39 });
 const WitnessEnum = new EnumCodec({
 	none: Void,
 	raw: RawWitness,
@@ -35,21 +42,6 @@ const WitnessEnum = new EnumCodec({
 	p2wshTimelock: P2WSHTimelock,
 });
 
-// ── Padding helpers ───────────────────────────────────────────────────────────
-
-function padTo(src: Uint8Array, size: number): Uint8Array {
-	if (src.length === size) return src;
-	const out = new Uint8Array(size);
-	out.set(src);
-	return out;
-}
-
-function trimTrailingZeros(src: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
-	let len = src.length;
-	while (len > 0 && src[len - 1] === 0) len--;
-	return src.subarray(0, len);
-}
-
 export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<typeof WitnessEnum> {
 	if (items.length === 0) return { kind: "none", value: null };
 
@@ -61,7 +53,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			pubkey.length === 33 &&
 			(pubkey[0] === 0x02 || pubkey[0] === 0x03)
 		) {
-			return { kind: "p2wpkh", value: { sig: padTo(sig, 73), pubkey } };
+			return { kind: "p2wpkh", value: { sig, pubkey } };
 		}
 	}
 
@@ -69,7 +61,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 	if (items.length === 1) {
 		const sig = items[0]!;
 		if (sig.length === 64 || sig.length === 65) {
-			return { kind: "p2trKeyPath", value: { sig: padTo(sig, 65) } };
+			return { kind: "p2trKeyPath", value: { sig } };
 		}
 	}
 
@@ -85,7 +77,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			) {
 				const sig = items[1]!;
 				if (sig.length >= 71 && sig.length <= 73) {
-					return { kind: "p2wsh1of1", value: { sig: padTo(sig, 73), script } };
+					return { kind: "p2wsh1of1", value: { sig, script } };
 				}
 			}
 			// 2-of-2
@@ -95,7 +87,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			) {
 				const [sig1, sig2] = [items[1]!, items[2]!];
 				if (sig1.length >= 71 && sig1.length <= 73 && sig2.length >= 71 && sig2.length <= 73) {
-					return { kind: "p2wsh2of2", value: { sig1: padTo(sig1, 73), sig2: padTo(sig2, 73), script } };
+					return { kind: "p2wsh2of2", value: { sig1, sig2, script } };
 				}
 			}
 			// 2-of-3
@@ -105,7 +97,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			) {
 				const [sig1, sig2] = [items[1]!, items[2]!];
 				if (sig1.length >= 71 && sig1.length <= 73 && sig2.length >= 71 && sig2.length <= 73) {
-					return { kind: "p2wsh2of3", value: { sig1: padTo(sig1, 73), sig2: padTo(sig2, 73), script } };
+					return { kind: "p2wsh2of3", value: { sig1, sig2, script } };
 				}
 			}
 			// 3-of-3
@@ -121,7 +113,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 				) {
 					return {
 						kind: "p2wsh3of3",
-						value: { sig1: padTo(sig1, 73), sig2: padTo(sig2, 73), sig3: padTo(sig3, 73), script },
+						value: { sig1, sig2, sig3, script },
 					};
 				}
 			}
@@ -132,7 +124,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			) {
 				const sig = items[1]!;
 				if (sig.length >= 71 && sig.length <= 73) {
-					return { kind: "p2wsh1of2", value: { sig: padTo(sig, 73), script } };
+					return { kind: "p2wsh1of2", value: { sig, script } };
 				}
 			}
 			// 1-of-3
@@ -142,7 +134,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			) {
 				const sig = items[1]!;
 				if (sig.length >= 71 && sig.length <= 73) {
-					return { kind: "p2wsh1of3", value: { sig: padTo(sig, 73), script } };
+					return { kind: "p2wsh1of3", value: { sig, script } };
 				}
 			}
 		}
@@ -156,7 +148,7 @@ export function detectWitnessPattern(items: Uint8Array[]): Codec.InferInput<type
 			script.length === 39 &&
 			(script.includes(0xb1) || script.includes(0xb2))
 		) {
-			return { kind: "p2wshTimelock", value: { sig: padTo(sig, 73), script } };
+			return { kind: "p2wshTimelock", value: { sig, script } };
 		}
 	}
 
@@ -175,62 +167,62 @@ function reconstructWitness(pattern: Codec.InferOutput<typeof WitnessEnum>): Uin
 
 		case "p2wpkh":
 			return [
-				trimTrailingZeros(pattern.value.sig),
+				pattern.value.sig,
 				pattern.value.pubkey,
 			];
 
 		case "p2trKeyPath":
-			return [trimTrailingZeros(pattern.value.sig)];
+			return [pattern.value.sig];
 
 		case "p2wsh1of1":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig),
+				pattern.value.sig,
 				pattern.value.script,
 			];
 
 		case "p2wsh2of2":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig1),
-				trimTrailingZeros(pattern.value.sig2),
+				pattern.value.sig1,
+				pattern.value.sig2,
 				pattern.value.script,
 			];
 
 		case "p2wsh2of3":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig1),
-				trimTrailingZeros(pattern.value.sig2),
+				pattern.value.sig1,
+				pattern.value.sig2,
 				pattern.value.script,
 			];
 
 		case "p2wsh3of3":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig1),
-				trimTrailingZeros(pattern.value.sig2),
-				trimTrailingZeros(pattern.value.sig3),
+				pattern.value.sig1,
+				pattern.value.sig2,
+				pattern.value.sig3,
 				pattern.value.script,
 			];
 
 		case "p2wsh1of2":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig),
+				pattern.value.sig,
 				pattern.value.script,
 			];
 
 		case "p2wsh1of3":
 			return [
 				new Uint8Array(0),
-				trimTrailingZeros(pattern.value.sig),
+				pattern.value.sig,
 				pattern.value.script,
 			];
 
 		case "p2wshTimelock":
 			return [
-				trimTrailingZeros(pattern.value.sig),
+				pattern.value.sig,
 				pattern.value.script,
 			];
 	}

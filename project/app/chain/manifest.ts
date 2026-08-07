@@ -1,6 +1,7 @@
-import { U32 } from "@nomadshiba/codec";
+import { StructCodec, U32 } from "@nomadshiba/codec";
 import {
 	Bytes32,
+	NullableNumaricCodec,
 	StoredBlockHeader,
 	StoredBlockInfo,
 	StoredPubKey,
@@ -14,6 +15,7 @@ import { COINBASE_TXID, GB, MAX_BLOCK_SIZE, MB } from "@project/utils";
 import { join } from "@std/path";
 import { BASE_DATA_DIR } from "~/env.ts";
 import { ArrayStore, BlobStore, HashMapStore, LoadFactorOptions, Manifest } from "~/libs/storage/mod.ts";
+import { SharedArrayStore } from "~/libs/storage/SharedArrayStore.ts";
 
 const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	target: .75,
@@ -34,7 +36,7 @@ export const manifest = Manifest.open({
 			key: Bytes32, // block hash
 			value: U32, // block height
 			loadFactor: LOAD_FACTOR_OPTIONS,
-			commiter: self.name === "chain" || self.name === "",
+			commiter: self.name === "chain",
 			entryChunkSize: 500 * MB,
 			minBucketChunkSize: 500 * MB,
 			pointer: U40,
@@ -54,25 +56,33 @@ export const manifest = Manifest.open({
 			key: Bytes32, // tx id
 			value: StoredTxInfo,
 			loadFactor: LOAD_FACTOR_OPTIONS,
-			commiter: self.name === "chain" || self.name === "",
+			commiter: self.name === "chain",
 			entryChunkSize: 500 * MB,
 			minBucketChunkSize: 500 * MB,
-			pointer: U48,
+			pointer: StoredTxIdPointer,
 		}),
 		pubkey: HashMapStore.open({
 			path: join(BASE_DATA_DIR, "pubkey"),
-			key: StoredPubKey,
-			value: StoredTxIdPointer, // pointer to last tx of the pubkey at txid hashmap store
+			key: Bytes32,
+			// TODO: sha256 hash, or tbh idk wanna hold hash has data,
+			// we probably can use sha256 during hashing bucket index,
+			// then equality check can also apply sha256
+			// 32 bytes is a lot of data.
+			value: U40,
 			loadFactor: LOAD_FACTOR_OPTIONS,
-			commiter: self.name === "chain" || self.name === "",
+			commiter: self.name === "chain",
 			entryChunkSize: 500 * MB,
 			minBucketChunkSize: 500 * MB,
-			maxEntrySize: MAX_BLOCK_SIZE + StoredTxIdPointer.stride.size,
 			pointer: U48,
 		}),
-		spender: ArrayStore.open({
-			path: join(BASE_DATA_DIR, "spender"),
-			item: StoredTxIdPointer,
+		output: SharedArrayStore.open({ // TODO: ArrayStore is append-only should use slot array
+			writable: self.name === "chain",
+			path: join(BASE_DATA_DIR, "output"),
+			item: new StructCodec({
+				ownerTx: StoredTxIdPointer,
+				spenderTx: new NullableNumaricCodec(StoredTxIdPointer),
+				prevSamePubkeyIndex: new NullableNumaricCodec(U40),
+			}),
 			minChunkSize: 500 * MB,
 		}),
 	},

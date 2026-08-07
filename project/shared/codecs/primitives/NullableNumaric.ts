@@ -1,6 +1,6 @@
 import { Codec } from "@nomadshiba/codec";
 
-export class NullableNumaric<T extends Codec<number>> extends Codec<Codec.InferOutput<T> | null, Codec.InferInput<T> | null> {
+export class NullableNumaricCodec<T extends Codec<number>> extends Codec<Codec.InferOutput<T> | null, Codec.InferInput<T> | null> {
 	public override stride: T["stride"];
 	private readonly numaric: T;
 

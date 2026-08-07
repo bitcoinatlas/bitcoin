@@ -1,21 +1,6 @@
 export abstract class Store {
-	/** size or length or count etc */
 	public abstract size(): number;
-	/**
-	 * reveal the underlying storage by moving cursors.
-	 *
-	 * `isBroadcast` (default false) tells the store the reveal came from the
-	 * broadcast/recover path rather than a manual local call. When it came from
-	 * broadcast the revealed region is already persisted into the shared
-	 * structures, so a store like HashMapStore skips building its in-memory stage;
-	 * when called manually the store stages the region so this worker can read its
-	 * own not-yet-persisted writes.
-	 */
-	public abstract reveal(size: number, isBroadcast?: boolean): void;
-	/** twin of reveal, called during pin() only instead of reveal, on the worker that said pin() */
-	public abstract commit(size: number): void;
-	/** truncate the storage to a specific size */
+	public abstract reveal(size: number): void;
 	public abstract truncate(size: number): void;
-	/** msync or fsync */
 	public abstract sync(): void;
 }

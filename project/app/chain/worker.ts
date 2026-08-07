@@ -151,7 +151,7 @@ function applyHeaders(headers: WireBlockHeader[]): ApplyResult {
 	let rewind: number | undefined;
 	if (isReorg) {
 		console.log(`[chain] header reorg: dropping height ${tipHeight()} -> ${splitHeight}, applying ${branch.length} headers`);
-		manifest.stores.header.reveal(splitHeight + 1); // stale blockhash rows self-heal via heightOfHash
+		manifest.stores.header.truncate(splitHeight + 1); // reveal is forward-only; shrinking needs truncate. stale blockhash rows self-heal via heightOfHash
 
 		// A reorg below where block bodies were already committed means those
 		// bodies are now orphaned and the block/tx/txid/pubkey/spender domain must
@@ -398,7 +398,18 @@ async function consumeChunks(port: MessagePortLike): Promise<void> {
 							}
 							const [prevValue, prevEntryPointer] = resolved;
 							const prevOutputIndex = prevValue.totalOutput + input.prevOut.output;
-							spender.item.encodeInto(txIdPointer, spender.mmap(prevOutputIndex));
+							// Spender slots are 1-based: 0 == unspent (fresh mmap reads zero, and
+							// the UTXO set falls out of "slot == 0"), so a spent output stores
+							// spenderTxPointer + 1 and never collides with the sentinel wherever
+							// the spending tx landed. Read before write: a non-zero slot means
+							// this output was already spent -> double spend. (Off a trusted IBD
+							// peer this never fires, like the reorg guard; it's the check.)
+							const spenderSlot = spender.mmap(prevOutputIndex);
+							const [existingSpender] = spender.item.decode(spenderSlot);
+							if (existingSpender !== 0) {
+								throw new Error(`double spend: output ${prevOutputIndex} already spent`);
+							}
+							spender.item.encodeInto(txIdPointer + 1, spenderSlot);
 							prevOutTxId = prevEntryPointer;
 						}
 

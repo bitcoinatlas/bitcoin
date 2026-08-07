@@ -29,7 +29,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				const channel = new BroadcastChannel(`${BROADCAST_PREFIX}${name}`);
 				channel.addEventListener("message", (event) => {
 					const size = event.data as number;
-					store.reveal(size, true);
+					store.reveal(size);
 				});
 				return [name, { store, channel }];
 			}),
@@ -58,7 +58,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				const value = manifest.storeMap.get(name);
 				if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
 				const { store } = value;
-				store.reveal(reveal, true);
+				store.reveal(reveal);
 				if (pin === reveal) continue;
 				store.truncate(pin);
 			}
@@ -67,7 +67,7 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 				const value = manifest.storeMap.get(name);
 				if (!value) throw new Error(`Pinned store "${name}" does not exist.`);
 				const { store } = value;
-				store.reveal(pin, true);
+				store.reveal(pin);
 			}
 		}
 		return manifest;
@@ -77,17 +77,10 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		try {
 			this.db.exec("BEGIN IMMEDIATE;");
 			for (const [name, { store }] of this.storeMap) {
-				store.sync();
-				const size = store.size();
-				this.revealQuery.run({ name, size });
+				this.revealQuery.run({ name, size: store.size() });
 			}
 			this.db.exec("COMMIT;");
 		} catch (reason) {
-			// A failed pin leaves the round's commit indeterminate — continuing
-			// risks storage corruption, so this is fatal. Roll back if a
-			// transaction is actually open (a failed BEGIN, e.g. SQLITE_BUSY,
-			// starts none, and a blind ROLLBACK would throw "no transaction is
-			// active" and hide the real cause), log, then kill the process.
 			console.error(reason);
 			if (this.db.isTransaction) this.db.exec("ROLLBACK;");
 			Deno.kill(Deno.pid);
@@ -95,8 +88,8 @@ export class Manifest<T extends ManifestStores> implements Disposable {
 		try {
 			this.db.exec("BEGIN IMMEDIATE;");
 			for (const [name, { store, channel }] of this.storeMap) {
+				store.sync();
 				const size = store.size();
-				store.commit(size);
 				this.pinQuery.run({ name, size });
 				channel.postMessage(size);
 			}

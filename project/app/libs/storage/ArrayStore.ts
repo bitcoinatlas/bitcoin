@@ -42,10 +42,6 @@ export class ArrayStore<T extends FixedCodec> extends Store implements Disposabl
 		return this.blob.reveal(size * this.item.stride.size, isBroadcast);
 	}
 
-	public commit(size: number): void {
-		return this.blob.commit(size * this.item.stride.size);
-	}
-
 	public truncate(size: number): void {
 		return this.blob.truncate(size * this.item.stride.size);
 	}

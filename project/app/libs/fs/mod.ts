@@ -69,3 +69,18 @@ export function writeFileSync(file: Deno.FsFile, data: Uint8Array): void {
 		bytesWritten += n;
 	}
 }
+
+/**
+ * Remove a path, treating "already gone" as success. Deno has no `force`
+ * option: `removeSync` throws NotFound on a missing path, and `recursive`
+ * only enables removing non-empty dirs — it does NOT swallow NotFound
+ * (that's shell `rm -f`, not `rm -r`). Callers that speculatively remove
+ * variants that usually don't exist (archive/tmp/lock sidecars) need this.
+ */
+export function rm(path: string): void {
+	try {
+		Deno.removeSync(path, { recursive: true });
+	} catch (error) {
+		if (!(error instanceof Deno.errors.NotFound)) throw error;
+	}
+}

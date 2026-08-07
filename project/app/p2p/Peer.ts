@@ -277,7 +277,14 @@ export class Peer {
 						for (const l of this.listeners) {
 							try {
 								l(msg);
-							} catch { /* noop */ }
+							} catch (error) {
+								// One listener throwing must not stop the others, but it
+								// must not vanish either — a swallowed throw here is how a
+								// rejected block became a silent drop + endless re-request.
+								// Listeners that can reject a message should handle it
+								// themselves (e.g. blacklist); anything reaching here is a bug.
+								console.error(`[p2p] listener threw on ${command}:`, error);
+							}
 						}
 					}
 

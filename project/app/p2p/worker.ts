@@ -9,7 +9,9 @@ import { WireBlockHeader } from "@project/codecs";
 import { WireBlockHeaders } from "@project/codecs";
 import { WireTxs } from "@project/codecs";
 import { MAX_BLOCK_SIZE, MiB, MINUTE, SECOND } from "@project/utils";
-import { PARALLELISM_THREADS } from "~/env.ts";
+import { BASE_DATA_DIR, PARALLELISM_THREADS } from "~/env.ts";
+import { join } from "@std/path";
+import { encodeHex } from "@std/encoding";
 import { FastUint8ArraySet } from "@project/collections";
 import { Queue } from "@project/collections";
 import { BlockMessage } from "~/p2p/messages/Block.ts";
@@ -56,7 +58,54 @@ const DOWNLOAD_IDLE_MS = 50;
 // ── state ────────────────────────────────────────────────────────────────────
 let port!: MessagePort;
 const messageQueue = new Queue<{ type: string; data: any }>(1000);
-const blacklist = new FastUint8ArraySet(); // header hashes main told us to reject
+// Persistent, append-only set of 32-byte header hashes main told us to reject.
+// Crash-safe by construction: add() appends one 32-byte record and fsyncs
+// before returning, open() ignores any torn trailing partial record on load.
+// No delete — a ban is forever, the same contract as FastUint8ArraySet, which
+// backs the in-memory lookups.
+class PersistentHashSet {
+	private static readonly KEY = 32;
+	private readonly set = new FastUint8ArraySet();
+	private readonly file: Deno.FsFile;
+
+	private constructor(file: Deno.FsFile) {
+		this.file = file;
+	}
+
+	public static open(path: string): PersistentHashSet {
+		const file = Deno.openSync(path, { read: true, write: true, create: true });
+		const self = new PersistentHashSet(file);
+		const size = file.statSync().size;
+		const whole = size - (size % PersistentHashSet.KEY); // drop any torn tail
+		if (whole > 0) {
+			const buf = new Uint8Array(whole);
+			file.seekSync(0, Deno.SeekMode.Start);
+			for (let read = 0; read < whole;) {
+				const n = file.readSync(buf.subarray(read));
+				if (n === null) break;
+				read += n;
+			}
+			for (let off = 0; off < whole; off += PersistentHashSet.KEY) {
+				self.set.add(buf.subarray(off, off + PersistentHashSet.KEY));
+			}
+		}
+		file.seekSync(0, Deno.SeekMode.End);
+		return self;
+	}
+
+	public has(hash: Uint8Array): boolean {
+		return this.set.has(hash);
+	}
+
+	public add(hash: Uint8Array): void {
+		if (this.set.has(hash)) return; // append-only: never write a duplicate
+		for (let written = 0; written < hash.length;) written += this.file.writeSync(hash.subarray(written));
+		this.file.syncSync(); // durable before we act on the ban
+		this.set.add(hash);
+	}
+}
+
+const blacklist = PersistentHashSet.open(join(BASE_DATA_DIR, "blacklist")); // header hashes main told us to reject
 const peers = new Set<Peer>();
 const lastPeerSync = new WeakMap<Peer, number>();
 
@@ -229,7 +278,16 @@ function ensureBlockListener(peer: Peer): void {
 		}
 
 		if (!verifySatoshiMerkleRoot(block.txs, block.header.merkleRoot)) {
-			throw new Error("Invalid merkle root"); // TODO: handle better
+			// The body's txs don't hash to the header's committed merkle root, so
+			// the body is invalid. Don't pool it, and blacklist the hash (which now
+			// survives restarts) so header sync cuts here. Previously this threw,
+			// and Peer's listener loop swallowed the throw — the block was silently
+			// dropped and re-requested from the same peer forever, a no-log
+			// livelock. (Distrusting the peer that served the bad body is the
+			// deeper fix; deferred with the rest of the WIP peer management.)
+			console.error(`[p2p] invalid merkle root for block ${encodeHex(block.header.hash())}; blacklisting`);
+			blacklist.add(block.header.hash());
+			return;
 		}
 
 		const height = heightOfHash(block.header.hash());
