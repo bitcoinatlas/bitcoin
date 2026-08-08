@@ -10,6 +10,7 @@ import {
 	StoredTxInput,
 	U40,
 	U48,
+	WireTxInput,
 } from "@project/codecs";
 import { COINBASE_TXID, GB, MAX_BLOCK_SIZE, MB } from "@project/utils";
 import { join } from "@std/path";
@@ -21,6 +22,8 @@ const LOAD_FACTOR_OPTIONS: LoadFactorOptions = {
 	target: .75,
 	maxDrift: .25,
 };
+
+const StoredOutputIndex = U40;
 
 export const manifest = Manifest.open({
 	path: join(BASE_DATA_DIR, "manifest"),
@@ -62,35 +65,42 @@ export const manifest = Manifest.open({
 			pointer: StoredTxIdPointer,
 		}),
 		pubkey: HashMapStore.open({
-			path: join(BASE_DATA_DIR, "pubkey"),
-			key: Bytes32,
-			// TODO: sha256 hash, or tbh idk wanna hold hash has data,
-			// we probably can use sha256 during hashing bucket index,
-			// then equality check can also apply sha256
-			// 32 bytes is a lot of data.
-			value: U40,
-			loadFactor: LOAD_FACTOR_OPTIONS,
 			commiter: self.name === "chain",
-			entryChunkSize: 500 * MB,
-			minBucketChunkSize: 500 * MB,
-			pointer: U48,
+			path: join(BASE_DATA_DIR, "pubkey"),
+			loadFactor: LOAD_FACTOR_OPTIONS,
+			entries: {
+				key: StoredPubKey,
+				value: StoredOutputIndex,
+				chunkSize: 1 * GB,
+				maxEntrySize: MAX_BLOCK_SIZE,
+				pointer: U48,
+			},
+			buckets: {
+				initialSize: 1_000_000,
+				minChunkSize: 500 * MB,
+			},
+			links: {
+				index: StoredOutputIndex,
+				minChunkSize: 500 * MB,
+			},
+			sha256: true,
 		}),
-		output: SharedArrayStore.open({ // TODO: ArrayStore is append-only should use slot array
+		output: SharedArrayStore.open({
 			writable: self.name === "chain",
 			path: join(BASE_DATA_DIR, "output"),
 			item: new StructCodec({
 				ownerTx: StoredTxIdPointer,
 				spenderTx: new NullableNumaricCodec(StoredTxIdPointer),
-				prevSamePubkeyIndex: new NullableNumaricCodec(U40),
+				prevSamePubkeyOutputIndex: new NullableNumaricCodec(U40),
 			}),
 			minChunkSize: 500 * MB,
 		}),
 	},
 });
 
-export function getPrevOutTxId(input: StoredTxInput): Uint8Array<ArrayBuffer> {
+export function getPrevOutTxId(input: StoredTxInput): WireTxInput["prevOut"]["txId"] {
 	const txId = input.prevOut.txId;
 	if (txId === null) return COINBASE_TXID;
-	const [key] = manifest.stores.txid.getKey(txId);
+	const [key] = manifest.stores.txid.getEntry(txId);
 	return key;
 }
